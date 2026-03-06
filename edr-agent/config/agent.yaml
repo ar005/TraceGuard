@@ -1,0 +1,81 @@
+# /etc/edr/agent.yaml
+# EDR Agent Configuration
+
+agent:
+  # Auto-generated UUID if empty. Persisted to id_file.
+  id: ""
+  id_file: "/var/lib/edr/agent.id"
+  hostname: ""   # auto-detected from OS
+  backend_url: "localhost:50051"
+  tls:
+    cert: ""
+    key:  ""
+    ca:   ""
+    insecure: true   # set true for dev/testing only
+
+monitors:
+  process:
+    enabled: true
+    max_ancestry_depth: 5
+    capture_env: false   # capture env vars for suspicious processes
+    suspicious_parents:
+      - httpd
+      - nginx
+      - apache2
+      - lighttpd
+      - sshd
+      - vsftpd
+      - mysqld
+      - postgres
+      - java
+      - python
+      - python3
+      - ruby
+      - php
+      - node
+      - crond
+      - atd
+
+  network:
+    enabled: true
+    ignore_localhost: true   # suppress 127.0.0.1 / ::1 connections
+    capture_payload: false   # DO NOT enable unless legally cleared
+    # Alert even for private-range connections on these ports:
+    watched_ports: [22, 23, 445, 3389, 4444, 5555, 6666, 8080, 9001]
+
+  file:
+    enabled: true
+    hash_on_write: true
+    watch_paths:
+      - /etc
+      - /usr/bin
+      - /usr/sbin
+      - /usr/local/bin
+      - /usr/local/sbin
+      - /tmp
+      - /var/tmp
+      - /dev/shm
+      - /root
+      - /home
+
+  registry:
+    enabled: true
+    # Extra paths beyond the built-in defaults
+    extra_paths:
+      - /etc/environment
+      - /etc/profile.d
+
+buffer:
+  path: "/var/lib/edr/events.db"
+  max_size_mb: 512
+  flush_interval_s: 5
+
+log:
+  level: "info"     # debug | info | warn | error
+  format: "json"    # json | text
+  path: "/var/log/edr/agent.log"
+
+self_protect:
+  bin_path: ""        # auto-detected from /proc/self/exe
+  watchdog: true      # respawn agent if killed
+  immutable_bin: false  # chattr +i on agent binary (requires root)

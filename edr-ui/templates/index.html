@@ -1,0 +1,1274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TraceGuard EDR</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg0:#04080e;--bg1:#080f18;--bg2:#0c1622;--bg3:#111e2e;
+  --line:#16253a;--line2:#1d3048;--muted:#3a5570;--dim:#5a7a96;
+  --body:#8daec8;--text:#c8dced;--bright:#e8f4ff;
+  --cyan:#00c8f0;--cyan2:#008fb0;
+  --red:#f03a3a;--orange:#f07830;--amber:#f0b830;--green:#30e890;--violet:#9060f0;
+  --mono:'IBM Plex Mono',monospace;--sans:'IBM Plex Sans',sans-serif;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--sans);font-size:13px;line-height:1.5;background:var(--bg0);color:var(--body);min-height:100vh;overflow-x:hidden}
+
+/* ── topbar ── */
+.topbar{position:sticky;top:0;z-index:500;height:48px;background:var(--bg1);border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 18px;gap:0}
+.brand{display:flex;align-items:center;gap:9px;margin-right:24px;flex-shrink:0}
+.brand svg{width:26px;height:26px}
+.brand-name{font-family:var(--mono);font-size:12px;font-weight:600;letter-spacing:3px;color:var(--cyan);text-transform:uppercase}
+.nav-tabs{display:flex;align-items:stretch;height:100%;flex:1;overflow-x:auto}
+.nav-tab{display:flex;align-items:center;gap:6px;padding:0 13px;height:100%;cursor:pointer;font-family:var(--mono);font-size:9.5px;letter-spacing:1.5px;text-transform:uppercase;color:var(--dim);border-bottom:2px solid transparent;transition:all .15s;user-select:none;white-space:nowrap;flex-shrink:0}
+.nav-tab:hover{color:var(--body)}
+.nav-tab.active{color:var(--cyan);border-bottom-color:var(--cyan);background:rgba(0,200,240,.04)}
+.nav-tab svg{width:12px;height:12px;opacity:.7;flex-shrink:0}
+.nav-tab.active svg{opacity:1}
+.tc{font-size:8.5px;background:var(--red);color:#fff;font-weight:700;padding:0 4px;border-radius:2px;min-width:16px;text-align:center;line-height:15px;height:15px;display:none}
+.tc.show{display:block}
+.tc.cy{background:var(--cyan2)}
+.topbar-right{margin-left:auto;display:flex;align-items:center;gap:14px;flex-shrink:0}
+.pdot{width:6px;height:6px;border-radius:50%;background:var(--muted);transition:all .3s}
+.pdot.ok{background:var(--green);box-shadow:0 0 0 2px rgba(48,232,144,.15);animation:hb 2.5s ease-in-out infinite}
+.pdot.err{background:var(--red)}
+@keyframes hb{0%,100%{box-shadow:0 0 0 2px rgba(48,232,144,.15)}50%{box-shadow:0 0 0 4px rgba(48,232,144,.05)}}
+.clock{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:1px}
+
+/* ── statusbar ── */
+.statusbar{height:24px;background:var(--bg1);border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 18px;gap:18px;font-family:var(--mono);font-size:8.5px;letter-spacing:1px;color:var(--muted);flex-wrap:nowrap;overflow-x:auto}
+.sb-v{color:var(--body)}
+
+/* ── page ── */
+.page{display:none;padding:18px 22px;animation:pi .18s ease}
+.page.on{display:block}
+@keyframes pi{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+
+/* ── page header ── */
+.ph{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:18px;padding-bottom:12px;border-bottom:1px solid var(--line)}
+.ph h1{font-family:var(--mono);font-size:15px;font-weight:600;letter-spacing:2px;color:var(--text);text-transform:uppercase}
+.ph h1 .sl{color:var(--cyan);margin-right:6px}
+.ph p{font-family:var(--mono);font-size:8.5px;color:var(--muted);letter-spacing:1.5px;margin-top:2px;text-transform:uppercase}
+.ph-r{display:flex;gap:7px;align-items:center}
+
+/* ── buttons ── */
+.btn{font-family:var(--mono);font-size:9px;letter-spacing:1.5px;text-transform:uppercase;padding:5px 11px;border:1px solid var(--line2);background:none;color:var(--dim);cursor:pointer;border-radius:2px;transition:all .15s;white-space:nowrap}
+.btn:hover{border-color:var(--cyan2);color:var(--cyan)}
+.btn.pri{border-color:var(--cyan2);color:var(--cyan);background:rgba(0,200,240,.06)}
+.btn.pri:hover{background:rgba(0,200,240,.12)}
+.btn.dng{border-color:rgba(240,58,58,.4);color:var(--red)}
+.btn.dng:hover{background:rgba(240,58,58,.1)}
+.btn.suc{border-color:rgba(48,232,144,.4);color:var(--green)}
+.btn.suc:hover{background:rgba(48,232,144,.1)}
+
+/* ── pills ── */
+.pills{display:flex;gap:5px;flex-wrap:wrap}
+.pill{font-family:var(--mono);font-size:8.5px;letter-spacing:1px;text-transform:uppercase;padding:3px 9px;border:1px solid var(--line2);background:none;color:var(--muted);cursor:pointer;border-radius:20px;transition:all .15s}
+.pill:hover{color:var(--body);border-color:var(--muted)}
+.pill.on{border-color:var(--cyan);color:var(--cyan);background:rgba(0,200,240,.08)}
+
+/* ── stat cards ── */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:11px;margin-bottom:18px}
+.stat{background:var(--bg1);border:1px solid var(--line);border-radius:2px;padding:13px 15px 11px;position:relative;overflow:hidden;transition:transform .15s}
+.stat:hover{transform:translateY(-1px)}
+.stat::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;opacity:.8}
+.s-cy::before{background:linear-gradient(90deg,var(--cyan),transparent)}
+.s-re::before{background:linear-gradient(90deg,var(--red),transparent)}
+.s-or::before{background:linear-gradient(90deg,var(--orange),transparent)}
+.s-gr::before{background:linear-gradient(90deg,var(--green),transparent)}
+.stat-lbl{font-family:var(--mono);font-size:8px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);margin-bottom:7px}
+.stat-val{font-family:var(--mono);font-size:30px;font-weight:600;line-height:1;color:var(--text)}
+.s-cy .stat-val{color:var(--cyan)}.s-re .stat-val{color:var(--red)}
+.s-or .stat-val{color:var(--orange)}.s-gr .stat-val{color:var(--green)}
+.stat-sub{font-family:var(--mono);font-size:8.5px;color:var(--muted);margin-top:4px}
+
+/* ── card ── */
+.card{background:var(--bg1);border:1px solid var(--line);border-radius:2px;overflow:hidden;margin-bottom:13px}
+.card:last-child{margin-bottom:0}
+.ch{display:flex;align-items:center;justify-content:space-between;padding:9px 13px;border-bottom:1px solid var(--line);background:var(--bg2)}
+.ct{font-family:var(--mono);font-size:9px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--text)}
+.cm{font-family:var(--mono);font-size:8.5px;color:var(--muted)}
+
+/* ── grid ── */
+.g32{display:grid;grid-template-columns:3fr 2fr;gap:13px;margin-bottom:13px}
+
+/* ── table ── */
+.tw{overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+thead tr{border-bottom:1px solid var(--line2)}
+th{font-family:var(--mono);font-size:8px;font-weight:500;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);text-align:left;padding:7px 11px;white-space:nowrap;user-select:none}
+td{padding:8px 11px;border-bottom:1px solid rgba(22,37,58,.6);vertical-align:middle;color:var(--body)}
+tr:last-child td{border-bottom:none}
+tbody tr{cursor:pointer;transition:background .1s}
+tbody tr:hover{background:rgba(0,200,240,.025)}
+.mono{font-family:var(--mono);font-size:10px}
+.dim{color:var(--muted)}
+.trunc{max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ── badges ── */
+.badge{display:inline-block;font-family:var(--mono);font-size:8px;font-weight:600;letter-spacing:1px;text-transform:uppercase;padding:2px 6px;border-radius:2px}
+.sv1{background:rgba(48,232,144,.1);color:var(--green);border:1px solid rgba(48,232,144,.25)}
+.sv2{background:rgba(240,184,48,.1);color:var(--amber);border:1px solid rgba(240,184,48,.25)}
+.sv3{background:rgba(240,120,48,.1);color:var(--orange);border:1px solid rgba(240,120,48,.25)}
+.sv4{background:rgba(240,58,58,.1);color:var(--red);border:1px solid rgba(240,58,58,.25)}
+.stO{background:rgba(240,58,58,.1);color:var(--red);border:1px solid rgba(240,58,58,.25)}
+.stI{background:rgba(240,120,48,.1);color:var(--orange);border:1px solid rgba(240,120,48,.25)}
+.stR{background:rgba(48,232,144,.1);color:var(--green);border:1px solid rgba(48,232,144,.25)}
+.mitre{display:inline-block;font-family:var(--mono);font-size:8px;padding:1px 5px;color:var(--violet);background:rgba(144,96,240,.08);border:1px solid rgba(144,96,240,.2);border-radius:2px;margin:1px 2px 1px 0}
+.obadge{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:8.5px}
+.dot{width:5px;height:5px;border-radius:50%}
+.don{background:var(--green);box-shadow:0 0 4px var(--green)}
+.doff{background:var(--muted)}
+
+/* cmd severity tags */
+.tag-crit{font-family:var(--mono);font-size:8px;padding:1px 5px;border:1px solid rgba(240,58,58,.4);color:var(--red);border-radius:2px;margin:1px 2px 1px 0;display:inline-block}
+.tag-high{font-family:var(--mono);font-size:8px;padding:1px 5px;border:1px solid rgba(240,120,48,.4);color:var(--orange);border-radius:2px;margin:1px 2px 1px 0;display:inline-block}
+.tag-med{font-family:var(--mono);font-size:8px;padding:1px 5px;border:1px solid rgba(240,184,48,.4);color:var(--amber);border-radius:2px;margin:1px 2px 1px 0;display:inline-block}
+.tag-low{font-family:var(--mono);font-size:8px;padding:1px 5px;border:1px solid rgba(90,122,150,.4);color:var(--dim);border-radius:2px;margin:1px 2px 1px 0;display:inline-block}
+
+/* ── feed ── */
+.feed{max-height:340px;overflow-y:auto}
+.fi{display:grid;grid-template-columns:auto 1fr;gap:9px;padding:8px 13px;border-bottom:1px solid rgba(22,37,58,.5);cursor:pointer;transition:background .1s}
+.fi:hover{background:rgba(0,200,240,.02)}
+.fi:last-child{border-bottom:none}
+.fsb{width:3px;border-radius:2px;height:34px;align-self:flex-start;margin-top:2px}
+.fsb1{background:var(--green)}.fsb2{background:var(--amber)}
+.fsb3{background:var(--orange)}.fsb4{background:var(--red)}
+.ft{font-size:12px;color:var(--text);line-height:1.3}
+.fm{font-family:var(--mono);font-size:8.5px;color:var(--muted);margin-top:3px;display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+
+/* ── sev chart ── */
+.sc{padding:13px 15px}
+.sr{display:grid;grid-template-columns:62px 1fr 34px;align-items:center;gap:9px;margin-bottom:9px}
+.sr:last-child{margin-bottom:0}
+.sl{font-family:var(--mono);font-size:8.5px;color:var(--muted);text-align:right;letter-spacing:1px}
+.bb{height:7px;background:rgba(255,255,255,.04);border-radius:2px;overflow:hidden}
+.bf{height:100%;border-radius:2px;transition:width .7s cubic-bezier(.4,0,.2,1);width:0}
+.sn{font-family:var(--mono);font-size:9.5px;color:var(--text);text-align:right}
+
+/* ── CMD timeline entry ── */
+.cmd-row{padding:8px 13px;border-bottom:1px solid rgba(22,37,58,.4);cursor:pointer;transition:background .1s}
+.cmd-row:hover{background:rgba(0,200,240,.02)}
+.cmd-row:last-child{border-bottom:none}
+.cmd-line{font-family:var(--mono);font-size:11px;color:var(--text);word-break:break-all}
+.cmd-line .prompt{color:var(--green);margin-right:6px;user-select:none}
+.cmd-meta{font-family:var(--mono);font-size:8.5px;color:var(--muted);margin-top:3px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.cmd-tags{margin-top:4px}
+
+/* ── drawer ── */
+.ov{position:fixed;inset:0;background:rgba(4,8,14,.7);z-index:800;display:none;backdrop-filter:blur(2px)}
+.ov.open{display:block}
+.drawer{position:fixed;right:0;top:72px;bottom:0;width:480px;background:var(--bg1);border-left:1px solid var(--line2);z-index:900;display:none;flex-direction:column;transform:translateX(100%);transition:transform .22s cubic-bezier(.4,0,.2,1)}
+.drawer.open{display:flex;transform:translateX(0)}
+.dh{padding:13px 17px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;background:var(--bg2);flex-shrink:0}
+.dt{font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--text)}
+.dc{background:none;border:none;color:var(--muted);cursor:pointer;font-size:15px;padding:2px 5px;border-radius:2px;transition:all .15s}
+.dc:hover{color:var(--text);background:var(--bg3)}
+.db{flex:1;overflow-y:auto;padding:15px 17px}
+.dg{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line);border-radius:2px;overflow:hidden;margin-bottom:13px}
+.dr{display:flex;flex-direction:column;gap:3px;padding:9px 11px;border-bottom:1px solid var(--line)}
+.dr:nth-child(2n-1){border-right:1px solid var(--line)}
+.dr:last-child,.dr:nth-last-child(2){border-bottom:none}
+.dk{font-family:var(--mono);font-size:8px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted)}
+.dv{font-family:var(--mono);font-size:10.5px;color:var(--text);word-break:break-all}
+.desc{background:var(--bg2);border:1px solid var(--line);border-radius:2px;padding:11px;font-size:11.5px;line-height:1.6;color:var(--body);margin-bottom:13px}
+.slbl{font-family:var(--mono);font-size:8px;letter-spacing:2px;text-transform:uppercase;color:var(--muted);margin-bottom:7px}
+.status-sel{background:var(--bg2);border:1px solid var(--line2);color:var(--body);font-family:var(--mono);font-size:9.5px;padding:5px 7px;border-radius:2px;outline:none;cursor:pointer;width:100%}
+.status-sel:focus{border-color:var(--cyan2)}
+
+/* ── rule builder ── */
+.rb{padding:16px}
+.rb-section{margin-bottom:20px}
+.rb-title{font-family:var(--mono);font-size:9px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--cyan);margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
+.form-row.full{grid-template-columns:1fr}
+.form-group{display:flex;flex-direction:column;gap:4px}
+.form-label{font-family:var(--mono);font-size:8.5px;letter-spacing:1px;text-transform:uppercase;color:var(--muted)}
+.form-input,.form-select,.form-textarea{background:var(--bg2);border:1px solid var(--line2);color:var(--text);font-family:var(--mono);font-size:11px;padding:6px 9px;border-radius:2px;outline:none;transition:border-color .15s;width:100%}
+.form-input:focus,.form-select:focus,.form-textarea:focus{border-color:var(--cyan2)}
+.form-textarea{resize:vertical;min-height:60px;font-size:10.5px;line-height:1.5}
+.form-select option{background:var(--bg2)}
+
+/* condition builder */
+.cond-list{display:flex;flex-direction:column;gap:7px;margin-bottom:10px}
+.cond-item{display:grid;grid-template-columns:1fr 90px 1fr auto;gap:7px;align-items:center;padding:8px 10px;background:var(--bg3);border:1px solid var(--line);border-radius:2px}
+.cond-del{background:none;border:1px solid rgba(240,58,58,.3);color:var(--red);cursor:pointer;padding:3px 7px;font-family:var(--mono);font-size:9px;border-radius:2px;transition:all .15s}
+.cond-del:hover{background:rgba(240,58,58,.1)}
+.add-cond-btn{font-family:var(--mono);font-size:8.5px;letter-spacing:1px;text-transform:uppercase;padding:5px 10px;border:1px dashed var(--line2);background:none;color:var(--muted);cursor:pointer;border-radius:2px;transition:all .15s;width:100%}
+.add-cond-btn:hover{border-color:var(--cyan2);color:var(--cyan)}
+
+/* event type checkboxes */
+.evt-chips{display:flex;flex-wrap:wrap;gap:6px}
+.evt-chip{font-family:var(--mono);font-size:8.5px;padding:4px 9px;border:1px solid var(--line2);color:var(--muted);cursor:pointer;border-radius:2px;transition:all .15s;user-select:none}
+.evt-chip.on{border-color:var(--cyan);color:var(--cyan);background:rgba(0,200,240,.08)}
+
+/* mitre input */
+.mitre-input-wrap{display:flex;gap:7px}
+.mitre-tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+.mitre-tag{display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);font-size:8px;padding:2px 7px;color:var(--violet);background:rgba(144,96,240,.08);border:1px solid rgba(144,96,240,.2);border-radius:2px}
+.mitre-tag button{background:none;border:none;color:var(--violet);cursor:pointer;font-size:10px;line-height:1;padding:0;opacity:.7}
+.mitre-tag button:hover{opacity:1}
+
+/* ── states ── */
+.st-row{padding:28px;text-align:center;font-family:var(--mono);font-size:9.5px;letter-spacing:1.5px;color:var(--muted)}
+.st-load::after{content:'';display:inline-block;width:14px;text-align:left;animation:ld 1.2s steps(4,end) infinite}
+@keyframes ld{0%,20%{content:'.'}40%{content:'..'}60%{content:'...'}80%,100%{content:''}}
+.st-err{color:var(--red)}
+
+/* ── act-sel in table ── */
+.act-sel{background:var(--bg2);border:1px solid var(--line2);color:var(--body);font-family:var(--mono);font-size:8.5px;padding:3px 5px;border-radius:2px;outline:none;cursor:pointer;width:110px}
+.act-sel:focus{border-color:var(--cyan2)}
+
+/* ── toast ── */
+.toast{position:fixed;bottom:20px;right:20px;background:var(--bg2);border:1px solid var(--line2);padding:10px 16px;font-family:var(--mono);font-size:10px;color:var(--text);border-radius:2px;z-index:2000;transform:translateY(60px);opacity:0;transition:all .25s;pointer-events:none}
+.toast.show{transform:translateY(0);opacity:1}
+.toast.ok{border-color:rgba(48,232,144,.4);color:var(--green)}
+.toast.fail{border-color:rgba(240,58,58,.4);color:var(--red)}
+
+/* ── scrollbar ── */
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--line2);border-radius:2px}
+::-webkit-scrollbar-thumb:hover{background:var(--muted)}
+
+@media(max-width:900px){
+  .stats{grid-template-columns:repeat(2,1fr)}
+  .g32{grid-template-columns:1fr}
+  .drawer{width:100%}
+  .form-row{grid-template-columns:1fr}
+  .cond-item{grid-template-columns:1fr;gap:5px}
+}
+</style>
+</head>
+<body>
+
+<!-- TOPBAR -->
+<header class="topbar">
+  <div class="brand">
+    <svg viewBox="0 0 28 28" fill="none">
+      <polygon points="14,1 27,8 27,20 14,27 1,20 1,8" stroke="#00c8f0" stroke-width="1.2" fill="rgba(0,200,240,0.05)"/>
+      <polygon points="14,7 21,11 21,19 14,23 7,19 7,11" stroke="#00c8f0" stroke-width="0.8" stroke-dasharray="2,1.5" fill="none" opacity="0.5"/>
+      <circle cx="14" cy="14" r="2.5" fill="#00c8f0"/>
+    </svg>
+    <span class="brand-name">TraceGuard</span>
+  </div>
+  <nav class="nav-tabs">
+    <div class="nav-tab active" id="tb-dashboard" onclick="nav('dashboard')">
+      <svg viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="1" width="6" height="6" rx=".5"/><rect x="9" y="1" width="6" height="6" rx=".5"/><rect x="1" y="9" width="6" height="6" rx=".5"/><rect x="9" y="9" width="6" height="6" rx=".5"/></svg>
+      Overview
+    </div>
+    <div class="nav-tab" id="tb-alerts" onclick="nav('alerts')">
+      <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 2L2 13h12L8 2z"/><rect x="7.4" y="6" width="1.2" height="3.5" rx=".3"/><rect x="7.4" y="10.5" width="1.2" height="1.2" rx=".3"/></svg>
+      Alerts <span class="tc" id="tc-al">0</span>
+    </div>
+    <div class="nav-tab" id="tb-cmd" onclick="nav('cmd')">
+      <svg viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="2" width="14" height="12" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M4 6l3 3-3 3M9 12h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      Commands <span class="tc" id="tc-cmd">0</span>
+    </div>
+    <div class="nav-tab" id="tb-events" onclick="nav('events')">
+      <svg viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="3" width="14" height="1.2" rx=".4"/><rect x="1" y="7" width="14" height="1.2" rx=".4"/><rect x="1" y="11" width="9" height="1.2" rx=".4"/></svg>
+      Events
+    </div>
+    <div class="nav-tab" id="tb-agents" onclick="nav('agents')">
+      <svg viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="1" width="10" height="9" rx="1"/><rect x="6" y="10" width="4" height="2"/><rect x="2" y="12" width="12" height="2.5" rx=".5"/></svg>
+      Endpoints <span class="tc cy" id="tc-ag">0</span>
+    </div>
+    <div class="nav-tab" id="tb-rules" onclick="nav('rules')">
+      <svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 3h12v1.5H2zM2 7h12v1.5H2zM2 11h8v1.5H2z"/></svg>
+      Rules
+    </div>
+    <div class="nav-tab" id="tb-builder" onclick="nav('builder')">
+      <svg viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M8 5v3l2 2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      Rule Builder
+    </div>
+  </nav>
+  <div class="topbar-right">
+    <div style="display:flex;align-items:center;gap:5px;font-family:var(--mono);font-size:8.5px;letter-spacing:1px">
+      <div class="pdot" id="pdot"></div>
+      <span id="sys-lbl" style="color:var(--muted)">CONNECTING</span>
+    </div>
+    <div class="clock" id="clock">00:00:00</div>
+  </div>
+</header>
+
+<!-- STATUSBAR -->
+<div class="statusbar">
+  <span>BACKEND: <span class="sb-v">{{ backend }}</span></span>
+  <span>AGENTS: <span class="sb-v" id="sb-ag">–</span></span>
+  <span>EVENTS/24H: <span class="sb-v" id="sb-ev">–</span></span>
+  <span>OPEN ALERTS: <span class="sb-v" id="sb-al">–</span></span>
+  <span style="margin-left:auto">AUTO-REFRESH 30s</span>
+</div>
+
+<main>
+
+<!-- ── OVERVIEW ── -->
+<section class="page on" id="pg-dashboard">
+  <div class="ph">
+    <div><h1><span class="sl">//</span>OVERVIEW</h1><p id="dash-ts">LAST UPDATED: —</p></div>
+    <div class="ph-r"><button class="btn pri" onclick="loadDash()">⟳ REFRESH</button></div>
+  </div>
+  <div class="stats">
+    <div class="stat s-cy"><div class="stat-lbl">Agents Online</div><div class="stat-val" id="s-on">–</div><div class="stat-sub" id="s-tot">of – endpoints</div></div>
+    <div class="stat s-re"><div class="stat-lbl">Open Alerts</div><div class="stat-val" id="s-op">–</div><div class="stat-sub" id="s-cr">– critical</div></div>
+    <div class="stat s-or"><div class="stat-lbl">Events / 24h</div><div class="stat-val" id="s-ev">–</div><div class="stat-sub">all endpoints</div></div>
+    <div class="stat s-gr"><div class="stat-lbl">Active Rules</div><div class="stat-val" id="s-ru">–</div><div class="stat-sub" id="s-rt">of – total</div></div>
+  </div>
+  <div class="g32">
+    <div class="card">
+      <div class="ch"><span class="ct">Recent Alerts</span><button class="btn" onclick="nav('alerts')">VIEW ALL →</button></div>
+      <div class="feed" id="dash-feed"><div class="st-row st-load">LOADING</div></div>
+    </div>
+    <div class="card">
+      <div class="ch"><span class="ct">Alert Severity</span><span class="cm" id="sev-tot">–</span></div>
+      <div class="sc" id="sev-chart"><div class="st-row st-load">LOADING</div></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="ch"><span class="ct">Endpoints</span><button class="btn" onclick="nav('agents')">VIEW ALL →</button></div>
+    <div class="tw"><table>
+      <thead><tr><th>Host</th><th>Status</th><th>OS</th><th>IP</th><th>Version</th><th>Last Seen</th></tr></thead>
+      <tbody id="dash-ag"><tr><td colspan="6" class="st-row st-load">LOADING</td></tr></tbody>
+    </table></div>
+  </div>
+</section>
+
+<!-- ── ALERTS ── -->
+<section class="page" id="pg-alerts">
+  <div class="ph">
+    <div><h1><span class="sl">//</span>ALERT QUEUE</h1><p>DETECTIONS REQUIRING REVIEW</p></div>
+    <div class="ph-r">
+      <div class="pills" id="al-pills">
+        <button class="pill on" onclick="fAlerts('',this)">All</button>
+        <button class="pill" onclick="fAlerts('OPEN',this)">Open</button>
+        <button class="pill" onclick="fAlerts('INVESTIGATING',this)">Investigating</button>
+        <button class="pill" onclick="fAlerts('RESOLVED',this)">Resolved</button>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="tw"><table>
+      <thead><tr><th>SEV</th><th>Title</th><th>Host</th><th>Rule</th><th>MITRE</th><th>Status</th><th>When</th><th>Action</th></tr></thead>
+      <tbody id="al-tbody"><tr><td colspan="8" class="st-row st-load">LOADING</td></tr></tbody>
+    </table></div>
+  </div>
+</section>
+
+<!-- ── COMMANDS ── -->
+<section class="page" id="pg-cmd">
+  <div class="ph">
+    <div><h1><span class="sl">//</span>COMMAND ACTIVITY</h1><p>REAL-TIME TERMINAL &amp; BASH HISTORY</p></div>
+    <div class="ph-r">
+      <div class="pills" id="cmd-pills">
+        <button class="pill on" onclick="fCmd('',this)">All</button>
+        <button class="pill" onclick="fCmd('CMD_EXEC',this)">Real-time</button>
+        <button class="pill" onclick="fCmd('CMD_HISTORY',this)">History</button>
+        <button class="pill" onclick="fCmd('suspicious',this)" style="border-color:rgba(240,120,48,.4);color:var(--orange)">Suspicious Only</button>
+      </div>
+      <button class="btn pri" onclick="loadCmd()">⟳ REFRESH</button>
+    </div>
+  </div>
+  <div id="cmd-list">
+    <div class="card">
+      <div class="ch">
+        <span class="ct">Command Stream</span>
+        <span class="cm" id="cmd-count">– entries</span>
+      </div>
+      <div id="cmd-entries"><div class="st-row st-load">LOADING</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ── EVENTS ── -->
+<section class="page" id="pg-events">
+  <div class="ph">
+    <div><h1><span class="sl">//</span>EVENT LOG</h1><p>RAW ENDPOINT TELEMETRY</p></div>
+    <div class="ph-r">
+      <div class="pills" id="ev-pills">
+        <button class="pill on" onclick="fEvents('',this)">All</button>
+        <button class="pill" onclick="fEvents('PROCESS_EXEC',this)">Process</button>
+        <button class="pill" onclick="fEvents('CMD_EXEC',this)">CMD</button>
+        <button class="pill" onclick="fEvents('NET_CONNECT',this)">Network</button>
+        <button class="pill" onclick="fEvents('FILE_WRITE',this)">File</button>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="tw"><table>
+      <thead><tr><th>Time</th><th>Type</th><th>Host</th><th>Detail</th><th>Severity</th></tr></thead>
+      <tbody id="ev-tbody"><tr><td colspan="5" class="st-row st-load">LOADING</td></tr></tbody>
+    </table></div>
+  </div>
+</section>
+
+<!-- ── ENDPOINTS ── -->
+<section class="page" id="pg-agents">
+  <div class="ph">
+    <div><h1><span class="sl">//</span>ENDPOINTS</h1><p>REGISTERED EDR AGENTS</p></div>
+    <div class="ph-r"><button class="btn pri" onclick="loadAgents()">⟳ REFRESH</button></div>
+  </div>
+  <div class="card">
+    <div class="tw"><table>
+      <thead><tr><th>Status</th><th>Hostname</th><th>Agent ID</th><th>OS</th><th>IP</th><th>Version</th><th>First Seen</th><th>Last Seen</th></tr></thead>
+      <tbody id="ag-tbody"><tr><td colspan="8" class="st-row st-load">LOADING</td></tr></tbody>
+    </table></div>
+  </div>
+</section>
+
+<!-- ── RULES ── -->
+<section class="page" id="pg-rules">
+  <div class="ph">
+    <div><h1><span class="sl">//</span>DETECTION RULES</h1><p>BEHAVIORAL SIGNATURES</p></div>
+    <div class="ph-r">
+      <button class="btn" onclick="reloadEngine()">⚡ RELOAD ENGINE</button>
+      <button class="btn suc" onclick="nav('builder')">＋ NEW RULE</button>
+      <button class="btn pri" onclick="loadRules()">⟳ REFRESH</button>
+    </div>
+  </div>
+  <div class="card">
+    <div class="tw"><table>
+      <thead><tr><th>State</th><th>Name</th><th>SEV</th><th>Event Types</th><th>MITRE</th><th>Author</th><th>Actions</th></tr></thead>
+      <tbody id="ru-tbody"><tr><td colspan="7" class="st-row st-load">LOADING</td></tr></tbody>
+    </table></div>
+  </div>
+</section>
+
+<!-- ── RULE BUILDER ── -->
+<section class="page" id="pg-builder">
+  <div class="ph">
+    <div><h1><span class="sl">//</span>RULE BUILDER</h1><p id="rb-mode-label">CREATE CUSTOM DETECTION RULE</p></div>
+    <div class="ph-r">
+      <button class="btn dng" onclick="resetBuilder()">✕ RESET</button>
+      <button class="btn pri" onclick="nav('rules')">← BACK TO RULES</button>
+    </div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 380px;gap:16px;align-items:start">
+
+    <!-- LEFT: form -->
+    <div>
+      <div class="card">
+        <div class="rb">
+
+          <div class="rb-section">
+            <div class="rb-title">Rule Identity</div>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label">Rule Name *</label>
+                <input class="form-input" id="rb-name" placeholder="e.g. Suspicious wget Download">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Author</label>
+                <input class="form-input" id="rb-author" placeholder="e.g. security-team">
+              </div>
+            </div>
+            <div class="form-row full">
+              <div class="form-group">
+                <label class="form-label">Description</label>
+                <textarea class="form-textarea" id="rb-desc" placeholder="What does this rule detect and why is it suspicious?"></textarea>
+              </div>
+            </div>
+          </div>
+
+          <div class="rb-section">
+            <div class="rb-title">Severity &amp; Classification</div>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label">Severity *</label>
+                <select class="form-select" id="rb-sev">
+                  <option value="1">1 — LOW</option>
+                  <option value="2">2 — MEDIUM</option>
+                  <option value="3" selected>3 — HIGH</option>
+                  <option value="4">4 — CRITICAL</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Add MITRE ATT&amp;CK ID</label>
+                <div class="mitre-input-wrap">
+                  <input class="form-input" id="rb-mitre-in" placeholder="e.g. T1059.004" style="flex:1">
+                  <button class="btn pri" onclick="addMitre()">ADD</button>
+                </div>
+              </div>
+            </div>
+            <div class="mitre-tags" id="rb-mitre-tags"></div>
+          </div>
+
+          <div class="rb-section">
+            <div class="rb-title">Event Types (what triggers this rule)</div>
+            <div class="evt-chips" id="rb-evt-chips">
+              <div class="evt-chip" data-type="CMD_EXEC" onclick="toggleEvt(this)">CMD_EXEC</div>
+              <div class="evt-chip" data-type="CMD_HISTORY" onclick="toggleEvt(this)">CMD_HISTORY</div>
+              <div class="evt-chip" data-type="PROCESS_EXEC" onclick="toggleEvt(this)">PROCESS_EXEC</div>
+              <div class="evt-chip" data-type="FILE_WRITE" onclick="toggleEvt(this)">FILE_WRITE</div>
+              <div class="evt-chip" data-type="FILE_CREATE" onclick="toggleEvt(this)">FILE_CREATE</div>
+              <div class="evt-chip" data-type="NET_CONNECT" onclick="toggleEvt(this)">NET_CONNECT</div>
+              <div class="evt-chip" data-type="PROCESS_PTRACE" onclick="toggleEvt(this)">PROCESS_PTRACE</div>
+              <div class="evt-chip" data-type="REG_SET" onclick="toggleEvt(this)">REG_SET</div>
+              <div class="evt-chip" data-type="*" onclick="toggleEvt(this)">* (ALL)</div>
+            </div>
+          </div>
+
+          <div class="rb-section">
+            <div class="rb-title">Conditions (ALL must match)</div>
+            <div class="cond-list" id="rb-conds"></div>
+            <button class="add-cond-btn" onclick="addCond()">＋ ADD CONDITION</button>
+
+            <div style="margin-top:14px;background:var(--bg3);border:1px solid var(--line);padding:10px 12px;border-radius:2px">
+              <div style="font-family:var(--mono);font-size:8px;letter-spacing:1px;color:var(--muted);margin-bottom:8px">FIELD REFERENCE</div>
+              <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:6px">
+                <div style="font-family:var(--mono);font-size:9px;color:var(--dim)">cmdline — full command string</div>
+                <div style="font-family:var(--mono);font-size:9px;color:var(--dim)">username — user who ran it</div>
+                <div style="font-family:var(--mono);font-size:9px;color:var(--dim)">shell_name — bash/zsh/etc</div>
+                <div style="font-family:var(--mono);font-size:9px;color:var(--dim)">source — proc / history:*</div>
+                <div style="font-family:var(--mono);font-size:9px;color:var(--dim)">tags — detection tag array</div>
+                <div style="font-family:var(--mono);font-size:9px;color:var(--dim)">detection — matched rule text</div>
+                <div style="font-family:var(--mono);font-size:9px;color:var(--dim)">process.comm — process name</div>
+                <div style="font-family:var(--mono);font-size:9px;color:var(--dim)">process.exe_path — binary path</div>
+                <div style="font-family:var(--mono);font-size:9px;color:var(--dim)">hostname — endpoint name</div>
+                <div style="font-family:var(--mono);font-size:9px;color:var(--dim)">severity — numeric 0–4</div>
+              </div>
+              <div style="margin-top:8px;font-family:var(--mono);font-size:8px;letter-spacing:1px;color:var(--muted)">OPERATORS</div>
+              <div style="font-family:var(--mono);font-size:9px;color:var(--dim);margin-top:4px">
+                eq · ne · contains · startswith · regex · gt · lt · in
+              </div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:10px;padding-top:8px">
+            <button class="btn suc" style="flex:1;padding:9px" onclick="saveRule()">
+              ✓ SAVE RULE
+            </button>
+            <button class="btn" onclick="testRule()" style="padding:9px 16px">
+              ⚡ TEST AGAINST RECENT EVENTS
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: preview + test results -->
+    <div>
+      <div class="card" style="margin-bottom:13px">
+        <div class="ch"><span class="ct">Rule Preview (JSON)</span></div>
+        <pre id="rb-preview" style="padding:12px;font-family:var(--mono);font-size:10px;color:var(--body);overflow-x:auto;white-space:pre-wrap;max-height:300px;overflow-y:auto;line-height:1.5">
+{
+  "name": "...",
+  "conditions": []
+}</pre>
+      </div>
+
+      <div class="card" id="test-results-card" style="display:none">
+        <div class="ch"><span class="ct">Test Results</span><span class="cm" id="test-count"></span></div>
+        <div id="test-results"><div class="st-row">NO RESULTS</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- DRAWER -->
+<div class="ov" id="ov" onclick="closeDrawer()"></div>
+<aside class="drawer" id="drawer">
+  <div class="dh">
+    <span class="dt" id="d-title">DETAIL</span>
+    <button class="dc" onclick="closeDrawer()">✕</button>
+  </div>
+  <div class="db" id="d-body"></div>
+</aside>
+
+<!-- TOAST -->
+<div class="toast" id="toast"></div>
+
+<script>
+// ─── state ───────────────────────────────────────────
+let _alertFilter='', _evtFilter='', _cmdFilter='';
+let _editRuleId = null; // null = create, string = edit
+let _mitreTags = [];
+let _conditions = [];
+
+// ─── helpers ─────────────────────────────────────────
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+function ago(s){
+  if(!s) return '–';
+  const d=Math.floor((Date.now()-new Date(s))/1000);
+  if(d<60) return d+'s ago';
+  if(d<3600) return Math.floor(d/60)+'m ago';
+  if(d<86400) return Math.floor(d/3600)+'h ago';
+  return Math.floor(d/86400)+'d ago';
+}
+function ts(s){
+  if(!s) return '–';
+  return new Date(s).toISOString().replace('T',' ').slice(0,19);
+}
+function sev(n){
+  const L={1:'LOW',2:'MED',3:'HIGH',4:'CRIT'};
+  return `<span class="badge sv${n}">${L[n]||n}</span>`;
+}
+function stb(s){
+  const c={OPEN:'stO',INVESTIGATING:'stI',RESOLVED:'stR'}[s]||'';
+  return `<span class="badge ${c}">${esc(s)}</span>`;
+}
+function mitres(ids){
+  if(!ids?.length) return '<span class="dim">–</span>';
+  return ids.map(i=>`<span class="mitre">${esc(i)}</span>`).join('');
+}
+function evtTag(t){
+  const C={CMD_EXEC:'var(--cyan)',CMD_HISTORY:'var(--cyan2)',PROCESS_EXEC:'#5090d0',NET_CONNECT:'var(--orange)',FILE_WRITE:'var(--amber)',FILE_CREATE:'var(--green)',PTRACE:'var(--red)'};
+  const c=C[t]||'var(--violet)';
+  return `<span style="font-family:var(--mono);font-size:8px;padding:2px 5px;border:1px solid ${c};color:${c};border-radius:2px;opacity:.85">${esc(t||'–')}</span>`;
+}
+
+function cmdSevTag(sev, tags){
+  if(!tags?.length) return '';
+  const tc=sev>=4?'tag-crit':sev>=3?'tag-high':sev>=2?'tag-med':'tag-low';
+  return tags.map(t=>`<span class="${tc}">${esc(t)}</span>`).join('');
+}
+
+// ─── api ─────────────────────────────────────────────
+async function api(path){
+  const r=await fetch(path);
+  if(!r.ok) throw new Error('HTTP '+r.status);
+  return r.json();
+}
+async function apiMethod(path,method,body){
+  const r=await fetch(path,{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!r.ok) throw new Error(`HTTP ${r.status}: `+(await r.text()));
+  return r.json();
+}
+
+// ─── toast ───────────────────────────────────────────
+function toast(msg, ok=true){
+  const t=$('toast');
+  t.textContent=msg;
+  t.className='toast '+(ok?'ok':'fail')+' show';
+  setTimeout(()=>t.className='toast',3000);
+}
+
+// ─── clock ───────────────────────────────────────────
+setInterval(()=>{$('clock').textContent=new Date().toUTCString().slice(17,25)+' UTC';},1000);
+
+// ─── nav ─────────────────────────────────────────────
+function nav(name){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));
+  document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('active'));
+  $('pg-'+name).classList.add('on');
+  $('tb-'+name).classList.add('active');
+  closeDrawer();
+  if(name==='alerts')  loadAlerts();
+  if(name==='cmd')     loadCmd();
+  if(name==='events')  loadEvents();
+  if(name==='agents')  loadAgents();
+  if(name==='rules')   loadRules();
+  if(name==='builder') updatePreview();
+}
+
+// ─── status ──────────────────────────────────────────
+function setStatus(ok,msg){
+  const d=$('pdot'),l=$('sys-lbl');
+  d.className='pdot '+(ok?'ok':'err');
+  l.textContent=msg;
+  l.style.color=ok?'var(--green)':'var(--red)';
+}
+
+// ─── dashboard ───────────────────────────────────────
+async function loadDash(){
+  try{
+    const [dash,rules]=await Promise.all([api('/api/dashboard'),api('/api/rules')]);
+    setStatus(true,'ONLINE');
+
+    const s=dash.alert_stats||{};
+    const open=s.OPEN||0,crit=(s.by_severity&&s.by_severity[4])||0;
+    const tot=dash.agents_total||0,on=dash.agents_online||0;
+    const rl=rules.rules||[],en=rl.filter(r=>r.enabled).length;
+
+    $('s-on').textContent=on; $('s-tot').textContent=`of ${tot} endpoint${tot!==1?'s':''}`;
+    $('s-op').textContent=open; $('s-cr').textContent=`${crit} critical`;
+    $('s-ev').textContent=(dash.events_24h||0).toLocaleString();
+    $('s-ru').textContent=en; $('s-rt').textContent=`of ${rl.length} total`;
+    $('sb-ag').textContent=`${on}/${tot} online`;
+    $('sb-ev').textContent=(dash.events_24h||0).toLocaleString();
+    $('sb-al').textContent=open;
+    $('dash-ts').textContent='LAST UPDATED: '+new Date().toISOString().replace('T',' ').slice(0,19)+' UTC';
+
+    const ta=$('tc-al'); ta.textContent=open; ta.classList.toggle('show',open>0);
+    const tb=$('tc-ag'); tb.textContent=on; tb.classList.toggle('show',on>0);
+
+    // sev chart
+    const sevD=[{n:4,l:'CRITICAL',c:'var(--red)'},{n:3,l:'HIGH',c:'var(--orange)'},{n:2,l:'MEDIUM',c:'var(--amber)'},{n:1,l:'LOW',c:'var(--green)'}];
+    const bySev=s.by_severity||{};
+    const maxV=Math.max(1,...sevD.map(d=>bySev[d.n]||0));
+    const sevTot=sevD.reduce((a,d)=>a+(bySev[d.n]||0),0);
+    $('sev-tot').textContent=`${sevTot} total`;
+    $('sev-chart').innerHTML=sevD.map(d=>{
+      const v=bySev[d.n]||0,p=Math.round(v/maxV*100);
+      return `<div class="sr"><div class="sl">${d.l}</div><div class="bb"><div class="bf" style="width:${p}%;background:${d.c}"></div></div><div class="sn">${v}</div></div>`;
+    }).join('');
+
+    // feed
+    const al=dash.recent_alerts||[];
+    $('dash-feed').innerHTML=al.length
+      ?al.map(a=>`<div class="fi" onclick='openAlert(${JSON.stringify(JSON.stringify(a))})'>
+          <div><div class="fsb fsb${a.severity}"></div></div>
+          <div><div class="ft">${esc(a.title)}</div>
+          <div class="fm"><span>${esc(a.hostname||'–')}</span><span>${sev(a.severity)}</span><span>${stb(a.status)}</span><span>${ago(a.first_seen)}</span></div></div>
+        </div>`).join('')
+      :'<div class="st-row">NO RECENT ALERTS</div>';
+
+    // agents
+    const ad=await api('/api/agents');
+    const ags=(ad.agents||[]).slice(0,6);
+    $('dash-ag').innerHTML=ags.length
+      ?ags.map(a=>`<tr onclick='openAgent(${JSON.stringify(JSON.stringify(a))})'>
+          <td><span class="obadge"><span class="dot ${a.is_online?'don':'doff'}"></span>${a.is_online?'<span style="color:var(--green)">ONLINE</span>':'<span class="dim">OFFLINE</span>'}</span></td>
+          <td class="mono">${esc(a.hostname)}</td><td>${esc(a.os||'–')}</td>
+          <td class="mono dim">${esc(a.ip||'–')}</td><td class="mono dim">${esc(a.agent_ver||'–')}</td>
+          <td class="mono dim">${ago(a.last_seen)}</td>
+        </tr>`).join('')
+      :'<tr><td colspan="6" class="st-row">NO AGENTS</td></tr>';
+  }catch(e){setStatus(false,'ERROR');console.error(e);}
+}
+
+// ─── alerts ──────────────────────────────────────────
+async function loadAlerts(){
+  const tb=$('al-tbody');
+  tb.innerHTML='<tr><td colspan="8" class="st-row st-load">LOADING</td></tr>';
+  try{
+    const d=await api('/api/alerts'+(_alertFilter?`?status=${_alertFilter}`:''));
+    const al=d.alerts||[];
+    tb.innerHTML=al.length
+      ?al.map(a=>`<tr onclick='openAlert(${JSON.stringify(JSON.stringify(a))})'>
+          <td>${sev(a.severity)}</td><td class="trunc">${esc(a.title)}</td>
+          <td class="mono">${esc(a.hostname||'–')}</td>
+          <td class="mono dim" style="font-size:9.5px">${esc(a.rule_name||'–')}</td>
+          <td>${mitres(a.mitre_ids)}</td><td>${stb(a.status)}</td>
+          <td class="mono dim">${ago(a.first_seen)}</td>
+          <td onclick="event.stopPropagation()">
+            <select class="act-sel" onchange="quickAl('${esc(a.id)}',this.value,this)">
+              <option value="">– action –</option>
+              <option value="OPEN"${a.status==='OPEN'?' selected':''}>OPEN</option>
+              <option value="INVESTIGATING"${a.status==='INVESTIGATING'?' selected':''}>INVESTIGATE</option>
+              <option value="RESOLVED"${a.status==='RESOLVED'?' selected':''}>RESOLVE</option>
+            </select>
+          </td>
+        </tr>`).join('')
+      :'<tr><td colspan="8" class="st-row">NO ALERTS FOUND</td></tr>';
+  }catch(e){$('al-tbody').innerHTML=`<tr><td colspan="8" class="st-row st-err">ERROR: ${esc(e.message)}</td></tr>`;}
+}
+
+function fAlerts(f,el){_alertFilter=f;document.querySelectorAll('#al-pills .pill').forEach(p=>p.classList.remove('on'));el.classList.add('on');loadAlerts();}
+async function quickAl(id,status,sel){
+  if(!status) return;
+  try{await apiMethod(`/api/alerts/${id}`,'PATCH',{status});loadAlerts();loadDash();}
+  catch(e){alert('Update failed: '+e.message);sel.value='';}
+}
+
+// ─── commands ────────────────────────────────────────
+async function loadCmd(){
+  const wrap=$('cmd-entries');
+  wrap.innerHTML='<div class="st-row st-load">LOADING</div>';
+  try{
+    // Always fetch both sources in parallel, then filter client-side
+    const [execD, histD] = await Promise.all([
+      api('/api/events?event_type=CMD_EXEC&limit=150'),
+      api('/api/events?event_type=CMD_HISTORY&limit=100')
+    ]);
+
+    let events = [
+      ...(execD.events||[]),
+      ...(histD.events||[])
+    ];
+
+    // Apply filter client-side
+    if(_cmdFilter==='CMD_EXEC')       events = execD.events||[];
+    else if(_cmdFilter==='CMD_HISTORY') events = histD.events||[];
+    else if(_cmdFilter==='suspicious'){
+      events = events.filter(e=>{
+        const p=e.payload||{};
+        return (p.severity||0)>=2 || (p.tags&&p.tags.length>0);
+      });
+    }
+
+    // Sort by timestamp desc
+    events.sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp));
+    
+    // Update suspicious badge
+    const suspicious=events.filter(e=>{const p=e.payload||{};return (p.severity||0)>=3||(p.tags&&p.tags.length>0);}).length;
+    const tc=$('tc-cmd');
+    tc.textContent=suspicious;
+    tc.classList.toggle('show',suspicious>0);
+    $('cmd-count').textContent=`${events.length} entries`;
+
+    if(!events.length){
+      wrap.innerHTML='<div class="st-row">NO COMMANDS RECORDED — make sure the agent is running with the new build</div>';
+      return;
+    }
+
+    wrap.innerHTML=events.map(e=>{
+      const p=e.payload||{};
+      const cmdline=p.cmdline||'';
+      const user=p.username||p.user||'?';
+      const shell=p.shell_name||'';
+      const source=p.source||e.event_type;
+      const tty=p.terminal||'';
+      const detection=p.detection||'';
+      const tags=p.tags||[];
+      const sevNum=(p.severity||0);
+
+      const isHist=e.event_type==='CMD_HISTORY';
+      const promptColor=isHist?'var(--dim)':'var(--green)';
+      const prompt=isHist?`<span style="color:var(--dim);margin-right:6px">[history]</span>`
+                         :`<span style="color:var(--green);margin-right:6px">${esc(user)}@${esc(e.hostname||'?')} $</span>`;
+
+      return `<div class="cmd-row" onclick='openCmdDrawer(${JSON.stringify(JSON.stringify(e))})'>
+        <div class="cmd-line">${prompt}<span>${esc(cmdline)}</span></div>
+        <div class="cmd-meta">
+          <span>${ago(e.timestamp)}</span>
+          ${shell?`<span>shell: <span style="color:var(--body)">${esc(shell)}</span></span>`:''}
+          ${tty?`<span>tty: <span style="color:var(--body)">${esc(tty)}</span></span>`:''}
+          ${evtTag(e.event_type)}
+          ${detection?`<span style="color:var(--orange)">${esc(detection)}</span>`:''}
+        </div>
+        ${tags.length?`<div class="cmd-tags">${cmdSevTag(sevNum,tags)}</div>`:''}
+      </div>`;
+    }).join('');
+  }catch(e){wrap.innerHTML=`<div class="st-row st-err">ERROR: ${esc(e.message)}</div>`;}
+}
+
+function fCmd(f,el){_cmdFilter=f;document.querySelectorAll('#cmd-pills .pill').forEach(p=>p.classList.remove('on'));el.classList.add('on');loadCmd();}
+
+// ─── events ──────────────────────────────────────────
+async function loadEvents(){
+  const tb=$('ev-tbody');
+  tb.innerHTML='<tr><td colspan="5" class="st-row st-load">LOADING</td></tr>';
+  try{
+    const p=_evtFilter?`?event_type=${_evtFilter}&limit=200`:'?limit=200';
+    const d=await api('/api/events'+p);
+    const ev=d.events||[];
+    tb.innerHTML=ev.length
+      ?ev.map(e=>{
+          const py=e.payload||{};
+          const det=py.cmdline||py.filename||py.path||py.dest_ip||(py.process&&py.process.comm)||py.comm||JSON.stringify(py).slice(0,80);
+          return `<tr><td class="mono dim">${ts(e.timestamp)}</td><td>${evtTag(e.event_type)}</td>
+            <td class="mono">${esc(e.hostname||'–')}</td>
+            <td class="mono dim trunc">${esc(det||'–')}</td>
+            <td>${e.severity?sev(e.severity):'<span class="dim">–</span>'}</td>
+          </tr>`;
+        }).join('')
+      :'<tr><td colspan="5" class="st-row">NO EVENTS</td></tr>';
+  }catch(e){$('ev-tbody').innerHTML=`<tr><td colspan="5" class="st-row st-err">ERROR: ${esc(e.message)}</td></tr>`;}
+}
+function fEvents(f,el){_evtFilter=f;document.querySelectorAll('#ev-pills .pill').forEach(p=>p.classList.remove('on'));el.classList.add('on');loadEvents();}
+
+// ─── agents ──────────────────────────────────────────
+async function loadAgents(){
+  const tb=$('ag-tbody');
+  tb.innerHTML='<tr><td colspan="8" class="st-row st-load">LOADING</td></tr>';
+  try{
+    const d=await api('/api/agents');
+    const ags=d.agents||[];
+    tb.innerHTML=ags.length
+      ?ags.map(a=>`<tr onclick='openAgent(${JSON.stringify(JSON.stringify(a))})'>
+          <td><span class="obadge"><span class="dot ${a.is_online?'don':'doff'}"></span>${a.is_online?'<span style="color:var(--green)">ONLINE</span>':'<span class="dim">OFFLINE</span>'}</span></td>
+          <td class="mono" style="font-weight:600">${esc(a.hostname)}</td>
+          <td class="mono dim" style="font-size:9px">${esc(a.id||'–')}</td>
+          <td>${esc(a.os||'–')}</td><td class="mono dim">${esc(a.ip||'–')}</td>
+          <td class="mono dim">${esc(a.agent_ver||'–')}</td>
+          <td class="mono dim">${ts(a.first_seen)}</td><td class="mono dim">${ago(a.last_seen)}</td>
+        </tr>`).join('')
+      :'<tr><td colspan="8" class="st-row">NO AGENTS</td></tr>';
+  }catch(e){$('ag-tbody').innerHTML=`<tr><td colspan="8" class="st-row st-err">ERROR: ${esc(e.message)}</td></tr>`;}
+}
+
+// ─── rules ───────────────────────────────────────────
+async function loadRules(){
+  const tb=$('ru-tbody');
+  tb.innerHTML='<tr><td colspan="7" class="st-row st-load">LOADING</td></tr>';
+  try{
+    const d=await api('/api/rules');
+    const rl=d.rules||[];
+    tb.innerHTML=rl.length
+      ?rl.map(r=>`<tr onclick='openRule(${JSON.stringify(JSON.stringify(r))})'>
+          <td><span class="badge" style="${r.enabled?'color:var(--green);border:1px solid rgba(48,232,144,.3);background:rgba(48,232,144,.08)':'color:var(--muted);border:1px solid var(--line2)'}">${r.enabled?'ENABLED':'DISABLED'}</span></td>
+          <td style="font-weight:500">${esc(r.name)}</td><td>${sev(r.severity)}</td>
+          <td>${(r.event_types||[]).map(t=>`<span style="font-family:var(--mono);font-size:8.5px;color:var(--cyan);opacity:.7;margin-right:4px">${esc(t)}</span>`).join('')||'–'}</td>
+          <td>${mitres(r.mitre_ids)}</td>
+          <td class="mono dim">${esc(r.author||'–')}</td>
+          <td onclick="event.stopPropagation()" style="display:flex;gap:6px;padding:5px 11px">
+            <button class="btn ${r.enabled?'dng':''}" onclick="toggleRule('${esc(r.id)}',${!r.enabled},this)">${r.enabled?'DISABLE':'ENABLE'}</button>
+            <button class="btn" onclick="editRule('${esc(r.id)}',event)">EDIT</button>
+            <button class="btn dng" onclick="deleteRule('${esc(r.id)}',event)">DEL</button>
+          </td>
+        </tr>`).join('')
+      :'<tr><td colspan="7" class="st-row">NO RULES</td></tr>';
+  }catch(e){$('ru-tbody').innerHTML=`<tr><td colspan="7" class="st-row st-err">ERROR: ${esc(e.message)}</td></tr>`;}
+}
+
+async function toggleRule(id,enable,btn){
+  btn.textContent='...';btn.disabled=true;
+  try{
+    const r=await api(`/api/rules/${id}`);
+    await apiMethod(`/api/rules/${id}`,'PUT',{...r,enabled:enable});
+    toast(enable?'Rule enabled':'Rule disabled');
+    loadRules();
+  }catch(e){btn.textContent='ERR';btn.disabled=false;}
+}
+
+async function deleteRule(id,ev){
+  ev.stopPropagation();
+  if(!confirm('Delete this rule permanently?')) return;
+  try{
+    await apiMethod(`/api/rules/${id}`,'DELETE');
+    toast('Rule deleted');
+    loadRules();
+  }catch(e){toast('Delete failed: '+e.message,false);}
+}
+
+async function editRule(id,ev){
+  ev.stopPropagation();
+  try{
+    const r=await api(`/api/rules/${id}`);
+    loadBuilder(r);
+    nav('builder');
+  }catch(e){toast('Load failed: '+e.message,false);}
+}
+
+async function reloadEngine(){
+  try{await fetch('/api/rules/reload',{method:'POST'});toast('Detection engine reloaded');}
+  catch(e){toast('Failed: '+e.message,false);}
+}
+
+// ─── rule builder ─────────────────────────────────────
+function loadBuilder(rule){
+  _editRuleId = rule.id || null;
+  $('rb-mode-label').textContent = _editRuleId ? 'EDITING RULE: '+rule.name.toUpperCase() : 'CREATE CUSTOM DETECTION RULE';
+  $('rb-name').value = rule.name || '';
+  $('rb-author').value = rule.author || '';
+  $('rb-desc').value = rule.description || '';
+  $('rb-sev').value = rule.severity || 3;
+
+  // MITRE tags
+  _mitreTags = [...(rule.mitre_ids||[])];
+  renderMitreTags();
+
+  // Event type chips
+  document.querySelectorAll('#rb-evt-chips .evt-chip').forEach(c=>c.classList.remove('on'));
+  (rule.event_types||[]).forEach(t=>{
+    const chip=document.querySelector(`#rb-evt-chips [data-type="${t}"]`);
+    if(chip) chip.classList.add('on');
+  });
+
+  // Conditions
+  _conditions = [];
+  try{
+    const conds = typeof rule.conditions==='string'?JSON.parse(rule.conditions):rule.conditions||[];
+    _conditions = conds.map(c=>({field:c.field||'',op:c.op||'eq',value:String(c.value??'')}));
+  }catch(e){}
+  renderConditions();
+  updatePreview();
+}
+
+function resetBuilder(){
+  _editRuleId=null;
+  _mitreTags=[];
+  _conditions=[];
+  $('rb-name').value='';
+  $('rb-author').value='';
+  $('rb-desc').value='';
+  $('rb-sev').value=3;
+  $('rb-mode-label').textContent='CREATE CUSTOM DETECTION RULE';
+  document.querySelectorAll('#rb-evt-chips .evt-chip').forEach(c=>c.classList.remove('on'));
+  renderMitreTags();
+  renderConditions();
+  updatePreview();
+  $('test-results-card').style.display='none';
+}
+
+function toggleEvt(el){
+  el.classList.toggle('on');
+  // If * toggled on, deselect others
+  if(el.dataset.type==='*' && el.classList.contains('on'))
+    document.querySelectorAll('#rb-evt-chips .evt-chip:not([data-type="*"])').forEach(c=>c.classList.remove('on'));
+  else if(el.dataset.type!=='*')
+    document.querySelector('#rb-evt-chips [data-type="*"]')?.classList.remove('on');
+  updatePreview();
+}
+
+function addMitre(){
+  const v=$('rb-mitre-in').value.trim().toUpperCase();
+  if(v && !_mitreTags.includes(v)){_mitreTags.push(v);renderMitreTags();}
+  $('rb-mitre-in').value='';
+  updatePreview();
+}
+
+function removeMitre(idx){
+  _mitreTags.splice(idx,1);
+  renderMitreTags();
+  updatePreview();
+}
+
+function renderMitreTags(){
+  $('rb-mitre-tags').innerHTML=_mitreTags.map((t,i)=>
+    `<span class="mitre-tag">${esc(t)}<button onclick="removeMitre(${i})">×</button></span>`
+  ).join('');
+}
+
+function addCond(){
+  _conditions.push({field:'cmdline',op:'contains',value:''});
+  renderConditions();
+  updatePreview();
+}
+
+function removeCond(i){
+  _conditions.splice(i,1);
+  renderConditions();
+  updatePreview();
+}
+
+function renderConditions(){
+  const ops=['eq','ne','contains','startswith','regex','gt','lt','gte','lte','in'];
+  $('rb-conds').innerHTML=_conditions.map((c,i)=>`
+    <div class="cond-item">
+      <input class="form-input" value="${esc(c.field)}" placeholder="field (e.g. cmdline)"
+        oninput="_conditions[${i}].field=this.value;updatePreview()">
+      <select class="form-select" onchange="_conditions[${i}].op=this.value;updatePreview()">
+        ${ops.map(o=>`<option value="${o}"${c.op===o?' selected':''}>${o}</option>`).join('')}
+      </select>
+      <input class="form-input" value="${esc(c.value)}" placeholder="value"
+        oninput="_conditions[${i}].value=this.value;updatePreview()">
+      <button class="cond-del" onclick="removeCond(${i})">✕</button>
+    </div>`).join('');
+}
+
+function buildRulePayload(){
+  const name=$('rb-name').value.trim();
+  const author=$('rb-author').value.trim()||'custom';
+  const desc=$('rb-desc').value.trim();
+  const sevVal=parseInt($('rb-sev').value);
+  const evtTypes=[...document.querySelectorAll('#rb-evt-chips .evt-chip.on')].map(c=>c.dataset.type);
+  const conditions=_conditions.filter(c=>c.field&&c.value).map(c=>({
+    field:c.field.trim(),op:c.op,
+    value: isNaN(c.value)||c.op==='contains'||c.op==='startswith'||c.op==='regex'||c.op==='eq'||c.op==='ne'
+      ? c.value : Number(c.value)
+  }));
+  return {name,author,description:desc,severity:sevVal,enabled:true,
+    event_types:evtTypes,conditions,mitre_ids:_mitreTags};
+}
+
+function updatePreview(){
+  const p=buildRulePayload();
+  $('rb-preview').textContent=JSON.stringify(p,null,2);
+}
+
+// Live preview update on any input
+document.addEventListener('input',e=>{if($('pg-builder').classList.contains('on'))updatePreview();});
+
+async function saveRule(){
+  const p=buildRulePayload();
+  if(!p.name){toast('Rule name is required',false);return;}
+  if(!p.event_types.length){toast('Select at least one event type',false);return;}
+  if(!p.conditions.length){toast('Add at least one condition',false);return;}
+  try{
+    if(_editRuleId){
+      await apiMethod(`/api/rules/${_editRuleId}`,'PUT',{...p,id:_editRuleId});
+      toast('Rule updated successfully');
+    }else{
+      await apiMethod('/api/rules','POST',p);
+      toast('Rule created successfully');
+    }
+    await fetch('/api/rules/reload',{method:'POST'});
+    resetBuilder();
+    nav('rules');
+  }catch(e){toast('Save failed: '+e.message,false);}
+}
+
+async function testRule(){
+  const p=buildRulePayload();
+  if(!p.conditions.length){toast('Add conditions first',false);return;}
+  $('test-results-card').style.display='block';
+  const rd=$('test-results');
+  rd.innerHTML='<div class="st-row st-load">TESTING</div>';
+
+  try{
+    // Fetch recent events of the selected types
+    const evtType=p.event_types.includes('*')?'':p.event_types[0]||'';
+    const url=evtType?`/api/events?event_type=${evtType}&limit=500`:'/api/events?limit=500';
+    const d=await api(url);
+    const events=d.events||[];
+
+    // Client-side condition matching
+    const matched=events.filter(ev=>matchConditions(ev.payload||{},p.conditions));
+    $('test-count').textContent=`${matched.length} / ${events.length} matched`;
+
+    if(!matched.length){
+      rd.innerHTML='<div class="st-row">NO MATCHES IN RECENT EVENTS</div>';
+      return;
+    }
+
+    rd.innerHTML=matched.slice(0,20).map(ev=>{
+      const py=ev.payload||{};
+      const detail=py.cmdline||py.filename||py.path||py.comm||'';
+      return `<div class="cmd-row">
+        <div class="cmd-line"><span style="color:var(--green);margin-right:6px">MATCH</span>${esc(detail||JSON.stringify(py).slice(0,80))}</div>
+        <div class="cmd-meta"><span>${ts(ev.timestamp)}</span><span>${esc(ev.hostname||'')}</span>${evtTag(ev.event_type)}</div>
+      </div>`;
+    }).join('');
+  }catch(e){rd.innerHTML=`<div class="st-row st-err">ERROR: ${esc(e.message)}</div>`;}
+}
+
+function matchConditions(payload,conds){
+  return conds.every(c=>{
+    const flat=flatPayload(payload);
+    const val=flat[c.field];
+    if(val===undefined) return false;
+    const s=String(val).toLowerCase();
+    const cv=String(c.value).toLowerCase();
+    switch(c.op){
+      case 'eq': return s===cv;
+      case 'ne': return s!==cv;
+      case 'contains': return s.includes(cv);
+      case 'startswith': return s.startsWith(cv);
+      case 'regex': try{return new RegExp(c.value,'i').test(String(val));}catch{return false;}
+      case 'gt': return Number(val)>Number(c.value);
+      case 'lt': return Number(val)<Number(c.value);
+      case 'gte': return Number(val)>=Number(c.value);
+      case 'lte': return Number(val)<=Number(c.value);
+      default: return false;
+    }
+  });
+}
+
+function flatPayload(obj,prefix='',out={}){
+  for(const[k,v]of Object.entries(obj)){
+    const key=prefix?`${prefix}.${k}`:k;
+    if(v&&typeof v==='object'&&!Array.isArray(v)) flatPayload(v,key,out);
+    else out[key]=v;
+  }
+  return out;
+}
+
+// ─── drawers ─────────────────────────────────────────
+function openDrawer(title,html){$('d-title').textContent=title;$('d-body').innerHTML=html;$('ov').classList.add('open');$('drawer').classList.add('open');}
+function closeDrawer(){$('ov').classList.remove('open');$('drawer').classList.remove('open');}
+function dr(k,v){return `<div class="dr"><div class="dk">${k}</div><div class="dv">${v}</div></div>`;}
+
+function openAlert(js){
+  const a=JSON.parse(js);
+  openDrawer('ALERT DETAIL',`
+    <div class="dg">
+      ${dr('SEVERITY',sev(a.severity))}${dr('STATUS',stb(a.status))}
+      ${dr('HOSTNAME',`<span class="mono">${esc(a.hostname||'–')}</span>`)}
+      ${dr('RULE',`<span class="mono" style="font-size:9.5px">${esc(a.rule_name||'–')}</span>`)}
+      ${dr('FIRST SEEN',`<span class="mono">${ts(a.first_seen)}</span>`)}
+      ${dr('LAST SEEN',`<span class="mono">${ts(a.last_seen)}</span>`)}
+      ${dr('ASSIGNEE',esc(a.assignee||'UNASSIGNED'))}
+      ${dr('ID',`<span class="mono" style="font-size:8.5px;word-break:break-all">${esc(a.id||'–')}</span>`)}
+    </div>
+    ${a.description?`<div class="slbl">Description</div><div class="desc">${esc(a.description)}</div>`:''}
+    ${a.mitre_ids?.length?`<div class="slbl">MITRE</div><div style="margin-bottom:13px">${mitres(a.mitre_ids)}</div>`:''}
+    <div class="slbl">Update Status</div>
+    <select class="status-sel" onchange="updAlertDrawer('${esc(a.id)}',this.value)">
+      <option value="">— select —</option>
+      <option value="OPEN"${a.status==='OPEN'?' selected':''}>OPEN</option>
+      <option value="INVESTIGATING"${a.status==='INVESTIGATING'?' selected':''}>INVESTIGATING</option>
+      <option value="RESOLVED"${a.status==='RESOLVED'?' selected':''}>RESOLVED</option>
+    </select>`);
+}
+
+async function updAlertDrawer(id,status){
+  if(!status) return;
+  try{await apiMethod(`/api/alerts/${id}`,'PATCH',{status});closeDrawer();loadAlerts();loadDash();}
+  catch(e){alert('Failed: '+e.message);}
+}
+
+function openAgent(js){
+  const a=JSON.parse(js);
+  openDrawer('ENDPOINT DETAIL',`
+    <div class="dg">
+      ${dr('STATUS',`<span class="obadge"><span class="dot ${a.is_online?'don':'doff'}"></span>${a.is_online?'<span style="color:var(--green)">ONLINE</span>':'<span class="dim">OFFLINE</span>'}</span>`)}
+      ${dr('HOSTNAME',`<span class="mono">${esc(a.hostname||'–')}</span>`)}
+      ${dr('ID',`<span class="mono" style="font-size:8.5px;word-break:break-all">${esc(a.id||'–')}</span>`)}
+      ${dr('OS',esc(a.os||'–'))}${dr('IP',`<span class="mono">${esc(a.ip||'–')}</span>`)}
+      ${dr('VERSION',`<span class="mono">${esc(a.agent_ver||'–')}</span>`)}
+      ${dr('FIRST SEEN',`<span class="mono">${ts(a.first_seen)}</span>`)}
+      ${dr('LAST SEEN',`<span class="mono">${ts(a.last_seen)}</span>`)}
+    </div>`);
+}
+
+function openRule(js){
+  const r=JSON.parse(js);
+  let conds='';
+  try{const cs=typeof r.conditions==='string'?JSON.parse(r.conditions):r.conditions||[];
+    conds=cs.map(c=>`<div style="font-family:var(--mono);font-size:9.5px;padding:5px 8px;background:var(--bg3);border:1px solid var(--line);border-radius:2px;margin-bottom:4px">
+      <span style="color:var(--cyan)">${esc(c.field)}</span>
+      <span style="color:var(--muted);margin:0 5px">${esc(c.op)}</span>
+      <span style="color:var(--amber)">"${esc(String(c.value))}"</span>
+    </div>`).join('');
+  }catch(e){}
+  openDrawer('RULE DETAIL',`
+    <div class="dg">
+      ${dr('NAME',`<b>${esc(r.name)}</b>`)}
+      ${dr('STATE',r.enabled?'<span class="badge" style="color:var(--green);border:1px solid rgba(48,232,144,.3)">ENABLED</span>':'<span class="badge" style="color:var(--muted);border:1px solid var(--line2)">DISABLED</span>')}
+      ${dr('SEVERITY',sev(r.severity))}${dr('AUTHOR',esc(r.author||'–'))}
+    </div>
+    ${r.description?`<div class="slbl">Description</div><div class="desc">${esc(r.description)}</div>`:''}
+    ${r.event_types?.length?`<div class="slbl">Event Types</div><div style="margin-bottom:13px">${r.event_types.map(t=>`<span style="font-family:var(--mono);font-size:8.5px;padding:2px 7px;border:1px solid var(--cyan2);color:var(--cyan);margin-right:5px;border-radius:2px">${esc(t)}</span>`).join('')}</div>`:''}
+    ${conds?`<div class="slbl">Conditions</div><div style="margin-bottom:13px">${conds}</div>`:''}
+    ${r.mitre_ids?.length?`<div class="slbl">MITRE ATT&CK</div><div style="margin-bottom:13px">${mitres(r.mitre_ids)}</div>`:''}
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button class="btn pri" style="flex:1" onclick="editRule('${esc(r.id)}',{stopPropagation:()=>{}});closeDrawer()">EDIT RULE</button>
+      <button class="btn dng" onclick="deleteRule('${esc(r.id)}',{stopPropagation:()=>{}});closeDrawer()">DELETE</button>
+    </div>`);
+}
+
+function openCmdDrawer(js){
+  const e=JSON.parse(js);
+  const p=e.payload||{};
+  const tags=p.tags||[];
+  const snum=p.severity||0;
+  openDrawer('COMMAND DETAIL',`
+    <div class="dg">
+      ${dr('TYPE',evtTag(e.event_type))}
+      ${dr('SEVERITY',snum?`<span class="badge sv${Math.min(snum,4)}">${['INFO','LOW','MED','HIGH','CRIT'][snum]||snum}</span>`:'<span class="dim">INFO</span>')}
+      ${dr('USER',`<span class="mono">${esc(p.username||'–')}</span>`)}
+      ${dr('HOST',`<span class="mono">${esc(e.hostname||'–')}</span>`)}
+      ${dr('SHELL',`<span class="mono">${esc(p.shell_name||'–')}</span>`)}
+      ${dr('TTY',`<span class="mono">${esc(p.terminal||'–')}</span>`)}
+      ${dr('SOURCE',`<span class="mono" style="font-size:9px">${esc(p.source||'–')}</span>`)}
+      ${dr('TIME',`<span class="mono">${ts(e.timestamp)}</span>`)}
+    </div>
+    <div class="slbl">Command</div>
+    <div style="background:var(--bg0);border:1px solid var(--line);padding:11px 13px;font-family:var(--mono);font-size:11.5px;color:var(--text);word-break:break-all;line-height:1.6;margin-bottom:13px;border-radius:2px">
+      <span style="color:var(--green);margin-right:8px">${esc(p.username||'user')}$</span>${esc(p.cmdline||'–')}
+    </div>
+    ${p.detection?`<div class="slbl">Detection Matches</div><div class="desc" style="color:var(--orange)">${esc(p.detection)}</div>`:''}
+    ${tags.length?`<div class="slbl">Tags</div><div style="margin-bottom:13px">${cmdSevTag(snum,tags)}</div>`:''}
+    ${p.pid?`<div class="slbl">Process</div><div class="dg">${dr('PID',p.pid)}${dr('PPID',p.ppid||'–')}</div>`:''}
+  `);
+}
+
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDrawer();});
+
+// ─── init & refresh ───────────────────────────────────
+async function refresh(){
+  await loadDash();
+  const pg=document.querySelector('.page.on');
+  if(pg){const id=pg.id.replace('pg-','');
+    if(id==='alerts') loadAlerts();
+    if(id==='cmd')    loadCmd();
+    if(id==='events') loadEvents();
+    if(id==='agents') loadAgents();
+    if(id==='rules')  loadRules();
+  }
+}
+
+loadDash();
+setInterval(refresh,30000);
+</script>
+</body>
+</html>

@@ -1,0 +1,134 @@
+// cmd/server/main.go
+// EDR Backend Server — starts gRPC ingest + REST API.
+
+package main
+
+import (
+	"context"
+	"flag"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
+
+	"github.com/youredr/edr-backend/internal/api"
+	"github.com/youredr/edr-backend/internal/config"
+	"github.com/youredr/edr-backend/internal/db"
+	"github.com/youredr/edr-backend/internal/detection"
+	"github.com/youredr/edr-backend/internal/ingest"
+	"github.com/youredr/edr-backend/internal/models"
+	"github.com/youredr/edr-backend/internal/store"
+
+	// Register JSON codec for gRPC
+	_ "github.com/youredr/edr-backend/internal/proto"
+)
+
+func main() {
+	cfgPath := flag.String("config", "config/server.yaml", "path to config file")
+	flag.Parse()
+
+	// ── Config ────────────────────────────────────────────────────────────────
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		log.Fatal().Err(err).Msg("load config")
+	}
+
+	// ── Logger ────────────────────────────────────────────────────────────────
+	level, _ := zerolog.ParseLevel(cfg.Log.Level)
+	zerolog.SetGlobalLevel(level)
+
+	var logger zerolog.Logger
+	if cfg.Log.Format == "text" {
+		logger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}).
+			With().Timestamp().Logger()
+	} else {
+		logger = zerolog.New(os.Stdout).With().Timestamp().Logger()
+	}
+	logger.Info().Str("grpc", cfg.Server.GRPCAddr).Str("http", cfg.Server.HTTPAddr).Msg("EDR backend starting")
+
+	// ── Database ──────────────────────────────────────────────────────────────
+	database, err := db.Open(cfg.Database.DSNString())
+	if err != nil {
+		logger.Fatal().Err(err).Msg("connect to postgres")
+	}
+	defer database.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := db.RunMigrations(ctx, database, logger); err != nil {
+		cancel()
+		logger.Fatal().Err(err).Msg("run migrations")
+	}
+	cancel()
+	logger.Info().Msg("database ready")
+
+	// ── Store ─────────────────────────────────────────────────────────────────
+	st := store.New(database)
+
+	// ── Detection Engine ──────────────────────────────────────────────────────
+	engine := detection.New(st, logger, func(ctx context.Context, alert *models.Alert) {
+		// Persist alert to database.
+		if err := st.InsertAlert(ctx, alert); err != nil {
+			logger.Error().Err(err).Str("rule", alert.RuleID).Msg("persist alert failed")
+		} else {
+			logger.Warn().
+				Str("alert_id",  alert.ID).
+				Str("rule",      alert.RuleName).
+				Str("hostname",  alert.Hostname).
+				Int("severity",  int(alert.Severity)).
+				Msg("ALERT FIRED")
+		}
+	})
+	if err := engine.Reload(context.Background()); err != nil {
+		logger.Fatal().Err(err).Msg("load detection rules")
+	}
+
+	// ── gRPC Ingest Server ────────────────────────────────────────────────────
+	grpcServer := ingest.New(st, engine, logger)
+	go func() {
+		if err := grpcServer.Listen(cfg.Server.GRPCAddr); err != nil {
+			logger.Fatal().Err(err).Msg("gRPC server failed")
+		}
+	}()
+
+	// ── REST API Server ───────────────────────────────────────────────────────
+	apiServer := api.New(st, engine, logger, cfg.Auth.APIKey)
+	go func() {
+		if err := apiServer.Listen(cfg.Server.HTTPAddr); err != nil {
+			if err.Error() != "http: Server closed" {
+				logger.Fatal().Err(err).Msg("HTTP server failed")
+			}
+		}
+	}()
+
+	// ── Agent heartbeat monitor ───────────────────────────────────────────────
+	// Mark agents offline if no heartbeat in 2 minutes.
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			// Mark agents offline if no heartbeat in 90 seconds.
+			if err := st.MarkStaleAgentsOffline(context.Background(), 90*time.Second); err != nil {
+				logger.Warn().Err(err).Msg("stale agent sweep failed")
+			}
+		}
+	}()
+
+	// ── Graceful shutdown ─────────────────────────────────────────────────────
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	sig := <-quit
+	logger.Info().Str("signal", sig.String()).Msg("shutting down")
+
+	grpcServer.Stop()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	if err := apiServer.Shutdown(shutdownCtx); err != nil {
+		logger.Error().Err(err).Msg("HTTP shutdown error")
+	}
+
+	logger.Info().Msg("EDR backend stopped")
+}

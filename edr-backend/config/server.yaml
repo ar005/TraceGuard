@@ -1,0 +1,20 @@
+# config/server.yaml — EDR Backend Configuration
+
+server:
+  grpc_addr: ":50051"
+  http_addr: ":8080"
+
+database:
+  host:     "postgres"
+  port:     5432
+  name:     "edr"
+  user:     "edr"
+  password: "edr"
+  ssl_mode: "disable"
+
+log:
+  level:  "info"
+  format: "json"
+
+auth:
+  api_key: ""

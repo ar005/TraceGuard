@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+package edr.v1;
+
+option go_package = "github.com/youredr/edr-backend/internal/proto";
+
+// ─── EventEnvelope ────────────────────────────────────────────────────────────
+// Every event from agent to backend is wrapped in this envelope.
+// The payload is JSON-encoded event data (typed by event_type).
+
+message EventEnvelope {
+  string  agent_id    = 1;  // unique agent UUID
+  string  hostname    = 2;  // hostname of monitored machine
+  string  event_id    = 3;  // UUID for deduplication
+  string  event_type  = 4;  // PROCESS_EXEC, NET_CONNECT, FILE_CREATE, etc.
+  int64   timestamp   = 5;  // Unix nanoseconds
+  bytes   payload     = 6;  // JSON-encoded typed event struct
+  string  os          = 7;  // linux / windows / darwin
+  string  agent_ver   = 8;  // semver
+}
+
+// ─── Heartbeat ────────────────────────────────────────────────────────────────
+message HeartbeatRequest {
+  string agent_id   = 1;
+  string hostname   = 2;
+  int64  timestamp  = 3;
+  string agent_ver  = 4;
+  string os         = 5;
+  AgentStats stats  = 6;
+}
+
+message AgentStats {
+  uint64 events_sent    = 1;
+  uint64 events_dropped = 2;
+  uint64 buffer_size    = 3;  // bytes currently in local buffer
+  float  cpu_pct        = 4;
+  uint64 mem_bytes      = 5;
+}
+
+message HeartbeatResponse {
+  bool   ok             = 1;
+  int64  server_time    = 2;  // Unix nanoseconds — agent can use for clock sync
+  string config_version = 3;  // bump this to trigger agent config reload
+}
+
+// ─── StreamResponse ───────────────────────────────────────────────────────────
+message StreamResponse {
+  bool   ok      = 1;
+  string message = 2;
+}
+
+// ─── AgentRegistration ────────────────────────────────────────────────────────
+message RegisterRequest {
+  string agent_id   = 1;
+  string hostname   = 2;
+  string os         = 3;
+  string os_version = 4;
+  string agent_ver  = 5;
+  string ip         = 6;
+}
+
+message RegisterResponse {
+  bool   ok             = 1;
+  string assigned_id    = 2;  // server may reassign a canonical ID
+  string config_version = 3;
+}
+
+// ─── EventService ─────────────────────────────────────────────────────────────
+service EventService {
+  // Register is called once when the agent starts.
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+
+  // StreamEvents is a client-streaming RPC: agent sends events, server acks in bulk.
+  rpc StreamEvents(stream EventEnvelope) returns (StreamResponse);
+
+  // Heartbeat is a unary RPC called every N seconds.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}
