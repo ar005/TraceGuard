@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>TraceGuard EDR</title>
+<title>OEDR — Open EDR</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root{
@@ -253,7 +253,7 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
       <polygon points="14,7 21,11 21,19 14,23 7,19 7,11" stroke="#00c8f0" stroke-width="0.8" stroke-dasharray="2,1.5" fill="none" opacity="0.5"/>
       <circle cx="14" cy="14" r="2.5" fill="#00c8f0"/>
     </svg>
-    <span class="brand-name">TraceGuard</span>
+    <span class="brand-name">OEDR</span>
   </div>
   <nav class="nav-tabs">
     <div class="nav-tab active" id="tb-dashboard" onclick="nav('dashboard')">
@@ -275,6 +275,10 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
     <div class="nav-tab" id="tb-agents" onclick="nav('agents')">
       <svg viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="1" width="10" height="9" rx="1"/><rect x="6" y="10" width="4" height="2"/><rect x="2" y="12" width="12" height="2.5" rx=".5"/></svg>
       Endpoints <span class="tc cy" id="tc-ag">0</span>
+    </div>
+    <div class="nav-tab" id="tb-search" onclick="nav('search')">
+      <svg viewBox="0 0 16 16" fill="currentColor"><circle cx="6.5" cy="6.5" r="4" stroke="currentColor" stroke-width="1.3" fill="none"/><line x1="9.5" y1="9.5" x2="14" y2="14" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+      Search
     </div>
     <div class="nav-tab" id="tb-rules" onclick="nav('rules')">
       <svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 3h12v1.5H2zM2 7h12v1.5H2zM2 11h8v1.5H2z"/></svg>
@@ -417,6 +421,111 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
     </table></div>
   </div>
 </section>
+
+<!-- ── SEARCH ── -->
+<section class="page" id="pg-search">
+  <div class="ph">
+    <div><h1><span class="sl">//</span>LOG SEARCH</h1><p>SEARCH ACROSS ALL EVENTS AND ALERTS</p></div>
+  </div>
+
+  <!-- Search bar -->
+  <div class="card" style="margin-bottom:13px">
+    <div style="padding:14px 16px">
+      <div style="display:flex;gap:8px;margin-bottom:12px">
+        <div style="position:relative;flex:1">
+          <svg viewBox="0 0 16 16" fill="none" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);width:13px;height:13px;pointer-events:none;opacity:.4">
+            <circle cx="6.5" cy="6.5" r="4" stroke="#c8dced" stroke-width="1.3"/>
+            <line x1="9.5" y1="9.5" x2="14" y2="14" stroke="#c8dced" stroke-width="1.3" stroke-linecap="round"/>
+          </svg>
+          <input id="srch-q" class="form-input" placeholder="Search payload, cmdline, hostname, IP, path, username…"
+            style="padding-left:32px;font-size:13px;height:38px"
+            onkeydown="if(event.key==='Enter')runSearch()">
+        </div>
+        <button class="btn pri" style="height:38px;padding:0 18px;font-size:10px" onclick="runSearch()">SEARCH</button>
+        <button class="btn" style="height:38px;padding:0 14px;font-size:10px" onclick="clearSearch()">CLEAR</button>
+      </div>
+
+      <!-- Filters row -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:9px;align-items:end">
+        <div class="form-group">
+          <label class="form-label">Source</label>
+          <select class="form-select" id="srch-src" style="height:32px;font-size:11px">
+            <option value="events">Events</option>
+            <option value="alerts">Alerts</option>
+            <option value="both">Both</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Event Type</label>
+          <select class="form-select" id="srch-type" style="height:32px;font-size:11px">
+            <option value="">All types</option>
+            <option value="CMD_EXEC">CMD_EXEC</option>
+            <option value="CMD_HISTORY">CMD_HISTORY</option>
+            <option value="PROCESS_EXEC">PROCESS_EXEC</option>
+            <option value="FILE_WRITE">FILE_WRITE</option>
+            <option value="FILE_CREATE">FILE_CREATE</option>
+            <option value="NET_CONNECT">NET_CONNECT</option>
+            <option value="AGENT_START">AGENT_START</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Severity (min)</label>
+          <select class="form-select" id="srch-sev" style="height:32px;font-size:11px">
+            <option value="">Any</option>
+            <option value="1">1 — LOW+</option>
+            <option value="2">2 — MEDIUM+</option>
+            <option value="3">3 — HIGH+</option>
+            <option value="4">4 — CRITICAL</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">From</label>
+          <input type="datetime-local" class="form-input" id="srch-from" style="height:32px;font-size:11px;color-scheme:dark">
+        </div>
+        <div class="form-group">
+          <label class="form-label">To</label>
+          <input type="datetime-local" class="form-input" id="srch-to" style="height:32px;font-size:11px;color-scheme:dark">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Limit</label>
+          <select class="form-select" id="srch-limit" style="height:32px;font-size:11px">
+            <option value="50">50 results</option>
+            <option value="100">100 results</option>
+            <option value="250">250 results</option>
+            <option value="500">500 results</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Quick filters -->
+      <div style="margin-top:11px;display:flex;align-items:center;gap:7px;flex-wrap:wrap">
+        <span style="font-family:var(--mono);font-size:8px;letter-spacing:1.5px;color:var(--muted);text-transform:uppercase">Quick:</span>
+        <button class="pill" onclick="quickSearch('suspicious commands','events','CMD_EXEC','2','','')">Suspicious commands</button>
+        <button class="pill" onclick="quickSearch('','events','PROCESS_EXEC','3','','')">High sev processes</button>
+        <button class="pill" onclick="quickSearch('root','events','CMD_EXEC','','','')">Root commands</button>
+        <button class="pill" onclick="quickSearch('','alerts','','3','','')">High alerts</button>
+        <button class="pill" onclick="quickSearch('/etc','events','','','','')">Writes to /etc</button>
+        <button class="pill" onclick="quickSearch('','events','NET_CONNECT','','','')">Network connections</button>
+        <button class="pill" onclick="quickSearch('history','events','CMD_EXEC','3','','')">History evasion</button>
+        <button class="pill" onclick="quickSearch('','both','','4','','')">All criticals</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Results -->
+  <div id="srch-results-wrap">
+    <div class="card">
+      <div class="ch">
+        <span class="ct" id="srch-result-title">RESULTS</span>
+        <span class="cm" id="srch-result-count"></span>
+      </div>
+      <div id="srch-results">
+        <div class="st-row" style="color:var(--muted)">Enter a search term or pick a quick filter above</div>
+      </div>
+    </div>
+  </div>
+</section>
+
 
 <!-- ── RULES ── -->
 <section class="page" id="pg-rules">
@@ -1253,6 +1362,162 @@ function openCmdDrawer(js){
 }
 
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDrawer();});
+
+
+// ─── search ───────────────────────────────────────────
+function quickSearch(q, src, type, sev, from, to) {
+  $('srch-q').value = q;
+  if(src)   $('srch-src').value   = src;
+  if(type)  $('srch-type').value  = type;
+  if(sev)   $('srch-sev').value   = sev;
+  if(from)  $('srch-from').value  = from;
+  if(to)    $('srch-to').value    = to;
+  runSearch();
+}
+
+function clearSearch() {
+  $('srch-q').value = '';
+  $('srch-src').value = 'events';
+  $('srch-type').value = '';
+  $('srch-sev').value = '';
+  $('srch-from').value = '';
+  $('srch-to').value = '';
+  $('srch-results').innerHTML = '<div class="st-row" style="color:var(--muted)">Enter a search term or pick a quick filter above</div>';
+  $('srch-result-count').textContent = '';
+  $('srch-result-title').textContent = 'RESULTS';
+}
+
+async function runSearch() {
+  const q      = $('srch-q').value.trim();
+  const src    = $('srch-src').value;
+  const type   = $('srch-type').value;
+  const sev    = $('srch-sev').value;
+  const from   = $('srch-from').value;
+  const to     = $('srch-to').value;
+  const limit  = $('srch-limit').value || '50';
+
+  const wrap = $('srch-results');
+  wrap.innerHTML = '<div class="st-row st-load">SEARCHING</div>';
+  $('srch-result-count').textContent = '';
+
+  try {
+    const results = [];
+
+    // Build event query
+    if (src === 'events' || src === 'both') {
+      let url = `/api/events?limit=${limit}`;
+      if (q)    url += `&q=${encodeURIComponent(q)}`;
+      if (type) url += `&event_type=${encodeURIComponent(type)}`;
+      if (from) url += `&since=${new Date(from).toISOString()}`;
+      if (to)   url += `&until=${new Date(to).toISOString()}`;
+      const d = await api(url);
+      let evts = d.events || [];
+      // Client-side severity filter (backend doesn't expose min_severity for events yet)
+      if (sev) evts = evts.filter(e => (e.severity || 0) >= parseInt(sev));
+      evts.forEach(e => results.push({ _kind: 'event', ...e }));
+    }
+
+    // Build alert query
+    if (src === 'alerts' || src === 'both') {
+      let alertUrl = `/api/alerts?limit=${limit}`;
+      if (sev)  url += `&min_severity=${sev}`;
+      const d = await api(alertUrl);
+      let alts = d.alerts || [];
+      // Client-side text filter for alerts (no q param on alerts endpoint)
+      if (q) {
+        const lq = q.toLowerCase();
+        alts = alts.filter(a =>
+          (a.title||'').toLowerCase().includes(lq) ||
+          (a.description||'').toLowerCase().includes(lq) ||
+          (a.hostname||'').toLowerCase().includes(lq) ||
+          (a.rule_name||'').toLowerCase().includes(lq)
+        );
+      }
+      alts.forEach(a => results.push({ _kind: 'alert', ...a }));
+    }
+
+    // Sort by timestamp desc
+    results.sort((a, b) => {
+      const ta = new Date(a.timestamp || a.first_seen || 0);
+      const tb = new Date(b.timestamp || b.first_seen || 0);
+      return tb - ta;
+    });
+
+    $('srch-result-title').textContent = src === 'both' ? 'EVENTS & ALERTS' : src === 'alerts' ? 'ALERTS' : 'EVENTS';
+    $('srch-result-count').textContent = results.length
+      ? `${results.length} result${results.length !== 1 ? 's' : ''}`
+      : 'no results';
+
+    if (!results.length) {
+      wrap.innerHTML = `<div class="st-row">No results for <span style="color:var(--cyan)">${esc(q||'(all)')}</span></div>`;
+      return;
+    }
+
+    // Highlight search term in text
+    function hl(text, term) {
+      if (!term || !text) return esc(text || '');
+      const re = new RegExp('(' + term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+      return esc(text).replace(re, '<mark style="background:rgba(0,200,240,.25);color:var(--cyan);border-radius:1px">$1</mark>');
+    }
+
+    wrap.innerHTML = results.map(r => {
+      if (r._kind === 'event') {
+        const p = r.payload || {};
+        const detail = p.cmdline || p.path || p.filename || p.dest_ip ||
+                       (p.process && p.process.cmdline) || p.comm || '';
+        const user   = p.username || p.user || (p.process && p.process.username) || '';
+        return `<div class="cmd-row" onclick='openEventDrawer(${JSON.stringify(JSON.stringify(r))})'>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+            ${evtTag(r.event_type)}
+            ${r.severity ? sev(r.severity) : ''}
+            <span class="mono dim" style="font-size:9px">${ts(r.timestamp)}</span>
+            <span class="mono" style="font-size:9px;color:var(--body)">${esc(r.hostname||'')}</span>
+            ${user ? `<span class="mono dim" style="font-size:9px">${esc(user)}</span>` : ''}
+          </div>
+          <div class="mono" style="font-size:11px;color:var(--text);word-break:break-all;line-height:1.5">
+            ${detail ? hl(detail, q) : hl(JSON.stringify(p).slice(0,120), q)}
+          </div>
+        </div>`;
+      } else {
+        // alert row
+        return `<div class="cmd-row" onclick='openAlert(${JSON.stringify(JSON.stringify(r))})'>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+            <span class="badge" style="background:rgba(144,96,240,.1);color:var(--violet);border:1px solid rgba(144,96,240,.3);font-size:8px">ALERT</span>
+            ${sev(r.severity)}
+            ${stb(r.status)}
+            <span class="mono dim" style="font-size:9px">${ts(r.first_seen)}</span>
+            <span class="mono" style="font-size:9px;color:var(--body)">${esc(r.hostname||'')}</span>
+          </div>
+          <div style="font-size:12px;color:var(--text);font-weight:500">${hl(r.title, q)}</div>
+          ${r.rule_name ? `<div class="mono dim" style="font-size:9px;margin-top:3px">rule: ${hl(r.rule_name, q)}</div>` : ''}
+        </div>`;
+      }
+    }).join('');
+
+  } catch(e) {
+    wrap.innerHTML = `<div class="st-row st-err">ERROR: ${esc(e.message)}</div>`;
+  }
+}
+
+function openEventDrawer(js) {
+  const e = JSON.parse(js);
+  const p = e.payload || {};
+  const detail = p.cmdline || p.path || p.filename || p.dest_ip || p.comm || '';
+  openDrawer('EVENT DETAIL', `
+    <div class="dg">
+      ${dr('TYPE', evtTag(e.event_type))}
+      ${dr('SEVERITY', e.severity ? sev(e.severity) : '<span class="dim">INFO</span>')}
+      ${dr('HOST', `<span class="mono">${esc(e.hostname||'–')}</span>`)}
+      ${dr('TIME', `<span class="mono">${ts(e.timestamp)}</span>`)}
+      ${dr('AGENT ID', `<span class="mono" style="font-size:8.5px;word-break:break-all">${esc(e.agent_id||'–')}</span>`)}
+      ${dr('EVENT ID', `<span class="mono" style="font-size:8.5px;word-break:break-all">${esc(e.id||'–')}</span>`)}
+    </div>
+    ${detail ? `<div class="slbl">Detail</div>
+    <div style="background:var(--bg0);border:1px solid var(--line);padding:11px 13px;font-family:var(--mono);font-size:11.5px;color:var(--text);word-break:break-all;line-height:1.6;margin-bottom:13px;border-radius:2px">${esc(detail)}</div>` : ''}
+    <div class="slbl">Full Payload</div>
+    <pre style="background:var(--bg0);border:1px solid var(--line);padding:11px 13px;font-family:var(--mono);font-size:9.5px;color:var(--body);word-break:break-all;line-height:1.6;border-radius:2px;overflow-x:auto;white-space:pre-wrap;max-height:320px;overflow-y:auto">${esc(JSON.stringify(p, null, 2))}</pre>
+  `);
+}
 
 // ─── init & refresh ───────────────────────────────────
 async function refresh(){

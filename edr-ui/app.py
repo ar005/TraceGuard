@@ -1,5 +1,5 @@
 """
-TraceGuard Web UI
+ Web UI
 Run:  pip install flask requests && python app.py
 Open: http://localhost:5000
 Env:  EDR_BACKEND=http://localhost:8080  (default)
@@ -67,6 +67,6 @@ def rule(rid):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    print(f"\n  TraceGuard UI  →  http://localhost:{port}")
+    print(f"\n  OEDR UI  →  http://localhost:{port}")
     print(f"  Proxying to      →  {BACKEND}\n")
     app.run(host="0.0.0.0", port=port, debug=True)
