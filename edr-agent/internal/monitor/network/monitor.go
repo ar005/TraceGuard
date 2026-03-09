@@ -826,6 +826,14 @@ func (m *Monitor) parseProcNetTCP(path string, isV6 bool) {
 			tags = append(tags, "external")
 		}
 
+		// Try to attribute this connection to a process via inode→PID lookup.
+		inode := fields[9]
+		procPID, procComm := resolveInodeToProc(inode)
+		var procCtx types.ProcessContext
+		if procPID != 0 {
+			procCtx = buildProcContext(procPID, 0, 0, procComm)
+		}
+
 		ev := &types.NetworkEvent{
 			BaseEvent: types.BaseEvent{
 				ID:        utils.NewEventID(),
@@ -834,6 +842,7 @@ func (m *Monitor) parseProcNetTCP(path string, isV6 bool) {
 				AgentID:   m.bus.AgentID(),
 				Hostname:  m.bus.Hostname(),
 				Severity:  types.SeverityInfo,
+				Process:   procCtx,
 				Tags:      tags,
 			},
 			SrcIP:     srcIP,

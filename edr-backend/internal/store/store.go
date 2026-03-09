@@ -122,6 +122,8 @@ type QueryEventsParams struct {
 	Since      *time.Time
 	Until      *time.Time
 	Search     string // full-text search in payload
+	PID        string // filter by payload process.pid — for process tree lookup
+	Hostname   string // filter by hostname column
 	Limit      int
 	Offset     int
 }
@@ -158,6 +160,18 @@ func (s *Store) QueryEvents(ctx context.Context, p QueryEventsParams) ([]models.
 	if p.Search != "" {
 		query += fmt.Sprintf(` AND payload::text ILIKE $%d`, argN)
 		args = append(args, "%"+p.Search+"%")
+		argN++
+	}
+	// Filter by process PID — used for process tree correlation in the UI.
+	// Matches payload->>'process' JSONB field containing "pid":<value>.
+	if p.PID != "" {
+		query += fmt.Sprintf(` AND payload::text ILIKE $%d`, argN)
+		args = append(args, `%"pid":`+p.PID+`%`)
+		argN++
+	}
+	if p.Hostname != "" {
+		query += fmt.Sprintf(` AND hostname = $%d`, argN)
+		args = append(args, p.Hostname)
 		argN++
 	}
 

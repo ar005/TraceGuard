@@ -1,5 +1,5 @@
 """
- Web UI
+OEDR Web UI
 Run:  pip install flask requests && python app.py
 Open: http://localhost:5000
 Env:  EDR_BACKEND=http://localhost:8080  (default)

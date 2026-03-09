@@ -101,17 +101,38 @@ type BaseEvent struct {
 
 // ─── Process Events ───────────────────────────────────────────────────────────
 
+// SocketInfo is a snapshot of one open socket from /proc/<pid>/fd at exec time.
+type SocketInfo struct {
+	SrcIP    string `json:"src_ip"`
+	SrcPort  uint16 `json:"src_port"`
+	DstIP    string `json:"dst_ip"`
+	DstPort  uint16 `json:"dst_port"`
+	Protocol string `json:"protocol"` // "TCP" | "UDP"
+	State    string `json:"state"`    // "ESTABLISHED" | "TIME_WAIT" | etc.
+}
+
+// NetworkTarget is a host/IP extracted from a process's command-line arguments.
+type NetworkTarget struct {
+	Raw      string `json:"raw"`             // original arg (URL or bare host)
+	Host     string `json:"host"`            // extracted hostname / IP
+	Port     uint16 `json:"port,omitempty"`  // extracted port (0 = unknown/default)
+	Scheme   string `json:"scheme,omitempty"`// "http", "https", "ftp", etc.
+}
+
 type ProcessExecEvent struct {
 	BaseEvent
-	ParentProcess ProcessContext `json:"parent_process"`
-	ExeHash       string         `json:"exe_hash"`       // SHA256 of the binary
-	ExeSize       int64          `json:"exe_size"`
-	Signed        bool           `json:"signed"`         // has valid signature (future)
-	Interpreter   string         `json:"interpreter,omitempty"` // e.g. /usr/bin/python3
-	ScriptPath    string         `json:"script_path,omitempty"` // for interpreted scripts
-	IsMemFD       bool           `json:"is_memfd"`       // exec from memfd (fileless)
-	IsDynamic     bool           `json:"is_dynamic"`     // dynamically linked
-	Ancestry      []ProcessContext `json:"ancestry,omitempty"` // grandparent chain up to 5 levels
+	ParentProcess  ProcessContext  `json:"parent_process"`
+	ExeHash        string          `json:"exe_hash"`        // SHA256 of the binary
+	ExeSize        int64           `json:"exe_size"`
+	Signed         bool            `json:"signed"`          // has valid signature (future)
+	Interpreter    string          `json:"interpreter,omitempty"`
+	ScriptPath     string          `json:"script_path,omitempty"`
+	IsMemFD        bool            `json:"is_memfd"`
+	IsDynamic      bool            `json:"is_dynamic"`
+	Ancestry       []ProcessContext `json:"ancestry,omitempty"`
+	// Network enrichment — populated at exec time from /proc/<pid>/fd + cmdline parsing.
+	OpenSockets    []SocketInfo    `json:"open_sockets,omitempty"`
+	NetworkTargets []NetworkTarget `json:"network_targets,omitempty"`
 }
 
 type ProcessExitEvent struct {
