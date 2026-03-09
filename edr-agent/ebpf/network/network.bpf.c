@@ -252,9 +252,15 @@ int BPF_PROG(fentry_tcp_connect, struct sock *sk)
 
 // ─── fexit/inet_csk_accept ────────────────────────────────────────────────────
 
+// inet_csk_accept signature changed across kernel versions:
+//   < 5.13:  (struct sock *sk, int flags, int *err, bool kern) → ret
+//   >= 5.13: (struct sock *sk, int flags, int *err)            → ret
+// The 'bool kern' argument was removed in commit 3f66b083c5b7.
+// We omit it here to support kernels >= 5.13.  On older kernels this
+// fexit will fail to load and the Go monitor falls back to kretprobe.
 SEC("fexit/inet_csk_accept")
 int BPF_PROG(fexit_inet_csk_accept,
-             struct sock *sk, int flags, int *err, bool kern,
+             struct sock *sk, int flags, int *err,
              struct sock *ret)
 {
     if (!ret) return 0;
