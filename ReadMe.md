@@ -72,24 +72,19 @@ The command monitor has 38 hardcoded regex patterns that run client-side in the 
 **Prerequisites:** Docker, Go 1.21+, Python 3.9+, Linux kernel 5.8+ (for the agent)
 
 ```bash
-# 1. Extract all three components
-python3 setup_edr_backend.py
-python3 setup_edr_agent.py
-python3 setup_edr_ui.py
-
-# 2. Start backend + PostgreSQL
+# 1. Start backend + PostgreSQL
 cd edr-backend
 make docker-up
 # Backend REST API → http://localhost:8080
 # gRPC ingest     → localhost:50051
 
-# 3. Build and run the agent (needs root for eBPF)
+# 2. Build and run the agent (needs root for eBPF)
 cd edr-agent
 make all
 sudo ./edr-agent
 # With a config file: sudo ./edr-agent --config config/agent.yaml
 
-# 4. Start the web UI
+# 3. Start the web UI
 cd edr-ui
 pip install flask requests
 python app.py
