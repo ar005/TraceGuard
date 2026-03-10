@@ -110,7 +110,8 @@ func New(cfg *config.Config) (*Agent, error) {
 	}
 	if cfg.Monitors.File.Enabled {
 		a.fileMonitor = file.New(file.Config{
-			WatchPaths: cfg.Monitors.File.WatchPaths,
+			WatchPaths:  cfg.Monitors.File.WatchPaths,
+			HashOnWrite: cfg.Monitors.File.HashOnWrite,
 		}, bus, log)
 	}
 	if cfg.Monitors.Registry.Enabled {
