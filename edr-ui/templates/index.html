@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>TraceGuard EDR</title>
+<title>TraceGUARD EDR</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root{
@@ -398,9 +398,26 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
         <button class="pill" onclick="fEvents('NET_CONNECT',this)">Network</button>
         <button class="pill" onclick="fEvents('FILE_WRITE',this)">File</button>
       </div>
+      <button class="btn" onclick="importLogs()" title="Import events from JSON file" style="padding:5px 11px;font-size:10px">⬆ IMPORT</button>
+      <button class="btn pri" onclick="exportLogs()" title="Export current view to JSON/CSV" style="padding:5px 11px;font-size:10px">⬇ EXPORT</button>
     </div>
   </div>
+  <!-- Hidden import file input -->
+  <input type="file" id="ev-import-file" accept=".json,.ndjson,.jsonl" style="display:none" onchange="handleImportFile(this)">
+  <div id="ev-import-banner" style="display:none;background:rgba(0,220,180,.07);border:1px solid rgba(0,220,180,.2);padding:10px 14px;border-radius:2px;margin-bottom:10px;font-family:var(--mono);font-size:9px;color:var(--cyan)"></div>
   <div class="card">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px 0;gap:8px;flex-wrap:wrap">
+      <div id="ev-count" style="font-family:var(--mono);font-size:9px;color:var(--muted)"></div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <input id="ev-search" class="form-input" placeholder="filter…" style="width:160px;padding:4px 8px;font-size:10px"
+          oninput="filterEventsTable(this.value)">
+        <select id="ev-export-fmt" class="form-select" style="padding:4px 8px;font-size:10px;width:80px">
+          <option value="json">JSON</option>
+          <option value="csv">CSV</option>
+          <option value="ndjson">NDJSON</option>
+        </select>
+      </div>
+    </div>
     <div class="tw"><table>
       <thead><tr><th>Time</th><th>Type</th><th>Host</th><th>Detail</th><th>Severity</th></tr></thead>
       <tbody id="ev-tbody"><tr><td colspan="5" class="st-row st-load">LOADING</td></tr></tbody>
@@ -937,28 +954,141 @@ async function loadCmd(){
 function fCmd(f,el){_cmdFilter=f;document.querySelectorAll('#cmd-pills .pill').forEach(p=>p.classList.remove('on'));el.classList.add('on');loadCmd();}
 
 // ─── events ──────────────────────────────────────────
+let _eventsData = []; // store loaded events for export
+
 async function loadEvents(){
   const tb=$('ev-tbody');
   tb.innerHTML='<tr><td colspan="5" class="st-row st-load">LOADING</td></tr>';
   try{
-    const p=_evtFilter?`?event_type=${_evtFilter}&limit=200`:'?limit=200';
+    const p=_evtFilter?`?event_type=${_evtFilter}&limit=500`:'?limit=500';
     const d=await api('/api/events'+p);
-    const ev=d.events||[];
-    tb.innerHTML=ev.length
-      ?ev.map(e=>{
-          const py=e.payload||{};
-          const det=py.cmdline||py.filename||py.path||py.dest_ip||(py.process&&py.process.comm)||py.comm||JSON.stringify(py).slice(0,80);
-          return `<tr style="cursor:pointer" onclick='openEventDrawer(${JSON.stringify(JSON.stringify(e))})'>
-            <td class="mono dim">${ts(e.timestamp)}</td><td>${evtTag(e.event_type)}</td>
-            <td class="mono">${esc(e.hostname||'–')}</td>
-            <td class="mono dim trunc">${esc(det||'–')}</td>
-            <td>${e.severity?sev(e.severity):'<span class="dim">–</span>'}</td>
-          </tr>`;
-        }).join('')
-      :'<tr><td colspan="5" class="st-row">NO EVENTS</td></tr>';
+    _eventsData=d.events||[];
+    renderEventsTable(_eventsData);
+    const countEl=$('ev-count');
+    if(countEl) countEl.textContent=`${_eventsData.length} events`;
   }catch(e){$('ev-tbody').innerHTML=`<tr><td colspan="5" class="st-row st-err">ERROR: ${esc(e.message)}</td></tr>`;}
 }
+
+function renderEventsTable(ev){
+  const tb=$('ev-tbody');
+  tb.innerHTML=ev.length
+    ?ev.map(e=>{
+        const py=e.payload||{};
+        const det=py.cmdline||py.filename||py.path||py.dest_ip||(py.process&&py.process.comm)||py.comm||JSON.stringify(py).slice(0,80);
+        return `<tr style="cursor:pointer" onclick='openEventDrawer(${JSON.stringify(JSON.stringify(e))})'>
+          <td class="mono dim">${ts(e.timestamp)}</td><td>${evtTag(e.event_type)}</td>
+          <td class="mono">${esc(e.hostname||'–')}</td>
+          <td class="mono dim trunc">${esc(det||'–')}</td>
+          <td>${e.severity?sev(e.severity):'<span class="dim">–</span>'}</td>
+        </tr>`;
+      }).join('')
+    :'<tr><td colspan="5" class="st-row">NO EVENTS</td></tr>';
+}
+
+function filterEventsTable(q){
+  if(!q.trim()){renderEventsTable(_eventsData);return;}
+  const lq=q.toLowerCase();
+  const filtered=_eventsData.filter(e=>{
+    const py=e.payload||{};
+    const text=JSON.stringify(e).toLowerCase();
+    return text.includes(lq);
+  });
+  renderEventsTable(filtered);
+  const countEl=$('ev-count');
+  if(countEl) countEl.textContent=`${filtered.length} / ${_eventsData.length} events`;
+}
+
 function fEvents(f,el){_evtFilter=f;document.querySelectorAll('#ev-pills .pill').forEach(p=>p.classList.remove('on'));el.classList.add('on');loadEvents();}
+
+// ─── Log Export ──────────────────────────────────────────────────────────────
+function exportLogs(){
+  if(!_eventsData.length){toast('No events loaded to export',false);return;}
+  const fmt=$('ev-export-fmt')?.value||'json';
+  let content, mime, ext;
+
+  if(fmt==='csv'){
+    const header=['id','timestamp','event_type','hostname','severity','agent_id','detail'];
+    const rows=_eventsData.map(e=>{
+      const py=e.payload||{};
+      const det=(py.cmdline||py.path||py.dst_ip||(py.process&&py.process.comm)||'').replace(/,/g,' ');
+      return [e.id,e.timestamp,e.event_type,e.hostname,e.severity||0,e.agent_id,det]
+        .map(v=>`"${String(v??'').replace(/"/g,'""')}"`).join(',');
+    });
+    content=[header.join(','),...rows].join('\\n');
+    mime='text/csv'; ext='csv';
+  } else if(fmt==='ndjson'){
+    content=_eventsData.map(e=>JSON.stringify(e)).join('\\n');
+    mime='application/x-ndjson'; ext='ndjson';
+  } else {
+    content=JSON.stringify({exported_at:new Date().toISOString(),total:_eventsData.length,events:_eventsData},null,2);
+    mime='application/json'; ext='json';
+  }
+
+  const ts2=new Date().toISOString().slice(0,19).replace(/:/g,'-');
+  const fname=`edr-events-${ts2}.${ext}`;
+  const blob=new Blob([content],{type:mime});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=fname;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast(`Exported ${_eventsData.length} events as ${fname}`);
+}
+
+// ─── Log Import ──────────────────────────────────────────────────────────────
+function importLogs(){
+  $('ev-import-file').click();
+}
+
+async function handleImportFile(input){
+  const file=input.files[0];
+  if(!file) return;
+  const banner=$('ev-import-banner');
+  banner.style.display='block';
+  banner.textContent='Reading file…';
+
+  try{
+    const text=await file.text();
+    let importedEvents=[];
+
+    if(file.name.endsWith('.csv')){
+      // Parse CSV: skip header, map columns
+      const lines=text.split('\n').filter(l=>l.trim());
+      const header=lines[0].split(',').map(h=>h.replace(/^"|"$/g,''));
+      importedEvents=lines.slice(1).map(line=>{
+        const vals=line.match(/("(?:[^"]|"")*"|[^,]*)/g)||[];
+        const obj={};
+        header.forEach((h,i)=>{ obj[h]=(vals[i]||'').replace(/^"|"$/g,'').replace(/""/g,'"'); });
+        return {id:obj.id,timestamp:obj.timestamp,event_type:obj.event_type,
+                hostname:obj.hostname,severity:parseInt(obj.severity)||0,
+                agent_id:obj.agent_id,payload:{cmdline:obj.detail},_imported:true};
+      });
+    } else if(file.name.endsWith('.ndjson')||file.name.endsWith('.jsonl')){
+      events=text.split('\n').filter(l=>l.trim()).map(l=>{
+        try{return {...JSON.parse(l),_imported:true};}catch{return null;}
+      }).filter(Boolean);
+    } else {
+      // JSON array or {events:[...]} wrapper
+      const parsed=JSON.parse(text);
+      importedEvents=(Array.isArray(parsed)?parsed:(parsed.events||[])).map(e=>({...e,_imported:true}));
+    }
+
+    if(!importedEvents.length){banner.textContent='⚠ No events found in file';return;}
+
+    // Merge with current data, dedup by id, sort by timestamp
+    const seen=new Set(_eventsData.map(e=>e.id));
+    const newEvents=importedEvents.filter(e=>!seen.has(e.id));
+    _eventsData=[..._eventsData,...newEvents].sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp));
+    renderEventsTable(_eventsData);
+    const countEl=$('ev-count');
+    if(countEl) countEl.textContent=`${_eventsData.length} events (${newEvents.length} imported)`;
+    banner.innerHTML=`✓ Imported <b>${newEvents.length}</b> new events from <b>${esc(file.name)}</b> · ${importedEvents.length-newEvents.length} duplicates skipped
+      <button onclick="$('ev-import-banner').style.display='none'" style="margin-left:10px;background:none;border:none;color:var(--cyan);cursor:pointer;font-family:var(--mono);font-size:9px">✕ dismiss</button>`;
+  }catch(err){
+    banner.textContent=`⚠ Import failed: ${err.message}`;
+  }
+  input.value=''; // reset so same file can be re-imported
+}
 
 // ─── agents ──────────────────────────────────────────
 async function loadAgents(){
@@ -1468,26 +1598,89 @@ function closeDrawer(){$('ov').classList.remove('open');$('drawer').classList.re
 function dr(k,v){return `<div class="dr"><div class="dk">${k}</div><div class="dv">${v}</div></div>`;}
 
 function openAlert(js){
-  const a=JSON.parse(js);
-  openDrawer('ALERT DETAIL',`
+  const a = JSON.parse(js);
+  // Render shell immediately, then load events async
+  const html = buildAlertDrawerHTML(a, null);
+  openDrawer('ALERT  ' + (a.rule_name||'–'), html);
+  loadAlertEvents(a);
+}
+
+function buildAlertDrawerHTML(a, events) {
+  const eventCount = events === null ? '…' : events.length;
+  return `
     <div class="dg">
-      ${dr('SEVERITY',sev(a.severity))}${dr('STATUS',stb(a.status))}
-      ${dr('HOSTNAME',`<span class="mono">${esc(a.hostname||'–')}</span>`)}
-      ${dr('RULE',`<span class="mono" style="font-size:9.5px">${esc(a.rule_name||'–')}</span>`)}
-      ${dr('FIRST SEEN',`<span class="mono">${ts(a.first_seen)}</span>`)}
-      ${dr('LAST SEEN',`<span class="mono">${ts(a.last_seen)}</span>`)}
-      ${dr('ASSIGNEE',esc(a.assignee||'UNASSIGNED'))}
-      ${dr('ID',`<span class="mono" style="font-size:8.5px;word-break:break-all">${esc(a.id||'–')}</span>`)}
+      ${dr('SEVERITY', sev(a.severity))}
+      ${dr('STATUS',   stb(a.status))}
+      ${dr('HOST',     `<span class="mono">${esc(a.hostname||'–')}</span>`)}
+      ${dr('RULE',     `<span class="mono" style="font-size:9px;word-break:break-all">${esc(a.rule_name||'–')}</span>`)}
+      ${dr('FIRST',    `<span class="mono">${ts(a.first_seen)}</span>`)}
+      ${dr('LAST',     `<span class="mono">${ts(a.last_seen)}</span>`)}
+      ${dr('EVENTS',   `<span class="mono" style="color:var(--cyan)">${eventCount}</span>`)}
+      ${dr('ASSIGNEE', esc(a.assignee||'UNASSIGNED'))}
     </div>
-    ${a.description?`<div class="slbl">Description</div><div class="desc">${esc(a.description)}</div>`:''}
-    ${a.mitre_ids?.length?`<div class="slbl">MITRE</div><div style="margin-bottom:13px">${mitres(a.mitre_ids)}</div>`:''}
+
+    ${a.description ? `<div class="slbl">Description</div><div class="desc" style="margin-bottom:13px">${esc(a.description)}</div>` : ''}
+    ${a.mitre_ids?.length ? `<div class="slbl">MITRE ATT&CK</div><div style="margin-bottom:13px;display:flex;flex-wrap:wrap;gap:4px">${mitres(a.mitre_ids)}</div>` : ''}
+
+    <div class="slbl" style="color:var(--orange)">⬡ Triggering Events
+      <span style="font-size:8px;color:var(--muted);font-weight:400" id="al-ev-count">${events===null?'loading…':eventCount+' event'+(eventCount!==1?'s':'')}</span>
+    </div>
+    <div id="al-ev-list" style="margin-bottom:13px">
+      ${events===null
+        ? '<div style="font-family:var(--mono);font-size:9px;color:var(--muted);padding:8px 0"><span style="opacity:.5">loading…</span></div>'
+        : renderAlertEventList(events)}
+    </div>
+
+    <div class="slbl">Alert ID</div>
+    <div style="font-family:var(--mono);font-size:8.5px;color:var(--dim);word-break:break-all;padding:4px 0;margin-bottom:13px;user-select:all">${esc(a.id||'–')}</div>
+
     <div class="slbl">Update Status</div>
     <select class="status-sel" onchange="updAlertDrawer('${esc(a.id)}',this.value)">
       <option value="">— select —</option>
       <option value="OPEN"${a.status==='OPEN'?' selected':''}>OPEN</option>
       <option value="INVESTIGATING"${a.status==='INVESTIGATING'?' selected':''}>INVESTIGATING</option>
       <option value="RESOLVED"${a.status==='RESOLVED'?' selected':''}>RESOLVED</option>
-    </select>`);
+    </select>`;
+}
+
+function renderAlertEventList(events) {
+  if (!events.length) return '<div style="font-family:var(--mono);font-size:9px;color:var(--muted);padding:6px 0;opacity:.5">No events found for this alert</div>';
+  return `<div style="border:1px solid rgba(255,160,50,.2);border-radius:2px;overflow:hidden">
+    ${events.map(ev => {
+      const py = ev.payload || {};
+      const proc = py.process || {};
+      const detail = py.cmdline || py.path
+        || (py.dst_ip ? `${py.dst_ip}:${py.dst_port||'?'}` : '')
+        || proc.exe_path || proc.comm || py.comm || '';
+      const col = {
+        NET_CONNECT:'var(--orange)', PROCESS_EXEC:'var(--cyan)',
+        CMD_EXEC:'var(--cyan2)', FILE_WRITE:'var(--amber)',
+        FILE_CREATE:'var(--green)',
+      }[ev.event_type] || 'var(--body)';
+      return `<div style="display:flex;gap:8px;align-items:flex-start;padding:7px 10px;background:var(--bg0);border-bottom:1px solid var(--line);cursor:pointer;font-family:var(--mono);font-size:9px"
+        onclick='closeDrawer();setTimeout(()=>openEventDrawer(${JSON.stringify(JSON.stringify(ev))}),120)'>
+        <span style="color:var(--muted);white-space:nowrap;min-width:52px">${new Date(ev.timestamp).toISOString().slice(11,19)}</span>
+        <span style="padding:1px 5px;border:1px solid ${col};color:${col};border-radius:2px;font-size:8px;white-space:nowrap">${ev.event_type}</span>
+        <span style="color:var(--body);flex:1;word-break:break-all">${esc(detail||ev.id||'–')}</span>
+        <span style="color:var(--muted);font-size:8px;white-space:nowrap">${esc(ev.hostname||'')}</span>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+async function loadAlertEvents(a) {
+  try {
+    const data = await api(`/api/alerts/${a.id}/events`);
+    const events = (data.events || []).sort((x,y) => new Date(x.timestamp)-new Date(y.timestamp));
+    const listEl = document.getElementById('al-ev-list');
+    const countEl = document.getElementById('al-ev-count');
+    if (!listEl) return; // drawer was closed
+    listEl.innerHTML = renderAlertEventList(events);
+    if (countEl) countEl.textContent = `${events.length} event${events.length!==1?'s':''}`;
+  } catch(err) {
+    const el = document.getElementById('al-ev-list');
+    if (el) el.innerHTML = `<div style="font-family:var(--mono);font-size:9px;color:var(--red);opacity:.7">Error loading events: ${esc(err.message)}</div>`;
+  }
 }
 
 async function updAlertDrawer(id,status){
@@ -1602,6 +1795,49 @@ async function runSearch() {
   $('srch-result-count').textContent = '';
 
   try {
+    // ── Special case: exact alert ID search ──────────────────────────────────
+    // If the query matches an alert ID pattern, fetch that alert + its events directly.
+    if (q && (q.startsWith('alert-') || q.match(/^[0-9a-f-]{36}$/i))) {
+      try {
+        const alertData = await api(`/api/alerts/${encodeURIComponent(q)}`);
+        if (alertData && alertData.id) {
+          const evData = await api(`/api/alerts/${alertData.id}/events`);
+          const events = (evData.events || []).sort((a,b)=>new Date(a.timestamp)-new Date(b.timestamp));
+          $('srch-result-title').textContent = 'ALERT EVENTS';
+          $('srch-result-count').textContent = `Alert: ${alertData.rule_name||alertData.title||alertData.id} · ${events.length} event${events.length!==1?'s':''}`;
+          if (!events.length) {
+            wrap.innerHTML = `<div class="st-row">Alert found but no associated events recorded yet</div>`;
+          } else {
+            wrap.innerHTML = `
+              <div style="background:rgba(144,96,240,.07);border:1px solid rgba(144,96,240,.2);padding:9px 12px;border-radius:2px;margin-bottom:10px;display:flex;align-items:center;gap:10px;cursor:pointer"
+                onclick='openAlert(${JSON.stringify(JSON.stringify(alertData))})'>
+                <span style="font-family:var(--mono);font-size:8px;padding:2px 7px;border:1px solid rgba(144,96,240,.4);color:var(--violet);border-radius:2px">ALERT</span>
+                ${sev(alertData.severity)}
+                ${stb(alertData.status)}
+                <b style="font-size:12px">${esc(alertData.rule_name||alertData.title||'–')}</b>
+                <span class="dim mono" style="font-size:9px;margin-left:auto">${esc(alertData.hostname||'')}</span>
+              </div>
+              ${events.map(ev => {
+                const py = ev.payload||{};
+                const proc = py.process||{};
+                const detail = py.cmdline||py.path||(py.dst_ip?`${py.dst_ip}:${py.dst_port||'?'}`:'')
+                  ||proc.exe_path||proc.comm||'';
+                return `<div class="cmd-row" style="cursor:pointer" onclick='openEventDrawer(${JSON.stringify(JSON.stringify(ev))})'>
+                  <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+                    ${evtTag(ev.event_type)}
+                    ${ev.severity ? sev(ev.severity) : ''}
+                    <span class="mono dim" style="font-size:9px">${ts(ev.timestamp)}</span>
+                    <span class="mono" style="font-size:9px;color:var(--body)">${esc(ev.hostname||'')}</span>
+                  </div>
+                  <div class="mono" style="font-size:11px;color:var(--text);word-break:break-all">${esc(detail||JSON.stringify(py).slice(0,100))}</div>
+                </div>`;
+              }).join('')}`;
+          }
+          return;
+        }
+      } catch(e) { /* not an alert ID — fall through to normal search */ }
+    }
+
     const results = [];
 
     // Build event query

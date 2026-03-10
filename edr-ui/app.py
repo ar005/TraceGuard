@@ -51,6 +51,12 @@ def alert(aid):
     return proxy(f"/api/v1/alerts/{aid}", request.method,
                  request.get_json() if request.method=="PATCH" else None)
 
+@app.route("/api/alerts/<aid>/events")
+def alert_events(aid): return proxy(f"/api/v1/alerts/{aid}/events")
+
+@app.route("/api/events/<eid>")
+def event(eid): return proxy(f"/api/v1/events/{eid}")
+
 @app.route("/api/rules", methods=["GET","POST"])
 def rules():
     if request.method == "POST":

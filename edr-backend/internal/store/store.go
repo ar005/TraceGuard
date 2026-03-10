@@ -124,6 +124,8 @@ type QueryEventsParams struct {
 	Search     string // full-text search in payload
 	PID        string // filter by payload process.pid — for process tree lookup
 	Hostname   string // filter by hostname column
+	AlertID    string // filter by alert_id column (events that triggered an alert)
+	EventIDs   []string // fetch specific event IDs (from alert.event_ids)
 	Limit      int
 	Offset     int
 }
@@ -172,6 +174,16 @@ func (s *Store) QueryEvents(ctx context.Context, p QueryEventsParams) ([]models.
 	if p.Hostname != "" {
 		query += fmt.Sprintf(` AND hostname = $%d`, argN)
 		args = append(args, p.Hostname)
+		argN++
+	}
+	if p.AlertID != "" {
+		query += fmt.Sprintf(` AND alert_id = $%d`, argN)
+		args = append(args, p.AlertID)
+		argN++
+	}
+	if len(p.EventIDs) > 0 {
+		query += fmt.Sprintf(` AND id = ANY($%d)`, argN)
+		args = append(args, pq.Array(p.EventIDs))
 		argN++
 	}
 
@@ -267,6 +279,54 @@ func (s *Store) GetAlert(ctx context.Context, id string) (*models.Alert, error) 
 	var a models.Alert
 	err := s.db.GetContext(ctx, &a, `SELECT * FROM alerts WHERE id=$1`, id)
 	return &a, err
+}
+
+// GetAlertEvents returns all events associated with an alert.
+// It queries by both alert_id column and the alert's event_ids array,
+// deduplicating by event ID.
+func (s *Store) GetAlertEvents(ctx context.Context, alertID string) ([]models.Event, error) {
+	// First get the alert to retrieve its event_ids list.
+	alert, err := s.GetAlert(ctx, alertID)
+	if err != nil {
+		return nil, fmt.Errorf("get alert: %w", err)
+	}
+
+	// Query by alert_id column (events tagged during ingest) UNION
+	// query by explicit event_ids array (events captured at detection time).
+	eventIDs := []string(alert.EventIDs)
+	if len(eventIDs) == 0 {
+		// Fall back to alert_id column only
+		var events []models.Event
+		err = s.db.SelectContext(ctx, &events,
+			`SELECT * FROM events WHERE alert_id=$1 ORDER BY timestamp DESC LIMIT 500`,
+			alertID)
+		return events, err
+	}
+
+	// Fetch by event IDs first (exact match), then also by alert_id, union them.
+	var byID, byAlertID []models.Event
+	if err2 := s.db.SelectContext(ctx, &byID,
+		`SELECT * FROM events WHERE id = ANY($1) ORDER BY timestamp DESC`,
+		pq.Array(eventIDs)); err2 != nil {
+		return nil, err2
+	}
+	if err2 := s.db.SelectContext(ctx, &byAlertID,
+		`SELECT * FROM events WHERE alert_id=$1 ORDER BY timestamp DESC LIMIT 500`,
+		alertID); err2 != nil {
+		return nil, err2
+	}
+
+	// Merge and deduplicate.
+	seen := make(map[string]bool)
+	all := append(byID, byAlertID...)
+	result := make([]models.Event, 0, len(all))
+	for _, ev := range all {
+		if !seen[ev.ID] {
+			seen[ev.ID] = true
+			result = append(result, ev)
+		}
+	}
+	return result, nil
 }
 
 func (s *Store) UpdateAlertStatus(ctx context.Context, id, status, assignee, notes string) error {

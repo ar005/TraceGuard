@@ -69,9 +69,10 @@ func (s *Server) registerRoutes() {
 		v1.GET("/events/:id", s.handleGetEvent)
 
 		// ── Alerts ─────────────────────────────────────────────────────────
-		v1.GET("/alerts",           s.handleListAlerts)
-		v1.GET("/alerts/:id",       s.handleGetAlert)
-		v1.PATCH("/alerts/:id",     s.handleUpdateAlert)
+		v1.GET("/alerts",               s.handleListAlerts)
+		v1.GET("/alerts/:id",           s.handleGetAlert)
+		v1.GET("/alerts/:id/events",    s.handleGetAlertEvents)
+		v1.PATCH("/alerts/:id",         s.handleUpdateAlert)
 
 		// ── Rules ──────────────────────────────────────────────────────────
 		v1.GET("/rules",        s.handleListRules)
@@ -226,6 +227,10 @@ func (s *Server) handleListEvents(c *gin.Context) {
 	if hn := c.Query("hostname"); hn != "" {
 		p.Hostname = hn
 	}
+	// Alert correlation — fetch events that belong to a specific alert.
+	if aid := c.Query("alert_id"); aid != "" {
+		p.AlertID = aid
+	}
 
 	events, err := s.store.QueryEvents(c.Request.Context(), p)
 	if err != nil {
@@ -295,6 +300,15 @@ func (s *Server) handleUpdateAlert(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (s *Server) handleGetAlertEvents(c *gin.Context) {
+	events, err := s.store.GetAlertEvents(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"events": events, "total": len(events)})
 }
 
 // ─── Rules ────────────────────────────────────────────────────────────────────
