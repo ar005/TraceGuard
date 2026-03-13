@@ -35,6 +35,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
@@ -113,28 +115,38 @@ const (
 )
 
 // ─── DNS cache ────────────────────────────────────────────────────────────────
-
-type dnsCache struct {
-	mu      sync.RWMutex
-	entries map[string]dnsCacheEntry
-	maxSize int
-}
+// Bidirectional: IP→domain (reverse / PTR) and domain→[]IP (forward / snooped).
+// The snooper populates the forward map from actual DNS response packets so that
+// NET_CONNECT events already carry the domain name when they fire.
 
 type dnsCacheEntry struct {
 	hostname  string
 	expiresAt time.Time
 }
 
+type dnsCache struct {
+	mu      sync.RWMutex
+	maxSize int
+
+	// reverse: IP string → domain name (from PTR or snooped answer)
+	reverse map[string]dnsCacheEntry
+
+	// forward: domain → list of IP strings (from snooped A/AAAA answers)
+	forward map[string][]string
+}
+
 func newDNSCache(maxSize int) *dnsCache {
 	return &dnsCache{
-		entries: make(map[string]dnsCacheEntry, maxSize),
 		maxSize: maxSize,
+		reverse: make(map[string]dnsCacheEntry, maxSize),
+		forward: make(map[string][]string, maxSize/4),
 	}
 }
 
-func (c *dnsCache) get(ip string) string {
+// getReverse returns the domain name for an IP (empty string if unknown/expired).
+func (c *dnsCache) getReverse(ip string) string {
 	c.mu.RLock()
-	e, ok := c.entries[ip]
+	e, ok := c.reverse[ip]
 	c.mu.RUnlock()
 	if !ok || time.Now().After(e.expiresAt) {
 		return ""
@@ -142,22 +154,75 @@ func (c *dnsCache) get(ip string) string {
 	return e.hostname
 }
 
+// get is the legacy accessor kept for compatibility.
+func (c *dnsCache) get(ip string) string { return c.getReverse(ip) }
+
+// set stores IP→domain in the reverse cache.
 func (c *dnsCache) set(ip, hostname string) {
+	ttl := 10 * time.Minute
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// Simple eviction: remove one random entry when at capacity.
-	if len(c.entries) >= c.maxSize {
-		for k := range c.entries {
-			delete(c.entries, k)
+	if len(c.reverse) >= c.maxSize {
+		for k := range c.reverse {
+			delete(c.reverse, k)
 			break
 		}
 	}
-	c.entries[ip] = dnsCacheEntry{
-		hostname:  hostname,
-		expiresAt: time.Now().Add(10 * time.Minute),
+	c.reverse[ip] = dnsCacheEntry{hostname: hostname, expiresAt: time.Now().Add(ttl)}
+}
+
+// addForward stores domain→IP from a snooped DNS answer.
+// It also populates the reverse map so getReverse works immediately.
+func (c *dnsCache) addForward(domain, ip string, ttlSec uint32) {
+	if domain == "" || ip == "" {
+		return
+	}
+	ttl := time.Duration(ttlSec) * time.Second
+	if ttl < 30*time.Second {
+		ttl = 30 * time.Second
+	}
+	if ttl > 24*time.Hour {
+		ttl = 24 * time.Hour
+	}
+	exp := time.Now().Add(ttl)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Forward: domain → IPs
+	ips := c.forward[domain]
+	found := false
+	for _, existing := range ips {
+		if existing == ip {
+			found = true
+			break
+		}
+	}
+	if !found {
+		c.forward[domain] = append(ips, ip)
+	}
+
+	// Reverse: IP → domain (prefer shorter / canonical name)
+	existing, ok := c.reverse[ip]
+	if !ok || time.Now().After(existing.expiresAt) || len(domain) < len(existing.hostname) {
+		c.reverse[ip] = dnsCacheEntry{hostname: domain, expiresAt: exp}
 	}
 }
 
+// getForwardIPs returns all known IPs for a domain.
+func (c *dnsCache) getForwardIPs(domain string) []string {
+	c.mu.RLock()
+	ips := c.forward[domain]
+	c.mu.RUnlock()
+	if len(ips) == 0 {
+		return nil
+	}
+	out := make([]string, len(ips))
+	copy(out, ips)
+	return out
+}
+
+// ─── Config ────────────────────────────────────────────────────────────────────
 // ─── Config ───────────────────────────────────────────────────────────────────
 
 // Config controls network monitor behaviour.
@@ -217,8 +282,10 @@ type Monitor struct {
 	reader *ringbuf.Reader
 
 	// Async DNS resolution.
-	dns       *dnsCache
-	resolveCh chan string
+	dns          *dnsCache
+	resolveCh    chan string
+	enrichQueue  chan *types.NetworkEvent // events waiting for DNS before publish
+	resolveNotify sync.Map               // IP string → chan struct{} (closed on resolve)
 
 	// /proc/net deduplication: key → seen.
 	procNetMu   sync.Mutex
@@ -242,6 +309,7 @@ func New(cfg Config, bus events.Bus, log zerolog.Logger) *Monitor {
 		logger:      log.With().Str("monitor", "network").Logger(),
 		dns:         newDNSCache(cfg.DNSCacheSize),
 		resolveCh:   make(chan string, 2048),
+		enrichQueue: make(chan *types.NetworkEvent, 4096),
 		procNetSeen: make(map[string]bool),
 		stopCh:      make(chan struct{}),
 	}
@@ -282,6 +350,9 @@ func (m *Monitor) Start(ctx context.Context) error {
 
 	m.logger.Info().Msg("network monitor started (eBPF + /proc/net)")
 
+	// DNS snooper: parse DNS responses to populate forward cache before connections fire.
+	m.startDNSSnooper(ctx)
+
 	// Snapshot pre-existing connections before the ring buffer starts filling.
 	m.snapshotProcNet()
 
@@ -293,6 +364,11 @@ func (m *Monitor) Start(ctx context.Context) error {
 	for i := 0; i < 4; i++ {
 		m.wg.Add(1)
 		go m.resolveWorker()
+	}
+	// Enrich workers: hold events up to 150ms waiting for DNS then publish.
+	for i := 0; i < 4; i++ {
+		m.wg.Add(1)
+		go m.enrichWorker()
 	}
 
 	// /proc/net periodic poller.
@@ -307,11 +383,17 @@ func (m *Monitor) Start(ctx context.Context) error {
 func (m *Monitor) startFallbackOnly(ctx context.Context) {
 	m.logger.Info().Msg("network monitor started (/proc/net polling mode — no eBPF)")
 
+	m.startDNSSnooper(ctx)
 	m.snapshotProcNet()
 
 	for i := 0; i < 4; i++ {
 		m.wg.Add(1)
 		go m.resolveWorker()
+	}
+	// Enrich workers: hold events up to 150ms waiting for DNS then publish.
+	for i := 0; i < 4; i++ {
+		m.wg.Add(1)
+		go m.enrichWorker()
 	}
 
 	m.wg.Add(1)
@@ -473,9 +555,11 @@ func (m *Monitor) handleV4(r rawNetEventV4) error {
 	ts := utils.BootNsToTime(r.TimestampNs)
 	comm := nullStr(r.Comm[:])
 
-	// Look up cached hostname; queue async resolution if missing.
-	dstHostname := m.dns.get(dstIP)
-	if dstHostname == "" && m.cfg.ResolveHostnames && !utils.IsPrivateIPv4(dstIP) {
+	// DNS enrichment: forward lookup (from snooper) is preferred over reverse PTR.
+	resolvedDomain := m.dns.getReverse(dstIP)
+	resolvedIPs    := m.dns.getForwardIPs(resolvedDomain)
+	needResolve   := resolvedDomain == "" && m.cfg.ResolveHostnames && !utils.IsPrivateIPv4(dstIP)
+	if needResolve {
 		m.queueResolve(dstIP)
 	}
 
@@ -502,12 +586,24 @@ func (m *Monitor) handleV4(r rawNetEventV4) error {
 		State:     state,
 		BytesSent: r.BytesSent,
 		BytesRecv: r.BytesRecv,
-		DNSQuery:  dstHostname,
-		IsPrivate: utils.IsPrivateIPv4(dstIP),
+		DNSQuery:       resolvedDomain,
+		ResolvedDomain: resolvedDomain,
+		ResolvedIPs:    resolvedIPs,
+		IsPrivate:      utils.IsPrivateIPv4(dstIP),
 	}
 
-	m.bus.Publish(ev)
-	m.logEvent(ev)
+	if needResolve {
+		select {
+		case m.enrichQueue <- ev:
+			// enrichWorker will log after DNS resolves.
+		default:
+			m.bus.Publish(ev) // queue full — publish without domain
+			m.logEvent(ev)
+		}
+	} else {
+		m.bus.Publish(ev)
+		m.logEvent(ev)
+	}
 	return nil
 }
 
@@ -526,8 +622,10 @@ func (m *Monitor) handleV6(r rawNetEventV6) error {
 	ts := utils.BootNsToTime(r.TimestampNs)
 	comm := nullStr(r.Comm[:])
 
-	dstHostname := m.dns.get(dstIP)
-	if dstHostname == "" && m.cfg.ResolveHostnames {
+	resolvedDomain := m.dns.getReverse(dstIP)
+	resolvedIPs    := m.dns.getForwardIPs(resolvedDomain)
+	needResolve   := resolvedDomain == "" && m.cfg.ResolveHostnames
+	if needResolve {
 		m.queueResolve(dstIP)
 	}
 
@@ -555,12 +653,24 @@ func (m *Monitor) handleV6(r rawNetEventV6) error {
 		State:     state,
 		BytesSent: r.BytesSent,
 		BytesRecv: r.BytesRecv,
-		DNSQuery:  dstHostname,
-		IsPrivate: isPrivate,
+		DNSQuery:       resolvedDomain,
+		ResolvedDomain: resolvedDomain,
+		ResolvedIPs:    resolvedIPs,
+		IsPrivate:      isPrivate,
 	}
 
-	m.bus.Publish(ev)
-	m.logEvent(ev)
+	if needResolve {
+		select {
+		case m.enrichQueue <- ev:
+			// enrichWorker will log after DNS resolves.
+		default:
+			m.bus.Publish(ev)
+			m.logEvent(ev)
+		}
+	} else {
+		m.bus.Publish(ev)
+		m.logEvent(ev)
+	}
 	return nil
 }
 
@@ -707,6 +817,70 @@ func (m *Monitor) buildTags(dstPort uint16, direction uint8, proto types.Network
 
 // ─── Async DNS resolution ─────────────────────────────────────────────────────
 
+
+// enrichWorker drains enrichQueue: for each event without a resolved domain,
+// it registers a notify channel, waits up to 150ms for the resolveWorker to
+// populate the DNS cache, then fills in ResolvedDomain/ResolvedIPs and publishes.
+func (m *Monitor) enrichWorker() {
+	defer m.wg.Done()
+	const maxWait = 150 * time.Millisecond
+
+	for {
+		select {
+		case <-m.stopCh:
+			return
+		case ev, ok := <-m.enrichQueue:
+			if !ok {
+				return
+			}
+			ip := ev.DstIP
+
+			// Fast path: already resolved by the time we got here.
+			if name := m.dns.get(ip); name != "" && name != ip {
+				m.applyDNS(ev, ip, name)
+				m.bus.Publish(ev)
+				m.logEvent(ev)
+				continue
+			}
+
+			// Register a notify channel. If one already exists for this IP
+			// (another goroutine beat us), share it.
+			notifyCh := make(chan struct{})
+			actual, loaded := m.resolveNotify.LoadOrStore(ip, notifyCh)
+			if loaded {
+				notifyCh = actual.(chan struct{})
+			}
+
+			// Wait for resolve signal or timeout.
+			select {
+			case <-notifyCh:
+			case <-time.After(maxWait):
+			case <-m.stopCh:
+				m.bus.Publish(ev) // publish as-is on shutdown
+				continue
+			}
+
+			// Apply whatever was resolved (may still be empty on timeout).
+			if name := m.dns.get(ip); name != "" && name != ip {
+				m.applyDNS(ev, ip, name)
+			}
+			m.bus.Publish(ev)
+			m.logEvent(ev)
+		}
+	}
+}
+
+// applyDNS fills ResolvedDomain, ResolvedIPs, and DNSQuery into an event in-place.
+func (m *Monitor) applyDNS(ev *types.NetworkEvent, ip, domain string) {
+	ev.ResolvedDomain = domain
+	ev.DNSQuery       = domain
+	ips := m.dns.getForwardIPs(domain)
+	if len(ips) == 0 {
+		ips = []string{ip}
+	}
+	ev.ResolvedIPs = ips
+}
+
 func (m *Monitor) queueResolve(ip string) {
 	select {
 	case m.resolveCh <- ip:
@@ -726,18 +900,255 @@ func (m *Monitor) resolveWorker() {
 				return
 			}
 			if m.dns.get(ip) != "" {
-				continue // already resolved by another worker
+				// Already resolved (by another worker or snooper) — wake any waiters.
+				if ch, ok := m.resolveNotify.LoadAndDelete(ip); ok {
+					close(ch.(chan struct{}))
+				}
+				continue
 			}
 			hostnames, err := net.LookupAddr(ip)
 			if err != nil || len(hostnames) == 0 {
-				m.dns.set(ip, ip) // cache negative result
+				m.dns.set(ip, ip) // cache negative result — wake waiters
+				if ch, ok := m.resolveNotify.LoadAndDelete(ip); ok {
+					close(ch.(chan struct{}))
+				}
 				continue
 			}
 			// LookupAddr returns FQDNs with a trailing dot — strip it.
 			name := strings.TrimSuffix(hostnames[0], ".")
 			m.dns.set(ip, name)
+			// Store reverse so forward lookups find this IP under the domain.
+			m.dns.addForward(name, ip, 300)
+			// Wake any enrichWorker waiting on this IP.
+			if ch, ok := m.resolveNotify.LoadAndDelete(ip); ok {
+				close(ch.(chan struct{}))
+			}
+			// Emit a NET_DNS event so the backend indexes this IP→domain mapping.
+			m.emitDNSResolution(ip, name)
 		}
 	}
+}
+
+// emitDNSResolution publishes a NET_DNS event after a successful reverse PTR lookup.
+// This ensures the backend has an IP→domain record even when the DNS snooper
+// missed the original query (e.g. connection was already established at agent start).
+func (m *Monitor) emitDNSResolution(ip, domain string) {
+	allIPs := m.dns.getForwardIPs(domain)
+	if len(allIPs) == 0 {
+		allIPs = []string{ip}
+	}
+	m.bus.Publish(&types.NetworkEvent{
+		BaseEvent: types.BaseEvent{
+			ID:        utils.NewEventID(),
+			Type:      types.EventNetDNS,
+			Timestamp: time.Now(),
+			AgentID:   m.bus.AgentID(),
+			Hostname:  m.bus.Hostname(),
+			Severity:  types.SeverityInfo,
+			Tags:      []string{"dns", "ptr", "reverse-lookup"},
+		},
+		DstIP:          ip,
+		DNSQuery:       domain,
+		ResolvedDomain: domain,
+		ResolvedIPs:    allIPs,
+		IsPrivate:      utils.IsPrivateIPv4(ip),
+	})
+}
+
+// ─── DNS snooper ─────────────────────────────────────────────────────────────
+// Listens on a raw UDP socket for DNS responses (src port 53) from the system
+// resolver and parses A / AAAA records in the answer section.
+// This populates the forward cache (domain→IPs) BEFORE a TCP/UDP connection
+// fires, so NET_CONNECT events carry the domain name immediately.
+
+func (m *Monitor) startDNSSnooper(ctx context.Context) {
+	// Raw UDP socket that receives a copy of every incoming UDP packet.
+	// We filter to src_port==53 in userspace.
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_RAW, unix.IPPROTO_UDP)
+	if err != nil {
+		m.logger.Debug().Err(err).Msg("dns snooper: raw socket unavailable (need CAP_NET_RAW)")
+		return
+	}
+
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		defer unix.Close(fd)
+
+		buf := make([]byte, 4096)
+		for {
+			select {
+			case <-m.stopCh:
+				return
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			// Set a short read deadline via SO_RCVTIMEO so we can check stopCh.
+			tv := unix.Timeval{Sec: 0, Usec: 100_000} // 100ms
+			_ = unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &tv)
+
+			n, _, err := unix.Recvfrom(fd, buf, 0)
+			if err != nil {
+				continue
+			}
+			if n < 28 { // 20-byte IP header + 8-byte UDP header + min DNS
+				continue
+			}
+
+			// Parse IP header to find UDP payload.
+			ipHdrLen := int(buf[0]&0x0f) * 4
+			if n < ipHdrLen+8 {
+				continue
+			}
+
+			// Check src port == 53 (DNS response).
+			srcPort := binary.BigEndian.Uint16(buf[ipHdrLen:])
+			if srcPort != 53 {
+				continue
+			}
+
+			udpPayload := buf[ipHdrLen+8 : n]
+			m.parseDNSResponse(udpPayload)
+		}
+	}()
+}
+
+// parseDNSResponse parses a DNS wire-format response and extracts A/AAAA answers.
+func (m *Monitor) parseDNSResponse(pkt []byte) {
+	if len(pkt) < 12 {
+		return
+	}
+	// Header: ID(2) FLAGS(2) QDCOUNT(2) ANCOUNT(2) NSCOUNT(2) ARCOUNT(2)
+	flags := binary.BigEndian.Uint16(pkt[2:])
+	// QR bit (bit 15) must be 1 (response), RCODE (bits 0-3) must be 0 (no error).
+	if flags>>15 != 1 || flags&0x0f != 0 {
+		return
+	}
+	anCount := int(binary.BigEndian.Uint16(pkt[6:]))
+	if anCount == 0 {
+		return
+	}
+
+	offset := 12 // start of question section
+
+	// Skip question section: read QDCOUNT questions.
+	qdCount := int(binary.BigEndian.Uint16(pkt[4:]))
+	for i := 0; i < qdCount; i++ {
+		_, n := dnsReadName(pkt, offset)
+		if n < 0 {
+			return
+		}
+		offset = n + 4 // skip QTYPE(2) + QCLASS(2)
+		if offset > len(pkt) {
+			return
+		}
+	}
+
+	// Parse answer records.
+	for i := 0; i < anCount; i++ {
+		if offset >= len(pkt) {
+			return
+		}
+		name, n := dnsReadName(pkt, offset)
+		if n < 0 {
+			return
+		}
+		offset = n
+		if offset+10 > len(pkt) {
+			return
+		}
+		rrType  := binary.BigEndian.Uint16(pkt[offset:])
+		// rrClass := binary.BigEndian.Uint16(pkt[offset+2:]) // always IN(1)
+		ttl     := binary.BigEndian.Uint32(pkt[offset+4:])
+		rdLen   := int(binary.BigEndian.Uint16(pkt[offset+8:]))
+		offset += 10
+		if offset+rdLen > len(pkt) {
+			return
+		}
+		rdata := pkt[offset : offset+rdLen]
+		offset += rdLen
+
+		switch rrType {
+		case 1: // A record (IPv4)
+			if rdLen == 4 {
+				ip := fmt.Sprintf("%d.%d.%d.%d", rdata[0], rdata[1], rdata[2], rdata[3])
+				m.dns.addForward(name, ip, ttl)
+				m.logger.Debug().Str("domain", name).Str("ip", ip).Uint32("ttl", ttl).Msg("dns snooper: A")
+			}
+		case 28: // AAAA record (IPv6)
+			if rdLen == 16 {
+				ip := net.IP(rdata).String()
+				m.dns.addForward(name, ip, ttl)
+				m.logger.Debug().Str("domain", name).Str("ip", ip).Uint32("ttl", ttl).Msg("dns snooper: AAAA")
+			}
+		case 5: // CNAME — follow the alias
+			cname, _ := dnsReadName(pkt, offset-rdLen)
+			if cname != "" && name != "" {
+				// Store CNAME chain: when we later see an A record for 'cname',
+				// the reverse lookup will give us 'cname', but the forward lookup
+				// for 'name' stays empty. Best effort: just log it.
+				m.logger.Debug().Str("name", name).Str("cname", cname).Msg("dns snooper: CNAME")
+			}
+		}
+	}
+}
+
+// dnsReadName decodes a DNS name (with pointer compression) starting at offset.
+// Returns the name string and the offset just after the label sequence.
+func dnsReadName(pkt []byte, offset int) (string, int) {
+	var name []byte
+	visited := 0
+	jumped := false
+	endOffset := -1
+
+	for {
+		if offset >= len(pkt) {
+			return "", -1
+		}
+		length := int(pkt[offset])
+
+		if length == 0 { // end of name
+			if !jumped {
+				endOffset = offset + 1
+			}
+			break
+		}
+
+		if length&0xc0 == 0xc0 { // pointer compression
+			if offset+1 >= len(pkt) {
+				return "", -1
+			}
+			ptr := int(binary.BigEndian.Uint16(pkt[offset:]) & 0x3fff)
+			if !jumped {
+				endOffset = offset + 2
+			}
+			jumped = true
+			offset = ptr
+			visited++
+			if visited > 32 {
+				return "", -1 // loop guard
+			}
+			continue
+		}
+
+		// Normal label
+		offset++
+		if offset+length > len(pkt) {
+			return "", -1
+		}
+		if len(name) > 0 {
+			name = append(name, '.')
+		}
+		name = append(name, pkt[offset:offset+length]...)
+		offset += length
+	}
+
+	if endOffset < 0 {
+		endOffset = offset + 1
+	}
+	return strings.ToLower(string(name)), endOffset
 }
 
 // ─── /proc/net poller ────────────────────────────────────────────────────────
@@ -834,6 +1245,13 @@ func (m *Monitor) parseProcNetTCP(path string, isV6 bool) {
 			procCtx = buildProcContext(procPID, 0, 0, procComm)
 		}
 
+		// DNS enrichment for procnet path.
+		resolvedDomain := m.dns.getReverse(dstIP)
+		resolvedIPs    := m.dns.getForwardIPs(resolvedDomain)
+		if resolvedDomain == "" && m.cfg.ResolveHostnames && !isPrivate {
+			m.queueResolve(dstIP)
+		}
+
 		ev := &types.NetworkEvent{
 			BaseEvent: types.BaseEvent{
 				ID:        utils.NewEventID(),
@@ -845,14 +1263,17 @@ func (m *Monitor) parseProcNetTCP(path string, isV6 bool) {
 				Process:   procCtx,
 				Tags:      tags,
 			},
-			SrcIP:     srcIP,
-			SrcPort:   srcPort,
-			DstIP:     dstIP,
-			DstPort:   dstPort,
-			Protocol:  types.ProtoTCP,
-			Direction: types.DirOutbound,
-			State:     types.ConnStateEstablished,
-			IsPrivate: isPrivate,
+			SrcIP:          srcIP,
+			SrcPort:        srcPort,
+			DstIP:          dstIP,
+			DstPort:        dstPort,
+			Protocol:       types.ProtoTCP,
+			Direction:      types.DirOutbound,
+			State:          types.ConnStateEstablished,
+			IsPrivate:      isPrivate,
+			DNSQuery:       resolvedDomain,
+			ResolvedDomain: resolvedDomain,
+			ResolvedIPs:    resolvedIPs,
 		}
 		m.bus.Publish(ev)
 	}

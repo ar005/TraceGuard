@@ -200,8 +200,10 @@ type NetworkEvent struct {
 	BytesSent   uint64           `json:"bytes_sent"`
 	BytesRecv   uint64           `json:"bytes_recv"`
 	Duration    time.Duration    `json:"duration,omitempty"`
-	DNSQuery    string           `json:"dns_query,omitempty"`    // resolved hostname if known
-	GeoCountry  string           `json:"geo_country,omitempty"`
+	DNSQuery       string           `json:"dns_query,omitempty"`       // reverse PTR hostname (legacy)
+	ResolvedDomain string           `json:"resolved_domain,omitempty"` // forward domain from DNS snooper
+	ResolvedIPs    []string         `json:"resolved_ips,omitempty"`    // all IPs for that domain
+	GeoCountry     string           `json:"geo_country,omitempty"`
 	IsPrivate   bool             `json:"is_private"`             // RFC1918 / loopback
 	ThreatScore int              `json:"threat_score,omitempty"` // 0-100 from TI lookup
 }
