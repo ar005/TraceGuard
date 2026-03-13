@@ -2,15 +2,18 @@
 //
 // Command Activity Monitor — dual-source terminal surveillance:
 //
-//  1. Real-time: polls /proc every 2s for processes whose parent is a shell.
-//     Captures commands as they execute with full context.
+//  1. Real-time: polls /proc every 500ms for processes whose parent is a shell.
+//     Also scans grandchildren (shell → script → command) to catch more children.
 //
-//  2. History tailing: follows ~/.bash_history, /root/.bash_history etc.
-//     Picks up commands typed interactively even when /proc polling misses them.
+//  2. History tailing: follows ~/.bash_history, ~/.zsh_history etc.
+//     Handles both bash HISTTIMEFORMAT (#timestamp) and ZSH EXTENDED_HISTORY
+//     (: timestamp:elapsed;command) formats.
+//
+//  3. New-home watcher: inotify on /home so that history files for newly
+//     created users are picked up automatically without restarting the agent.
 //
 // Both sources emit CMD_EXEC / CMD_HISTORY events to the bus.
-// Suspicious commands (reverse shells, privesc, recon, etc.) are tagged
-// with elevated severity and descriptive detection labels.
+// Suspicious commands are tagged with elevated severity and detection labels.
 
 package cmd
 
@@ -26,6 +29,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
@@ -98,13 +103,16 @@ var detectionRules = []detRule{
 	{regexp.MustCompile(`echo.*>>\s*/etc/`), "append to /etc", types.SeverityHigh, "etc-append"},
 }
 
+// zshExtHistRe matches ZSH EXTENDED_HISTORY lines:  ": 1234567890:0;actual command"
+var zshExtHistRe = regexp.MustCompile(`^:\s*\d+:\d+;(.*)$`)
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 // Config for the command monitor.
 type Config struct {
 	// Explicit extra history files (auto-discovery always runs).
 	ExtraHistoryFiles []string
-	// Poll interval for /proc scanning.
+	// Poll interval for /proc scanning. 500ms catches most short-lived processes.
 	PollInterval time.Duration
 	// Emit INFO-severity commands too (noisy, good for forensics).
 	EmitAll bool
@@ -112,7 +120,7 @@ type Config struct {
 
 func DefaultConfig() Config {
 	return Config{
-		PollInterval: 2 * time.Second,
+		PollInterval: 500 * time.Millisecond, // ↓ from 2s — catches processes < 2s
 		EmitAll:      true,
 	}
 }
@@ -133,7 +141,7 @@ type CmdEvent struct {
 func (e *CmdEvent) EventType() string { return string(e.Type) }
 func (e *CmdEvent) EventID() string   { return e.ID }
 
-// Monitor watches real-time command and bash history activity.
+// Monitor watches real-time command and bash/zsh history activity.
 type Monitor struct {
 	cfg      Config
 	bus      events.Bus
@@ -143,6 +151,7 @@ type Monitor struct {
 	mu       sync.Mutex
 	seenPIDs map[uint32]bool   // PIDs emitted (real-time)
 	lastHash map[string]string // history file → last line hash (dedup)
+	tailing  map[string]bool   // history files currently being tailed
 }
 
 func New(cfg Config, bus events.Bus, log zerolog.Logger, agentID, hostname string) *Monitor {
@@ -154,6 +163,7 @@ func New(cfg Config, bus events.Bus, log zerolog.Logger, agentID, hostname strin
 		hostname: hostname,
 		seenPIDs: make(map[uint32]bool),
 		lastHash: make(map[string]string),
+		tailing:  make(map[string]bool),
 	}
 }
 
@@ -167,13 +177,19 @@ func (m *Monitor) Start(ctx context.Context) error {
 		Bool("emit_all", m.cfg.EmitAll).
 		Msg("command monitor started")
 
-	// Real-time /proc watcher
+	// Real-time /proc watcher at 500ms — catches most processes < 2s
 	go m.procLoop(ctx)
 
 	// One goroutine per history file
 	for _, f := range histFiles {
+		m.mu.Lock()
+		m.tailing[f] = true
+		m.mu.Unlock()
 		go m.tailHistory(ctx, f)
 	}
+
+	// Watch /home for new user directories → start tailing their history files
+	go m.watchNewHomes(ctx)
 
 	return nil
 }
@@ -216,14 +232,26 @@ func (m *Monitor) scanProc() {
 			continue
 		}
 
-		// Only track children of interactive shells
+		// Track children of shells AND grandchildren (shell → script → cmd).
+		// This catches commands run inside shell scripts spawned from a terminal.
 		ppid := readPPID(pid)
 		if ppid == 0 {
 			continue
 		}
 		parentComm := strings.TrimSpace(readFile(fmt.Sprintf("/proc/%d/comm", ppid)))
+		shellName := parentComm
+
 		if !isShell(parentComm) {
-			continue
+			// Check grandparent — catches: bash → python → subprocess
+			gppid := readPPID(ppid)
+			if gppid == 0 {
+				continue
+			}
+			grandparentComm := strings.TrimSpace(readFile(fmt.Sprintf("/proc/%d/comm", gppid)))
+			if !isShell(grandparentComm) {
+				continue
+			}
+			shellName = grandparentComm
 		}
 
 		// Get full cmdline
@@ -266,7 +294,7 @@ func (m *Monitor) scanProc() {
 			PPID:      ppid,
 			Username:  username,
 			Cmdline:   cmdline,
-			ShellName: parentComm,
+			ShellName: shellName,
 			Source:    "proc",
 			Detection: detection,
 			Terminal:  tty,
@@ -277,7 +305,7 @@ func (m *Monitor) scanProc() {
 			Str("severity", sev.String()).
 			Uint32("pid", pid).
 			Str("user", username).
-			Str("shell", parentComm).
+			Str("shell", shellName).
 			Str("tty", tty).
 			Strs("tags", tags).
 			Str("cmd", trunc(cmdline, 200)).
@@ -293,7 +321,6 @@ func (m *Monitor) tailHistory(ctx context.Context, path string) {
 	f, err := os.Open(path)
 	if err != nil {
 		m.log.Warn().Err(err).Str("file", path).Msg("cannot open history file — will retry")
-		// Retry after 10s (file might be created later)
 		select {
 		case <-ctx.Done():
 			return
@@ -310,7 +337,8 @@ func (m *Monitor) tailHistory(ctx context.Context, path string) {
 	}
 
 	owner := historyOwner(path)
-	m.log.Info().Str("file", path).Str("owner", owner).Msg("tailing history file")
+	isZsh := strings.Contains(filepath.Base(path), "zsh")
+	m.log.Info().Str("file", path).Str("owner", owner).Bool("zsh", isZsh).Msg("tailing history file")
 
 	reader := bufio.NewReaderSize(f, 4096)
 	ticker := time.NewTicker(500 * time.Millisecond)
@@ -323,25 +351,58 @@ func (m *Monitor) tailHistory(ctx context.Context, path string) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// Drain any new data
 			for {
 				b, err := reader.ReadByte()
 				if err != nil {
-					break // no more data yet
+					break
 				}
 				if b == '\n' {
 					line := strings.TrimSpace(lineBuf.String())
 					lineBuf.Reset()
-					if line == "" || strings.HasPrefix(line, "#") {
-						continue // skip timestamps like #1234567890
+					if line == "" {
+						continue
 					}
-					m.emitHistory(line, path, owner)
+					cmd := parseHistoryLine(line, isZsh)
+					if cmd != "" {
+						m.emitHistory(cmd, path, owner)
+					}
 				} else {
 					lineBuf.WriteByte(b)
 				}
 			}
 		}
 	}
+}
+
+// parseHistoryLine strips timestamp prefixes from both bash and zsh history formats.
+//
+// Bash HISTTIMEFORMAT writes a comment line before each command:
+//
+//	#1234567890
+//	actual command
+//
+// ZSH EXTENDED_HISTORY writes everything on one line:
+//
+//	: 1234567890:0;actual command
+//
+// Plain lines (no timestamp) are returned as-is.
+func parseHistoryLine(line string, isZsh bool) string {
+	// Bash timestamp comment — skip it; the next line is the real command.
+	if strings.HasPrefix(line, "#") {
+		if _, err := strconv.ParseInt(line[1:], 10, 64); err == nil {
+			return "" // pure timestamp comment — skip
+		}
+		return "" // any other comment — skip
+	}
+
+	// ZSH EXTENDED_HISTORY: ": timestamp:elapsed;command"
+	if isZsh {
+		if m := zshExtHistRe.FindStringSubmatch(line); m != nil {
+			return strings.TrimSpace(m[1])
+		}
+	}
+
+	return line
 }
 
 func (m *Monitor) emitHistory(cmd, path, owner string) {
@@ -385,6 +446,115 @@ func (m *Monitor) emitHistory(cmd, path, owner string) {
 	m.bus.Publish(evt)
 }
 
+// ─── New-home watcher (inotify) ───────────────────────────────────────────────
+
+// watchNewHomes uses inotify to watch /home for new subdirectories being created.
+// When a new home dir appears, it waits briefly for the shell to create history
+// files, then starts tailing them — no agent restart needed.
+func (m *Monitor) watchNewHomes(ctx context.Context) {
+	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC | unix.IN_NONBLOCK)
+	if err != nil {
+		m.log.Warn().Err(err).Msg("inotify unavailable — new-home watching disabled")
+		return
+	}
+	defer unix.Close(fd)
+
+	_, err = unix.InotifyAddWatch(fd, "/home", unix.IN_CREATE|unix.IN_ONLYDIR)
+	if err != nil {
+		m.log.Warn().Err(err).Msg("inotify watch on /home failed — new-home watching disabled")
+		return
+	}
+
+	m.log.Info().Msg("watching /home for new user directories")
+
+	buf := make([]byte, 4096)
+	pollFd := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		// Poll with 500ms timeout so we can check ctx.Done()
+		n, err := unix.Poll(pollFd, 500)
+		if err != nil || n == 0 {
+			continue
+		}
+
+		n, err = unix.Read(fd, buf)
+		if err != nil || n == 0 {
+			continue
+		}
+
+		// Parse inotify events — each event is a fixed 16-byte header + variable name
+		offset := 0
+		for offset+16 <= n {
+			mask    := uint32(buf[offset+4]) | uint32(buf[offset+5])<<8 | uint32(buf[offset+6])<<16 | uint32(buf[offset+7])<<24
+			nameLen := uint32(buf[offset+12]) | uint32(buf[offset+13])<<8 | uint32(buf[offset+14])<<16 | uint32(buf[offset+15])<<24
+
+			nameStart := offset + 16
+			nameEnd   := nameStart + int(nameLen)
+			if nameEnd > n {
+				break
+			}
+
+			name := strings.TrimRight(string(buf[nameStart:nameEnd]), "\x00")
+			offset = nameEnd
+
+			if mask&unix.IN_CREATE != 0 && name != "" {
+				homeDir := filepath.Join("/home", name)
+				go m.onNewHomeDir(ctx, homeDir)
+			}
+		}
+	}
+}
+
+// onNewHomeDir is called when a new directory appears under /home.
+// It waits up to 30s for shell history files to be created, then tails them.
+func (m *Monitor) onNewHomeDir(ctx context.Context, homeDir string) {
+	m.log.Info().Str("home", homeDir).Msg("new home directory detected — watching for history files")
+
+	candidates := []string{
+		filepath.Join(homeDir, ".bash_history"),
+		filepath.Join(homeDir, ".zsh_history"),
+		filepath.Join(homeDir, ".sh_history"),
+	}
+
+	// Poll for up to 60s — the user may not log in immediately
+	deadline := time.Now().Add(60 * time.Second)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			for _, f := range candidates {
+				if _, err := os.Stat(f); err != nil {
+					continue
+				}
+				m.mu.Lock()
+				already := m.tailing[f]
+				if !already {
+					m.tailing[f] = true
+				}
+				m.mu.Unlock()
+
+				if !already {
+					m.log.Info().Str("file", f).Str("home", homeDir).Msg("new history file — starting tail")
+					go m.tailHistory(ctx, f)
+				}
+			}
+			if time.Now().After(deadline) {
+				return
+			}
+		}
+	}
+}
+
 // ─── Discovery ────────────────────────────────────────────────────────────────
 
 func (m *Monitor) discoverHistoryFiles() []string {
@@ -395,12 +565,10 @@ func (m *Monitor) discoverHistoryFiles() []string {
 		}
 	}
 
-	// Root
 	add("/root/.bash_history")
 	add("/root/.zsh_history")
 	add("/root/.sh_history")
 
-	// All home dirs
 	homes, _ := filepath.Glob("/home/*")
 	for _, home := range homes {
 		add(filepath.Join(home, ".bash_history"))
@@ -408,7 +576,6 @@ func (m *Monitor) discoverHistoryFiles() []string {
 		add(filepath.Join(home, ".sh_history"))
 	}
 
-	// User-configured extras
 	for _, f := range m.cfg.ExtraHistoryFiles {
 		add(f)
 	}
