@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>TraceGUARD EDR</title>
+<title>TraceGuard — Open EDR</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root{
@@ -241,6 +241,13 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
   .form-row{grid-template-columns:1fr}
   .cond-item{grid-template-columns:1fr;gap:5px}
 }
+
+/* ── user badge ── */
+.user-badge{display:flex;align-items:center;gap:7px;padding:0 10px;height:26px;border:1px solid var(--line2);border-radius:2px;font-family:var(--mono);font-size:8.5px;letter-spacing:1px;color:var(--dim)}
+.user-badge svg{width:11px;height:11px;opacity:.6;flex-shrink:0}
+.user-badge span{color:var(--body)}
+.btn-logout{font-family:var(--mono);font-size:8.5px;letter-spacing:1.5px;text-transform:uppercase;padding:4px 9px;border:1px solid rgba(240,58,58,.35);background:none;color:rgba(240,58,58,.7);cursor:pointer;border-radius:2px;transition:all .15s}
+.btn-logout:hover{border-color:var(--red);color:var(--red);background:rgba(240,58,58,.07)}
 </style>
 </head>
 <body>
@@ -253,7 +260,7 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
       <polygon points="14,7 21,11 21,19 14,23 7,19 7,11" stroke="#00c8f0" stroke-width="0.8" stroke-dasharray="2,1.5" fill="none" opacity="0.5"/>
       <circle cx="14" cy="14" r="2.5" fill="#00c8f0"/>
     </svg>
-    <span class="brand-name">OEDR</span>
+    <span class="brand-name">TraceGuard</span>
   </div>
   <nav class="nav-tabs">
     <div class="nav-tab active" id="tb-dashboard" onclick="nav('dashboard')">
@@ -295,6 +302,13 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
       <span id="sys-lbl" style="color:var(--muted)">CONNECTING</span>
     </div>
     <div class="clock" id="clock">00:00:00</div>
+    <div class="user-badge">
+      <svg viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="5" r="3"/><path d="M2 13c0-3.3 2.7-5 6-5s6 1.7 6 5"/></svg>
+      <span>{{ username }}</span>
+    </div>
+    <form method="POST" action="/logout" style="margin:0">
+      <button type="submit" class="btn-logout">Sign Out</button>
+    </form>
   </div>
 </header>
 
@@ -974,7 +988,7 @@ function renderEventsTable(ev){
   tb.innerHTML=ev.length
     ?ev.map(e=>{
         const py=e.payload||{};
-        const det=py.cmdline||py.filename||py.path||py.dest_ip||(py.process&&py.process.comm)||py.comm||JSON.stringify(py).slice(0,80);
+        const det=py.cmdline||py.filename||py.path||(py.resolved_domain&&py.dst_ip?`${py.resolved_domain} (${py.dst_ip}:${py.dst_port||'?'})`:'')||py.dst_ip||(py.process&&py.process.comm)||py.comm||JSON.stringify(py).slice(0,80);
         return `<tr style="cursor:pointer" onclick='openEventDrawer(${JSON.stringify(JSON.stringify(e))})'>
           <td class="mono dim">${ts(e.timestamp)}</td><td>${evtTag(e.event_type)}</td>
           <td class="mono">${esc(e.hostname||'–')}</td>
@@ -1311,7 +1325,11 @@ const FIELD_CATALOGUE = {
   is_private:       {label:'is_private',    group:'Network', type:'select', ops:['eq'],
                      hint:'true = RFC1918 / internal', quickPicks:['false','true']},
   dns_query:        {label:'dns_query',     group:'Network', type:'text',   ops:['eq','contains','regex'],
-                     hint:'Resolved hostname for destination IP', quickPicks:[]},
+                     hint:'Resolved hostname (PTR / legacy)', quickPicks:[]},
+  resolved_domain:  {label:'resolved_domain', group:'Network', type:'text',   ops:['eq','contains','regex'],
+                     hint:'Domain name from DNS answer (forward-resolved, more reliable than dns_query)', quickPicks:[]},
+  resolved_ips:     {label:'resolved_ips',    group:'Network', type:'text',   ops:['contains'],
+                     hint:'All IPs seen for this domain (CDN ranges, multiple A records)', quickPicks:[]},
   // ── File ─────────────────────────────────────────────────────
   path:             {label:'path',          group:'File',    type:'text',   ops:['eq','contains','startswith','regex'],
                      hint:'File path', quickPicks:['/etc/sudoers','/etc/cron','/root/.ssh/','/tmp/','/dev/shm/']},
@@ -1511,162 +1529,162 @@ async function saveRule(){
 }
 
 async function testRule(){
-  const p=buildRulePayload();
-  if(!p.conditions.length){toast('Add conditions first',false);return;}
-  $('test-results-card').style.display='block';
-  const rd=$('test-results');
-  rd.innerHTML='<div class="st-row st-load">TESTING AGAINST LAST 500 EVENTS…</div>';
+  const p = buildRulePayload();
+  if(!p.conditions.length){ toast('Add at least one condition first', false); return; }
 
-  // Warn about ICMP — ping uses ICMP which is not captured by TCP/UDP eBPF hooks
-  const isNetRule = p.event_types.some(t=>t.startsWith('NET'));
-  const warnings = [];
-  if (isNetRule) {
-    warnings.push('NET rules match TCP/UDP only. ping uses ICMP and will never produce a NET_CONNECT event. Use curl, wget, nc, or any TCP/UDP tool to test network rules.');
-    const dstIpCond = p.conditions.find(c=>c.field==='dst_ip');
-    if (dstIpCond) {
-      warnings.push(`Tip: try  curl -m 2 ${dstIpCond.value}  then check Event Log for a NET_CONNECT matching that IP.`);
-    }
+  $('test-results-card').style.display = 'block';
+  const rd = $('test-results');
+  rd.innerHTML = '<div class="st-row st-load">SEARCHING LAST 500 EVENTS…</div>';
+
+  // ── Detect rule category for warnings / inject defaults ──────────────────
+  const isNetRule  = p.event_types.some(t => t.startsWith('NET'));
+  const isFileRule = p.event_types.some(t => t.startsWith('FILE')) || p.event_types.includes('*');
+  const isAllRule  = p.event_types.includes('*');
+
+  // Build inject-event template from conditions
+  function buildInjectPayload() {
+    const payload = { type: p.event_types[0] || 'FILE_CREATE' };
+    p.conditions.forEach(c => {
+      // Nested field "process.comm" → { process: { comm: val } }
+      const parts = c.field.split('.');
+      let obj = payload;
+      for(let i=0; i<parts.length-1; i++){
+        if(!obj[parts[i]]) obj[parts[i]] = {};
+        obj = obj[parts[i]];
+      }
+      obj[parts[parts.length-1]] = c.value;
+    });
+    return payload;
   }
 
-  try{
-    const evtType=p.event_types.includes('*')?'':p.event_types[0]||'';
-    const url=evtType?`/api/events?event_type=${evtType}&limit=500`:'/api/events?limit=500';
-    const d=await api(url);
-    const events=d.events||[];
+  // ── Search existing events ────────────────────────────────────────────────
+  try {
+    const evtType = (!isAllRule && p.event_types.length===1) ? p.event_types[0] : '';
+    const url = evtType
+      ? `/api/events?event_type=${encodeURIComponent(evtType)}&limit=500`
+      : '/api/events?limit=500';
+    const d = await api(url);
+    const events = d.events || [];
 
-    const matched=events.filter(ev=>matchConditions(ev.payload||{},p.conditions));
-    $('test-count').textContent=`${matched.length} / ${events.length} matched`;
+    // Count by type for diagnostics
+    const typeCounts = {};
+    events.forEach(e => { typeCounts[e.event_type] = (typeCounts[e.event_type]||0)+1; });
 
-    let warningHTML = '';
-    if (warnings.length) {
-      warningHTML = `<div style="background:rgba(255,180,50,.08);border:1px solid rgba(255,180,50,.25);padding:10px 12px;margin-bottom:10px;border-radius:2px;font-family:var(--mono);font-size:9px;color:var(--amber);line-height:1.6">
-        ${warnings.map(w=>`<div>⚠ ${esc(w)}</div>`).join('')}
+    const matched = events.filter(ev => matchConditions(ev.payload||{}, p.conditions));
+    $('test-count').textContent = `${matched.length} / ${events.length} matched`;
+
+    // ── Build diagnostic / warnings section ──────────────────────────────
+    let diagHTML = '';
+    const relevantTypes = isAllRule
+      ? Object.keys(typeCounts)
+      : p.event_types;
+    const hasFileEvents = Object.keys(typeCounts).some(t => t.startsWith('FILE_'));
+
+    // Warnings
+    const warnings = [];
+    if(isNetRule) {
+      warnings.push('NET rules capture TCP/UDP only — <b>ping uses ICMP</b> and produces no NET_CONNECT event. Use <code>curl</code>, <code>nc</code>, or <code>wget</code> to test.');
+    }
+    if((isFileRule || isAllRule) && !hasFileEvents) {
+      warnings.push(`No FILE_* events found in the last 500 events in the database.
+        File events require the EDR agent to be running with the file monitor active, 
+        and the file must be created/written inside a <b>watched path</b>
+        (<code>/etc</code>, <code>/tmp</code>, <code>/var/tmp</code>, <code>/dev/shm</code>, <code>/usr/bin</code>, etc.).
+        Files created in your home directory are <b>not watched by default</b>.`);
+    }
+    if(warnings.length) {
+      diagHTML += `<div style="background:rgba(255,180,50,.07);border:1px solid rgba(255,180,50,.25);padding:10px 14px;border-radius:2px;margin-bottom:10px;font-size:9.5px;line-height:1.7;color:var(--amber)">
+        ${warnings.map(w=>`<div style="margin-bottom:4px">⚠ ${w}</div>`).join('')}
       </div>`;
     }
 
-    if(!matched.length){
-      rd.innerHTML=warningHTML+'<div class="st-row">NO MATCHES IN LAST 500 EVENTS</div>';
+    // Event type distribution
+    const typeBar = Object.entries(typeCounts).sort((a,b)=>b[1]-a[1]).slice(0,8)
+      .map(([t,n])=>`<span style="margin-right:10px">${evtTag(t)} <span class="mono dim" style="font-size:8px">${n}</span></span>`).join('');
+    if(typeBar) {
+      diagHTML += `<div style="margin-bottom:10px;padding:6px 0;border-bottom:1px solid var(--line)">${typeBar}</div>`;
+    }
+
+    // ── Inject test event button ──────────────────────────────────────────
+    const injectPayload = buildInjectPayload();
+    const injectType = p.event_types[0] === '*' ? 'FILE_CREATE' : (p.event_types[0] || 'FILE_CREATE');
+    diagHTML += `<div style="margin-bottom:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <button class="btn pri" style="font-size:10px;padding:5px 12px"
+        onclick="injectTestEvent(${JSON.stringify(JSON.stringify({event_type:injectType,payload:injectPayload}))})">
+        ⚡ Inject Synthetic Event
+      </button>
+      <span class="mono dim" style="font-size:9px">Pushes a fake event through the full detection pipeline → shows real alert if rule matches</span>
+    </div>`;
+
+    if(!matched.length) {
+      rd.innerHTML = diagHTML + '<div class="st-row">NO MATCHES IN LAST 500 EVENTS</div>';
       return;
     }
 
-    rd.innerHTML=warningHTML+matched.slice(0,20).map(ev=>{
-      const py=ev.payload||{};
-      const detail=py.cmdline||py.dst_ip||(py.dst_ip?`${py.dst_ip}:${py.dst_port}`:'')
-        ||py.path||py.filename||py.comm||'';
+    rd.innerHTML = diagHTML + matched.slice(0, 20).map(ev => {
+      const py = ev.payload || {};
+      const detail = py.path || py.cmdline || py.dst_ip
+        || (py.dst_ip ? `${py.dst_ip}:${py.dst_port}` : '')
+        || py.filename || py.comm || '';
       return `<div class="cmd-row" style="cursor:pointer" onclick='openEventDrawer(${JSON.stringify(JSON.stringify(ev))})'>
-        <div class="cmd-line"><span style="color:var(--green);margin-right:6px">MATCH</span>${esc(detail||JSON.stringify(py).slice(0,80))}</div>
-        <div class="cmd-meta"><span>${ts(ev.timestamp)}</span><span>${esc(ev.hostname||'')}</span>${evtTag(ev.event_type)}</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+          ${evtTag(ev.event_type)}
+          <span class="mono dim" style="font-size:9px">${ts(ev.timestamp)}</span>
+          <span class="mono" style="font-size:9px;color:var(--body)">${esc(ev.hostname||'')}</span>
+        </div>
+        <div class="mono" style="font-size:11px;color:var(--text);word-break:break-all">${esc(detail||JSON.stringify(py).slice(0,100))}</div>
       </div>`;
     }).join('');
-  }catch(e){rd.innerHTML=`<div class="st-row st-err">ERROR: ${esc(e.message)}</div>`;}
-}
 
-function matchConditions(payload,conds){
-  return conds.every(c=>{
-    const flat=flatPayload(payload);
-    const val=flat[c.field];
-    if(val===undefined) return false;
-    const s=String(val).toLowerCase();
-    const cv=String(c.value).toLowerCase();
-    switch(c.op){
-      case 'eq': return s===cv;
-      case 'ne': return s!==cv;
-      case 'contains': return s.includes(cv);
-      case 'startswith': return s.startsWith(cv);
-      case 'regex': try{return new RegExp(c.value,'i').test(String(val));}catch{return false;}
-      case 'gt': return Number(val)>Number(c.value);
-      case 'lt': return Number(val)<Number(c.value);
-      case 'gte': return Number(val)>=Number(c.value);
-      case 'lte': return Number(val)<=Number(c.value);
-      default: return false;
-    }
-  });
-}
-
-function flatPayload(obj,prefix='',out={}){
-  for(const[k,v]of Object.entries(obj)){
-    const key=prefix?`${prefix}.${k}`:k;
-    if(v&&typeof v==='object'&&!Array.isArray(v)) flatPayload(v,key,out);
-    else out[key]=v;
+  } catch(e) {
+    rd.innerHTML = `<div class="st-row st-err">ERROR: ${esc(e.message)}</div>`;
   }
-  return out;
 }
 
-// ─── drawers ─────────────────────────────────────────
-function openDrawer(title,html){$('d-title').textContent=title;$('d-body').innerHTML=html;$('ov').classList.add('open');$('drawer').classList.add('open');}
-function closeDrawer(){$('ov').classList.remove('open');$('drawer').classList.remove('open');}
-function dr(k,v){return `<div class="dr"><div class="dk">${k}</div><div class="dv">${v}</div></div>`;}
+async function injectTestEvent(js) {
+  const body = JSON.parse(js);
+  const rd = $('test-results');
+  rd.innerHTML = '<div class="st-row st-load">INJECTING EVENT + RUNNING DETECTION…</div>';
+  try {
+    const result = await apiMethod('/api/events/inject', 'POST', body);
+    const ev = result.event || {};
+    const alerts = result.alerts_fired || [];
+    const matched = result.matched;
 
-function openAlert(js){
-  const a = JSON.parse(js);
-  // Render shell immediately, then load events async
-  const html = buildAlertDrawerHTML(a, null);
-  openDrawer('ALERT  ' + (a.rule_name||'–'), html);
-  loadAlertEvents(a);
+    let html = `<div style="background:${matched?'rgba(0,220,100,.07)':'rgba(255,80,80,.07)'};border:1px solid ${matched?'rgba(0,220,100,.25)':'rgba(255,80,80,.25)'};padding:12px 14px;border-radius:2px;margin-bottom:10px">
+      <div style="font-family:var(--mono);font-size:11px;font-weight:600;color:${matched?'var(--green)':'var(--red)'}">
+        ${matched ? '✓ RULE MATCHED — detection pipeline working' : '✗ RULE DID NOT MATCH — check conditions below'}
+      </div>
+      <div style="font-size:9px;color:var(--muted);margin-top:4px;font-family:var(--mono)">
+        Event injected: <span style="color:var(--cyan)">${esc(ev.id||'')}</span> · type: ${evtTag(ev.event_type||'')}
+      </div>
+    </div>`;
+
+    if(alerts.length) {
+      html += `<div class="slbl" style="color:var(--green)">⬡ Alerts Fired (${alerts.length})</div>`;
+      html += alerts.map(a => `<div style="background:var(--bg0);border:1px solid rgba(0,220,100,.2);padding:8px 10px;border-radius:2px;margin-bottom:6px;cursor:pointer"
+        onclick='openAlert(${JSON.stringify(JSON.stringify(a))})'>
+        <div style="display:flex;gap:8px;align-items:center">
+          ${sev(a.severity)} ${stb(a.status)}
+          <b style="font-size:11px">${esc(a.rule_name||a.title||'')}</b>
+        </div>
+        <div class="mono dim" style="font-size:8.5px;margin-top:3px">${esc(a.id||'')}</div>
+      </div>`).join('');
+    }
+
+    if(!matched) {
+      // Show the injected payload so user can see what was tested
+      html += `<div class="slbl">Injected Payload</div>
+      <pre style="font-size:9px;font-family:var(--mono);color:var(--dim);background:var(--bg0);padding:8px;border-radius:2px;overflow-x:auto;white-space:pre-wrap">${esc(JSON.stringify(ev.payload||body.payload, null, 2))}</pre>`;
+    }
+
+    $('test-count').textContent = matched ? `1 / 1 matched (injected)` : `0 / 1 matched (injected)`;
+    rd.innerHTML = html;
+  } catch(e) {
+    rd.innerHTML = `<div class="st-row st-err">Inject failed: ${esc(e.message)}</div>`;
+  }
 }
 
-function buildAlertDrawerHTML(a, events) {
-  const eventCount = events === null ? '…' : events.length;
-  return `
-    <div class="dg">
-      ${dr('SEVERITY', sev(a.severity))}
-      ${dr('STATUS',   stb(a.status))}
-      ${dr('HOST',     `<span class="mono">${esc(a.hostname||'–')}</span>`)}
-      ${dr('RULE',     `<span class="mono" style="font-size:9px;word-break:break-all">${esc(a.rule_name||'–')}</span>`)}
-      ${dr('FIRST',    `<span class="mono">${ts(a.first_seen)}</span>`)}
-      ${dr('LAST',     `<span class="mono">${ts(a.last_seen)}</span>`)}
-      ${dr('EVENTS',   `<span class="mono" style="color:var(--cyan)">${eventCount}</span>`)}
-      ${dr('ASSIGNEE', esc(a.assignee||'UNASSIGNED'))}
-    </div>
-
-    ${a.description ? `<div class="slbl">Description</div><div class="desc" style="margin-bottom:13px">${esc(a.description)}</div>` : ''}
-    ${a.mitre_ids?.length ? `<div class="slbl">MITRE ATT&CK</div><div style="margin-bottom:13px;display:flex;flex-wrap:wrap;gap:4px">${mitres(a.mitre_ids)}</div>` : ''}
-
-    <div class="slbl" style="color:var(--orange)">⬡ Triggering Events
-      <span style="font-size:8px;color:var(--muted);font-weight:400" id="al-ev-count">${events===null?'loading…':eventCount+' event'+(eventCount!==1?'s':'')}</span>
-    </div>
-    <div id="al-ev-list" style="margin-bottom:13px">
-      ${events===null
-        ? '<div style="font-family:var(--mono);font-size:9px;color:var(--muted);padding:8px 0"><span style="opacity:.5">loading…</span></div>'
-        : renderAlertEventList(events)}
-    </div>
-
-    <div class="slbl">Alert ID</div>
-    <div style="font-family:var(--mono);font-size:8.5px;color:var(--dim);word-break:break-all;padding:4px 0;margin-bottom:13px;user-select:all">${esc(a.id||'–')}</div>
-
-    <div class="slbl">Update Status</div>
-    <select class="status-sel" onchange="updAlertDrawer('${esc(a.id)}',this.value)">
-      <option value="">— select —</option>
-      <option value="OPEN"${a.status==='OPEN'?' selected':''}>OPEN</option>
-      <option value="INVESTIGATING"${a.status==='INVESTIGATING'?' selected':''}>INVESTIGATING</option>
-      <option value="RESOLVED"${a.status==='RESOLVED'?' selected':''}>RESOLVED</option>
-    </select>`;
-}
-
-function renderAlertEventList(events) {
-  if (!events.length) return '<div style="font-family:var(--mono);font-size:9px;color:var(--muted);padding:6px 0;opacity:.5">No events found for this alert</div>';
-  return `<div style="border:1px solid rgba(255,160,50,.2);border-radius:2px;overflow:hidden">
-    ${events.map(ev => {
-      const py = ev.payload || {};
-      const proc = py.process || {};
-      const detail = py.cmdline || py.path
-        || (py.dst_ip ? `${py.dst_ip}:${py.dst_port||'?'}` : '')
-        || proc.exe_path || proc.comm || py.comm || '';
-      const col = {
-        NET_CONNECT:'var(--orange)', PROCESS_EXEC:'var(--cyan)',
-        CMD_EXEC:'var(--cyan2)', FILE_WRITE:'var(--amber)',
-        FILE_CREATE:'var(--green)',
-      }[ev.event_type] || 'var(--body)';
-      return `<div style="display:flex;gap:8px;align-items:flex-start;padding:7px 10px;background:var(--bg0);border-bottom:1px solid var(--line);cursor:pointer;font-family:var(--mono);font-size:9px"
-        onclick='closeDrawer();setTimeout(()=>openEventDrawer(${JSON.stringify(JSON.stringify(ev))}),120)'>
-        <span style="color:var(--muted);white-space:nowrap;min-width:52px">${new Date(ev.timestamp).toISOString().slice(11,19)}</span>
-        <span style="padding:1px 5px;border:1px solid ${col};color:${col};border-radius:2px;font-size:8px;white-space:nowrap">${ev.event_type}</span>
-        <span style="color:var(--body);flex:1;word-break:break-all">${esc(detail||ev.id||'–')}</span>
-        <span style="color:var(--muted);font-size:8px;white-space:nowrap">${esc(ev.hostname||'')}</span>
-      </div>`;
-    }).join('')}
-  </div>`;
-}
 
 async function loadAlertEvents(a) {
   try {
@@ -2031,12 +2049,20 @@ function buildEventDrawerHTML(e, p, t, related) {
 
 // ── Network detail renderer ────────────────────────────────────────────────
 function renderNetworkDetail(p) {
-  const proto = p.protocol || '–';
-  const dir   = p.direction || '–';
-  const isExt = !p.is_private;
+  const proto    = p.protocol  || '–';
+  const dir      = p.direction || '–';
+  const isExt    = !p.is_private;
   const dirColor = dir === 'OUTBOUND' ? 'var(--orange)' : 'var(--green)';
+
+  // Prefer forward-resolved domain; fall back to PTR / dns_query
+  const domain   = p.resolved_domain || p.dns_query || '';
+  const allIPs   = p.resolved_ips ? p.resolved_ips : (p.dst_ip ? [p.dst_ip] : []);
+  const extraIPs = allIPs.filter(ip => ip !== p.dst_ip);
+
   return `<div class="slbl">Connection</div>
   <div style="background:var(--bg0);border:1px solid var(--line);padding:12px;border-radius:2px;margin-bottom:13px">
+
+    <!-- Flow line -->
     <div style="display:flex;align-items:center;gap:10px;font-family:var(--mono);font-size:11px;margin-bottom:10px;flex-wrap:wrap">
       <span style="color:var(--cyan)">${esc(p.src_ip||'?')}:${p.src_port||'?'}</span>
       <span style="color:${dirColor};font-size:13px">${dir==='OUTBOUND'?'→':'←'}</span>
@@ -2044,9 +2070,20 @@ function renderNetworkDetail(p) {
       <span style="font-size:9px;padding:1px 6px;border:1px solid var(--line2);border-radius:2px;color:var(--muted)">${esc(proto)}</span>
       ${p.is_private !== undefined ? `<span style="font-size:8.5px;padding:1px 6px;border:1px solid ${isExt?'rgba(255,160,50,.3)':'var(--line2)'};border-radius:2px;color:${isExt?'var(--orange)':'var(--dim)'}">${isExt?'EXTERNAL':'INTERNAL'}</span>` : ''}
     </div>
+
+    <!-- Domain + all associated IPs -->
+    ${domain && domain !== p.dst_ip ? `
+    <div style="margin-bottom:10px;padding:8px 10px;background:rgba(0,200,255,.05);border:1px solid rgba(0,200,255,.12);border-radius:2px">
+      <div style="font-family:var(--mono);font-size:10px;color:var(--cyan);font-weight:600;margin-bottom:${allIPs.length?'6px':'0'}">${esc(domain)}</div>
+      ${extraIPs.length ? `<div style="font-family:var(--mono);font-size:8.5px;color:var(--dim)">
+        <span style="color:var(--muted)">also resolves to</span>
+        ${extraIPs.map(ip=>`<span style="margin-left:8px;color:var(--body)">${esc(ip)}</span>`).join('')}
+      </div>` : ''}
+    </div>` : ''}
+
+    <!-- Stats grid -->
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-family:var(--mono);font-size:9px;color:var(--dim)">
-      ${p.dns_query&&p.dns_query!==p.dst_ip ? `<div><span style="color:var(--muted)">hostname</span>  <span style="color:var(--body)">${esc(p.dns_query)}</span></div>` : ''}
-      ${p.state     ? `<div><span style="color:var(--muted)">state</span>     <span style="color:var(--body)">${esc(p.state)}</span></div>` : ''}
+      ${p.state      ? `<div><span style="color:var(--muted)">state</span>     <span style="color:var(--body)">${esc(p.state)}</span></div>` : ''}
       ${p.bytes_sent ? `<div><span style="color:var(--muted)">sent</span>      <span style="color:var(--body)">${fmtBytes(p.bytes_sent)}</span></div>` : ''}
       ${p.bytes_recv ? `<div><span style="color:var(--muted)">recv</span>      <span style="color:var(--body)">${fmtBytes(p.bytes_recv)}</span></div>` : ''}
     </div>

@@ -72,7 +72,11 @@ func (e *Engine) Evaluate(ctx context.Context, ev *models.Event) {
 	if err := json.Unmarshal(ev.Payload, &payload); err != nil {
 		return // unparseable — skip
 	}
-	flattenPayload(payload, "", payload)
+	// Use a separate destination map so src iteration is stable.
+	dst := make(map[string]interface{})
+	for k, v := range payload { dst[k] = v }
+	flattenPayload(payload, "", dst)
+	payload = dst
 
 	for i := range rules {
 		rule := &rules[i]
@@ -204,6 +208,60 @@ func (e *Engine) fireAlert(ctx context.Context, ev *models.Event, rule *models.R
 	if e.onAlert != nil {
 		e.onAlert(ctx, alert)
 	}
+}
+
+
+// EvaluateAndCollect runs detection and returns all alerts fired (without calling onAlert).
+// Used by the inject endpoint for synchronous rule-test feedback.
+func (e *Engine) EvaluateAndCollect(_ context.Context, ev *models.Event) []*models.Alert {
+	e.mu.RLock()
+	rules := e.rules
+	e.mu.RUnlock()
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(ev.Payload, &payload); err != nil {
+		return nil
+	}
+	dst := make(map[string]interface{})
+	for k, v := range payload {
+		dst[k] = v
+	}
+	flattenPayload(payload, "", dst)
+
+	var fired []*models.Alert
+	for i := range rules {
+		rule := &rules[i]
+		if !rule.Enabled {
+			continue
+		}
+		if !stringSliceContains(rule.EventTypes, ev.EventType) &&
+			!stringSliceContains(rule.EventTypes, "*") {
+			continue
+		}
+		var conditions []models.RuleCondition
+		if err := json.Unmarshal(rule.Conditions, &conditions); err != nil {
+			continue
+		}
+		if e.matchesAll(dst, conditions) {
+			alertID := "alert-" + uuid.New().String()
+			fired = append(fired, &models.Alert{
+				ID:          alertID,
+				Title:       rule.Name,
+				Description: rule.Description,
+				Severity:    rule.Severity,
+				Status:      "OPEN",
+				RuleID:      rule.ID,
+				RuleName:    rule.Name,
+				MitreIDs:    rule.MitreIDs,
+				EventIDs:    []string{ev.ID},
+				AgentID:     ev.AgentID,
+				Hostname:    ev.Hostname,
+				FirstSeen:   time.Now(),
+				LastSeen:    time.Now(),
+			})
+		}
+	}
+	return fired
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

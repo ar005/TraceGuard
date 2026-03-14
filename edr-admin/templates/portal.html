@@ -1,0 +1,814 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TraceGuard — Admin Portal</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg0:#04080e;--bg1:#080f18;--bg2:#0c1622;--bg3:#111e2e;
+  --line:#16253a;--line2:#1d3048;--muted:#3a5570;--dim:#5a7a96;
+  --body:#8daec8;--text:#c8dced;--bright:#e8f4ff;
+  --cyan:#00c8f0;--cyan2:#008fb0;--cyan3:rgba(0,200,240,.08);
+  --red:#f03a3a;--red2:rgba(240,58,58,.08);--red3:rgba(240,58,58,.25);
+  --green:#30e890;--green2:rgba(48,232,144,.08);--green3:rgba(48,232,144,.25);
+  --yellow:#f0c030;--yellow2:rgba(240,192,48,.08);--yellow3:rgba(240,192,48,.25);
+  --mono:'IBM Plex Mono',monospace;--sans:'IBM Plex Sans',sans-serif;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden}
+body{font-family:var(--sans);font-size:13px;background:var(--bg0);color:var(--body);display:flex;flex-direction:column}
+
+/* top bar */
+.topbar{display:flex;align-items:center;gap:14px;padding:0 20px;height:50px;flex-shrink:0;background:var(--bg1);border-bottom:1px solid var(--line)}
+.logo{display:flex;align-items:center;gap:9px}
+.logo svg{width:22px;height:22px}
+.logo-name{font-family:var(--mono);font-size:13px;font-weight:600;letter-spacing:3px;color:var(--cyan)}
+.topbar-sep{color:var(--line2);font-size:16px;margin:0 2px}
+.topbar-title{font-family:var(--mono);font-size:10px;letter-spacing:2px;color:var(--dim);text-transform:uppercase}
+.topbar-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+.user-pill{display:flex;align-items:center;gap:7px;background:var(--bg2);border:1px solid var(--line2);border-radius:2px;padding:4px 10px}
+.user-pill-name{font-family:var(--mono);font-size:9px;color:var(--text)}
+.user-pill-role{font-family:var(--mono);font-size:7.5px;letter-spacing:1px;text-transform:uppercase;color:var(--yellow);background:var(--yellow2);border:1px solid var(--yellow3);border-radius:2px;padding:1px 6px}
+.btn-top{font-family:var(--mono);font-size:8.5px;letter-spacing:1.5px;text-transform:uppercase;padding:5px 12px;border:1px solid var(--line2);background:transparent;color:var(--dim);cursor:pointer;border-radius:2px;transition:all .15s}
+.btn-top:hover{border-color:var(--muted);color:var(--text)}
+
+/* layout */
+.layout{display:flex;flex:1;min-height:0}
+
+/* sidebar */
+.sidebar{width:210px;flex-shrink:0;background:var(--bg1);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:20px 0 16px}
+.sidebar-section{font-family:var(--mono);font-size:7px;letter-spacing:2.5px;color:var(--muted);text-transform:uppercase;padding:0 18px 8px}
+.nav-item{display:flex;align-items:center;gap:10px;padding:8px 18px;cursor:pointer;font-family:var(--mono);font-size:9.5px;letter-spacing:.8px;color:var(--dim);border-left:2px solid transparent;transition:all .12s;user-select:none}
+.nav-item:hover{color:var(--text);background:rgba(0,200,240,.03)}
+.nav-item.active{color:var(--cyan);border-left-color:var(--cyan);background:var(--cyan3)}
+.nav-item svg{width:14px;height:14px;flex-shrink:0;opacity:.7}
+.nav-item.active svg{opacity:1}
+.nav-badge{margin-left:auto;font-family:var(--mono);font-size:8px;padding:1px 6px;background:rgba(0,200,240,.12);border:1px solid rgba(0,200,240,.2);border-radius:10px;color:var(--cyan)}
+.nav-divider{height:1px;background:var(--line);margin:10px 0}
+.sidebar-footer{margin-top:auto;padding:0 18px;font-family:var(--mono);font-size:8px;color:var(--muted);line-height:1.8}
+.sidebar-footer a{color:var(--dim);text-decoration:none}
+.sidebar-footer a:hover{color:var(--cyan)}
+
+/* main */
+.main{flex:1;overflow-y:auto;padding:26px 28px}
+.page{display:none;animation:fadeIn .15s}
+.page.active{display:block}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+
+/* page header */
+.ph{display:flex;align-items:flex-start;gap:12px;margin-bottom:24px}
+.ph-info{flex:1}
+.ph-info h1{font-family:var(--mono);font-size:13px;font-weight:600;letter-spacing:2px;color:var(--bright);text-transform:uppercase}
+.ph-info p{font-family:var(--mono);font-size:8.5px;letter-spacing:.8px;color:var(--muted);margin-top:4px}
+
+/* stats */
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:22px}
+.stat{background:var(--bg1);border:1px solid var(--line);border-radius:3px;padding:16px 18px;position:relative;overflow:hidden}
+.stat::after{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--cyan),transparent)}
+.stat-val{font-family:var(--mono);font-size:28px;font-weight:600;color:var(--bright);line-height:1}
+.stat-lbl{font-family:var(--mono);font-size:7.5px;letter-spacing:1.8px;color:var(--muted);text-transform:uppercase;margin-top:7px}
+.stat-sub{font-family:var(--mono);font-size:8.5px;color:var(--dim);margin-top:4px}
+
+/* cards */
+.card{background:var(--bg1);border:1px solid var(--line);border-radius:3px;margin-bottom:18px}
+.card-head{padding:13px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
+.card-head h2{font-family:var(--mono);font-size:9px;font-weight:600;letter-spacing:2px;color:var(--text);text-transform:uppercase;flex:1}
+.card-body{padding:0}
+
+/* table */
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+th{font-family:var(--mono);font-size:7.5px;letter-spacing:1.5px;color:var(--muted);text-transform:uppercase;padding:9px 14px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:10px 14px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:10px;color:var(--body);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:rgba(0,200,240,.02)}
+.td-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+
+/* badges */
+.badge{display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);font-size:7.5px;letter-spacing:1px;padding:2px 8px;border-radius:2px;text-transform:uppercase;white-space:nowrap}
+.badge-green{background:var(--green2);border:1px solid var(--green3);color:var(--green)}
+.badge-red{background:var(--red2);border:1px solid var(--red3);color:var(--red)}
+.badge-yellow{background:var(--yellow2);border:1px solid var(--yellow3);color:var(--yellow)}
+.badge-cyan{background:var(--cyan3);border:1px solid rgba(0,200,240,.2);color:var(--cyan)}
+.badge-dim{background:rgba(58,85,112,.15);border:1px solid rgba(58,85,112,.3);color:var(--dim)}
+
+/* buttons */
+.btn{font-family:var(--mono);font-size:8.5px;letter-spacing:1.5px;text-transform:uppercase;padding:6px 12px;border:1px solid var(--line2);background:transparent;color:var(--dim);cursor:pointer;border-radius:2px;transition:all .15s;white-space:nowrap}
+.btn:hover{border-color:var(--muted);color:var(--text)}
+.btn-primary{border-color:var(--cyan2);background:var(--cyan3);color:var(--cyan)}
+.btn-primary:hover{background:rgba(0,200,240,.14)}
+.btn-danger{border-color:var(--red3);background:var(--red2);color:var(--red)}
+.btn-danger:hover{background:rgba(240,58,58,.14)}
+.btn-warn{border-color:var(--yellow3);background:var(--yellow2);color:var(--yellow)}
+.btn-warn:hover{background:rgba(240,192,48,.14)}
+.btn-sm{padding:3px 9px;font-size:7.5px}
+
+/* forms */
+.form-row{display:grid;gap:14px;margin-bottom:14px}
+.form-row.cols-2{grid-template-columns:1fr 1fr}
+.form-row.cols-3{grid-template-columns:1fr 1fr 1fr}
+.field label{display:block;font-family:var(--mono);font-size:7.5px;letter-spacing:1.5px;color:var(--dim);text-transform:uppercase;margin-bottom:5px}
+.field input,.field select{width:100%;background:var(--bg2);border:1px solid var(--line2);border-radius:2px;padding:8px 11px;font-family:var(--mono);font-size:11px;color:var(--text);outline:none;transition:border-color .15s}
+.field input:focus,.field select:focus{border-color:var(--cyan2)}
+.field input::placeholder{color:var(--muted);opacity:.5}
+.field select option{background:var(--bg2)}
+.field-hint{font-family:var(--mono);font-size:7.5px;color:var(--muted);margin-top:4px;letter-spacing:.3px}
+
+/* modals */
+.modal-bg{position:fixed;inset:0;background:rgba(4,8,14,.88);z-index:100;display:none;align-items:center;justify-content:center;backdrop-filter:blur(2px)}
+.modal-bg.open{display:flex}
+.modal{background:var(--bg1);border:1px solid var(--line2);border-radius:3px;width:460px;max-width:95vw;max-height:90vh;overflow-y:auto;padding:26px}
+.modal-hd{display:flex;align-items:center;gap:10px;margin-bottom:20px}
+.modal-hd h3{font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--text);flex:1}
+.modal-hd button{background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px;padding:0 2px;line-height:1}
+.modal-hd button:hover{color:var(--text)}
+.modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:20px;padding-top:16px;border-top:1px solid var(--line)}
+
+/* alerts */
+.alert{font-family:var(--mono);font-size:8.5px;letter-spacing:.8px;padding:9px 13px;border-radius:2px;margin-bottom:14px;display:none;line-height:1.5}
+.alert.show{display:block}
+.alert-err{background:var(--red2);border:1px solid var(--red3);color:var(--red)}
+.alert-ok{background:var(--green2);border:1px solid var(--green3);color:var(--green)}
+.alert-warn{background:var(--yellow2);border:1px solid var(--yellow3);color:var(--yellow)}
+
+/* raw key */
+.key-reveal{background:var(--bg2);border:1px solid var(--green);border-radius:3px;padding:14px 16px;margin-bottom:16px}
+.key-reveal-label{font-family:var(--mono);font-size:7.5px;letter-spacing:1.5px;color:var(--green);text-transform:uppercase;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.key-reveal-val{font-family:var(--mono);font-size:12px;color:var(--bright);word-break:break-all;user-select:all;padding:8px;background:rgba(0,0,0,.3);border-radius:2px;cursor:text}
+.key-reveal-warn{font-family:var(--mono);font-size:8px;color:var(--yellow);margin-top:8px;letter-spacing:.3px}
+.copy-btn{font-family:var(--mono);font-size:7.5px;letter-spacing:1px;padding:3px 9px;border:1px solid var(--green3);background:var(--green2);color:var(--green);cursor:pointer;border-radius:2px;margin-left:auto}
+.copy-btn:hover{background:rgba(48,232,144,.15)}
+
+/* empty */
+.empty{text-align:center;padding:48px 20px;font-family:var(--mono);font-size:9px;color:var(--muted);letter-spacing:1px}
+.empty-icon{font-size:28px;margin-bottom:10px;opacity:.4}
+
+/* avatar */
+.avatar{width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg,var(--cyan2),rgba(0,200,240,.3));display:inline-flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:10px;color:var(--bg0);font-weight:600;flex-shrink:0}
+
+/* scan line */
+.scan-line{position:fixed;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,var(--cyan),transparent);animation:scan 5s ease-in-out infinite;pointer-events:none;z-index:200;opacity:.25}
+@keyframes scan{0%{transform:translateX(-100%)}100%{transform:translateX(100%)}}
+
+/* audit action colors */
+.act-login{color:var(--green)}
+.act-create{color:var(--cyan)}
+.act-delete{color:var(--red)}
+.act-revoke{color:var(--yellow)}
+.act-update{color:var(--body)}
+.act-reset{color:var(--yellow)}
+</style>
+</head>
+<body>
+<div class="scan-line"></div>
+
+<!-- Top bar -->
+<div class="topbar">
+  <div class="logo">
+    <svg viewBox="0 0 28 28" fill="none">
+      <polygon points="14,1 27,8 27,20 14,27 1,20 1,8" stroke="#00c8f0" stroke-width="1.2" fill="rgba(0,200,240,0.05)"/>
+      <circle cx="14" cy="14" r="2.5" fill="#00c8f0"/>
+    </svg>
+    <span class="logo-name">TraceGuard</span>
+  </div>
+  <span class="topbar-sep">/</span>
+  <span class="topbar-title">Admin Portal</span>
+  <div class="topbar-right">
+    <div class="user-pill">
+      <span class="user-pill-name">{{ username }}</span>
+      <span class="user-pill-role">Admin</span>
+    </div>
+    <form action="/logout" method="POST" style="display:inline">
+      <button class="btn-top">Sign Out</button>
+    </form>
+  </div>
+</div>
+
+<div class="layout">
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="sidebar-section">Navigation</div>
+    <div class="nav-item active" id="nav-overview" onclick="showPage('overview')">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1" y="1" width="6" height="6" rx=".5"/><rect x="9" y="1" width="6" height="6" rx=".5"/><rect x="1" y="9" width="6" height="6" rx=".5"/><rect x="9" y="9" width="6" height="6" rx=".5"/></svg>
+      Overview
+    </div>
+    <div class="nav-divider"></div>
+    <div class="sidebar-section">Access Management</div>
+    <div class="nav-item" id="nav-users" onclick="showPage('users')">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="6" cy="5" r="3"/><path d="M1 14c0-2.8 2.2-5 5-5s5 2.2 5 5"/><circle cx="12" cy="5" r="2"/><path d="M14 13c0-2-.9-3.5-2-4"/></svg>
+      Users
+      <span class="nav-badge" id="users-badge">—</span>
+    </div>
+    <div class="nav-item" id="nav-keys" onclick="showPage('keys')">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="6" cy="8" r="4"/><path d="M10 8h5M13 6v4"/></svg>
+      API Keys
+      <span class="nav-badge" id="keys-badge">—</span>
+    </div>
+    <div class="nav-divider"></div>
+    <div class="sidebar-section">Logs</div>
+    <div class="nav-item" id="nav-audit" onclick="showPage('audit')">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="1" width="12" height="14" rx="1"/><path d="M5 5h6M5 8h6M5 11h3"/></svg>
+      Audit Log
+    </div>
+    <div class="sidebar-footer">
+      <div style="margin-bottom:6px;color:var(--line2)">─────────────</div>
+      <div>Backend: <a href="{{ backend }}" target="_blank">:8080</a></div>
+      <div>This portal: :5001</div>
+    </div>
+  </div>
+
+  <!-- Main -->
+  <div class="main">
+
+    <!-- OVERVIEW -->
+    <div class="page active" id="page-overview">
+      <div class="ph">
+        <div class="ph-info">
+          <h1>Overview</h1>
+          <p>System access summary and recent activity</p>
+        </div>
+        <button class="btn" onclick="loadAll()">↻ Refresh</button>
+      </div>
+      <div class="stats">
+        <div class="stat">
+          <div class="stat-val" id="ov-users">—</div>
+          <div class="stat-lbl">Total Users</div>
+          <div class="stat-sub" id="ov-users-sub"></div>
+        </div>
+        <div class="stat" style="--accent:var(--cyan)">
+          <div class="stat-val" id="ov-keys">—</div>
+          <div class="stat-lbl">Active API Keys</div>
+          <div class="stat-sub" id="ov-keys-sub"></div>
+        </div>
+        <div class="stat">
+          <div class="stat-val" id="ov-events">—</div>
+          <div class="stat-lbl">Audit Events (24 h)</div>
+          <div class="stat-sub" id="ov-events-sub"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Recent Activity</h2></div>
+        <div class="card-body tbl-wrap">
+          <table>
+            <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Target</th><th>IP</th></tr></thead>
+            <tbody id="ov-audit-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- USERS -->
+    <div class="page" id="page-users">
+      <div class="ph">
+        <div class="ph-info">
+          <h1>Users</h1>
+          <p>Portal accounts with login access</p>
+        </div>
+        <button class="btn btn-primary" onclick="openCreateUser()">+ New User</button>
+      </div>
+      <div class="alert alert-ok"  id="users-ok"></div>
+      <div class="alert alert-err" id="users-err"></div>
+      <div class="card">
+        <div class="card-head"><h2>All Users</h2><span id="users-count" style="font-family:var(--mono);font-size:9px;color:var(--muted)"></span></div>
+        <div class="card-body tbl-wrap">
+          <table>
+            <thead><tr><th></th><th>Username</th><th>Email</th><th>Role</th><th>Status</th><th>Last Login</th><th>Created By</th><th>Actions</th></tr></thead>
+            <tbody id="users-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- API KEYS -->
+    <div class="page" id="page-keys">
+      <div class="ph">
+        <div class="ph-info">
+          <h1>API Keys</h1>
+          <p>Machine credentials for agents and integrations</p>
+        </div>
+        <button class="btn btn-primary" onclick="openCreateKey()">+ New Key</button>
+      </div>
+      <div class="alert alert-ok"  id="keys-ok"></div>
+      <div class="alert alert-err" id="keys-err"></div>
+      <div id="key-reveal-area"></div>
+      <div class="card">
+        <div class="card-head"><h2>All API Keys</h2><span id="keys-count" style="font-family:var(--mono);font-size:9px;color:var(--muted)"></span></div>
+        <div class="card-body tbl-wrap">
+          <table>
+            <thead><tr><th>Name</th><th>Prefix</th><th>Created By</th><th>Created</th><th>Expires</th><th>Last Used</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="keys-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- AUDIT -->
+    <div class="page" id="page-audit">
+      <div class="ph">
+        <div class="ph-info">
+          <h1>Audit Log</h1>
+          <p>All admin actions are recorded immutably</p>
+        </div>
+        <button class="btn" onclick="loadAudit()">↻ Refresh</button>
+      </div>
+      <div class="card">
+        <div class="card-body tbl-wrap">
+          <table>
+            <thead><tr><th>Timestamp</th><th>Actor</th><th>Action</th><th>Target Type</th><th>Target</th><th>IP</th><th>Details</th></tr></thead>
+            <tbody id="audit-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /main -->
+</div><!-- /layout -->
+
+<!-- ── Modals ── -->
+
+<!-- Create User -->
+<div class="modal-bg" id="modal-create-user">
+  <div class="modal">
+    <div class="modal-hd">
+      <h3>Create New User</h3>
+      <button onclick="closeModal('modal-create-user')">✕</button>
+    </div>
+    <div class="alert alert-err" id="cu-err"></div>
+    <div class="form-row cols-2">
+      <div class="field"><label>Username *</label><input id="cu-username" placeholder="alice" autocomplete="off"></div>
+      <div class="field"><label>Email</label><input id="cu-email" type="email" placeholder="alice@example.com"></div>
+    </div>
+    <div class="form-row cols-2">
+      <div class="field">
+        <label>Password * (min 8 chars)</label>
+        <input id="cu-password" type="password" placeholder="••••••••">
+      </div>
+      <div class="field">
+        <label>Role *</label>
+        <select id="cu-role">
+          <option value="analyst">Analyst — read-only EDR access</option>
+          <option value="admin">Admin — full portal access</option>
+        </select>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal('modal-create-user')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitCreateUser()">Create User</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit User -->
+<div class="modal-bg" id="modal-edit-user">
+  <div class="modal">
+    <div class="modal-hd">
+      <h3>Edit User — <span id="eu-title"></span></h3>
+      <button onclick="closeModal('modal-edit-user')">✕</button>
+    </div>
+    <div class="alert alert-err" id="eu-err"></div>
+    <input type="hidden" id="eu-id">
+    <div class="form-row cols-2">
+      <div class="field"><label>Email</label><input id="eu-email" type="email"></div>
+      <div class="field"><label>Role</label>
+        <select id="eu-role">
+          <option value="analyst">Analyst</option>
+          <option value="admin">Admin</option>
+        </select>
+      </div>
+    </div>
+    <div class="field form-row" style="margin-bottom:0">
+      <label>Account Status</label>
+      <select id="eu-enabled">
+        <option value="true">Enabled — can log in</option>
+        <option value="false">Disabled — login blocked</option>
+      </select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal('modal-edit-user')">Cancel</button>
+      <button class="btn btn-warn" onclick="openResetPw()">Reset Password…</button>
+      <button class="btn btn-primary" onclick="submitEditUser()">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- Reset Password -->
+<div class="modal-bg" id="modal-reset-pw">
+  <div class="modal">
+    <div class="modal-hd">
+      <h3>Reset Password — <span id="rp-title"></span></h3>
+      <button onclick="closeModal('modal-reset-pw')">✕</button>
+    </div>
+    <div class="alert alert-err" id="rp-err"></div>
+    <div class="field form-row" style="margin-bottom:0">
+      <label>New Password (min 8 chars)</label>
+      <input id="rp-password" type="password" placeholder="new password">
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal('modal-reset-pw')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitResetPw()">Set New Password</button>
+    </div>
+  </div>
+</div>
+
+<!-- Create API Key -->
+<div class="modal-bg" id="modal-create-key">
+  <div class="modal">
+    <div class="modal-hd">
+      <h3>Create API Key</h3>
+      <button onclick="closeModal('modal-create-key')">✕</button>
+    </div>
+    <div class="alert alert-err" id="ck-err"></div>
+    <div class="form-row cols-2">
+      <div class="field">
+        <label>Key Name *</label>
+        <input id="ck-name" placeholder="edr-agent-prod" autocomplete="off">
+        <div class="field-hint">Descriptive name — shown in audit logs</div>
+      </div>
+      <div class="field">
+        <label>Expires At (optional)</label>
+        <input id="ck-expires" type="date">
+        <div class="field-hint">Leave blank for no expiry</div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal('modal-create-key')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitCreateKey()">Generate Key</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm action -->
+<div class="modal-bg" id="modal-confirm">
+  <div class="modal">
+    <div class="modal-hd">
+      <h3 id="confirm-title">Confirm Action</h3>
+      <button onclick="closeModal('modal-confirm')">✕</button>
+    </div>
+    <p id="confirm-msg" style="font-family:var(--mono);font-size:10px;color:var(--body);line-height:1.8;margin-bottom:8px"></p>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal('modal-confirm')">Cancel</button>
+      <button class="btn btn-danger" id="confirm-btn">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── state ────────────────────────────────────────────────────────────────────
+let _users = [], _keys = [];
+
+// ── navigation ───────────────────────────────────────────────────────────────
+function showPage(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('page-'+name).classList.add('active');
+  document.getElementById('nav-'+name).classList.add('active');
+  if (name==='overview') loadAll();
+  if (name==='users')    loadUsers();
+  if (name==='keys')     loadKeys();
+  if (name==='audit')    loadAudit();
+}
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+async function api(path, method='GET', body=null) {
+  const opts = { method, headers: {'Content-Type':'application/json'} };
+  if (body) opts.body = JSON.stringify(body);
+  const r = await fetch(path, opts);
+  let data;
+  try { data = await r.json(); } catch { data = {}; }
+  return { ok: r.ok, status: r.status, data };
+}
+
+function showAlert(id, msg, type='err') {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.className = `alert alert-${type} show`;
+  el.textContent = msg;
+  if (type === 'ok') setTimeout(() => el.classList.remove('show'), 4000);
+}
+
+function openModal(id)  { document.getElementById(id).classList.add('open'); }
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  const today = new Date();
+  const isToday = d.toDateString() === today.toDateString();
+  if (isToday) return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  return d.toLocaleDateString([], {month:'short', day:'numeric'}) + ' ' +
+         d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+}
+
+function fmtRelative(iso) {
+  if (!iso) return '';
+  const diff = Date.now() - new Date(iso);
+  if (diff < 60000) return 'just now';
+  if (diff < 3600000) return Math.floor(diff/60000) + 'm ago';
+  if (diff < 86400000) return Math.floor(diff/3600000) + 'h ago';
+  return Math.floor(diff/86400000) + 'd ago';
+}
+
+function initials(name) {
+  return (name || '?')[0].toUpperCase();
+}
+
+function actionClass(action) {
+  if (!action) return '';
+  if (action.includes('login')) return 'act-login';
+  if (action.includes('create')) return 'act-create';
+  if (action.includes('delete')) return 'act-delete';
+  if (action.includes('revoke')) return 'act-revoke';
+  if (action.includes('reset')) return 'act-reset';
+  if (action.includes('update')) return 'act-update';
+  return '';
+}
+
+// ── overview ─────────────────────────────────────────────────────────────────
+async function loadAll() {
+  const [ur, kr, ar] = await Promise.all([
+    api('/api/users'), api('/api/keys'), api('/api/audit')
+  ]);
+  const users   = ur.data.users   || [];
+  const keys    = kr.data.keys    || [];
+  const entries = ar.data.entries || [];
+
+  _users = users; _keys = keys;
+
+  const activeUsers = users.filter(u => u.enabled).length;
+  const activeKeys  = keys.filter(k => k.enabled).length;
+  document.getElementById('ov-users').textContent    = users.length;
+  document.getElementById('ov-users-sub').textContent = `${activeUsers} active, ${users.length-activeUsers} disabled`;
+  document.getElementById('ov-keys').textContent     = activeKeys;
+  document.getElementById('ov-keys-sub').textContent  = `${keys.length-activeKeys} revoked`;
+
+  const cutoff = Date.now() - 86400000;
+  const recent = entries.filter(e => new Date(e.timestamp) > cutoff);
+  document.getElementById('ov-events').textContent   = recent.length;
+  document.getElementById('ov-events-sub').textContent = 'in last 24 hours';
+
+  document.getElementById('users-badge').textContent = users.length;
+  document.getElementById('keys-badge').textContent  = activeKeys;
+
+  const tbody = document.getElementById('ov-audit-tbody');
+  const slice = entries.slice(0, 8);
+  if (!slice.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">No audit events yet</td></tr>';
+    return;
+  }
+  tbody.innerHTML = slice.map(e => `
+    <tr>
+      <td style="color:var(--muted);white-space:nowrap">${fmtDate(e.timestamp)}</td>
+      <td>${e.actor_name||e.actor_id||'—'}</td>
+      <td><span class="${actionClass(e.action)}">${e.action}</span></td>
+      <td style="color:var(--dim)">${e.target_name||e.target_id||'—'}</td>
+      <td style="color:var(--muted)">${e.ip||'—'}</td>
+    </tr>`).join('');
+}
+
+// ── users ────────────────────────────────────────────────────────────────────
+async function loadUsers() {
+  const { ok, data } = await api('/api/users');
+  if (!ok) { showAlert('users-err', data.error||'Failed to load users'); return; }
+  _users = data.users || [];
+  document.getElementById('users-badge').textContent = _users.length;
+  document.getElementById('users-count').textContent = `${_users.length} user${_users.length!==1?'s':''}`;
+  renderUsers();
+}
+
+function renderUsers() {
+  const tbody = document.getElementById('users-tbody');
+  if (!_users.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty"><div class="empty-icon">👤</div>No users yet</td></tr>';
+    return;
+  }
+  tbody.innerHTML = _users.map(u => `
+    <tr>
+      <td><div class="avatar">${initials(u.username)}</div></td>
+      <td><strong style="color:var(--text)">${u.username}</strong></td>
+      <td style="color:var(--dim)">${u.email||'—'}</td>
+      <td><span class="badge ${u.role==='admin'?'badge-yellow':'badge-cyan'}">${u.role}</span></td>
+      <td><span class="badge ${u.enabled?'badge-green':'badge-red'}">${u.enabled?'Active':'Disabled'}</span></td>
+      <td style="color:var(--muted)">${u.last_login_at ? fmtDate(u.last_login_at) : 'Never'}</td>
+      <td style="color:var(--muted)">${u.created_by}</td>
+      <td>
+        <div class="td-actions">
+          <button class="btn btn-sm" onclick="openEditUser('${u.id}')">Edit</button>
+          <button class="btn btn-sm btn-danger" onclick="confirmDeleteUser('${u.id}','${u.username}')">Delete</button>
+        </div>
+      </td>
+    </tr>`).join('');
+}
+
+function openCreateUser() {
+  ['cu-username','cu-email','cu-password'].forEach(id => document.getElementById(id).value='');
+  document.getElementById('cu-role').value = 'analyst';
+  document.getElementById('cu-err').classList.remove('show');
+  openModal('modal-create-user');
+  setTimeout(() => document.getElementById('cu-username').focus(), 60);
+}
+
+async function submitCreateUser() {
+  const username = document.getElementById('cu-username').value.trim();
+  const password = document.getElementById('cu-password').value;
+  const email    = document.getElementById('cu-email').value.trim();
+  const role     = document.getElementById('cu-role').value;
+  if (!username) { showAlert('cu-err','Username is required'); return; }
+  if (password.length < 8) { showAlert('cu-err','Password must be at least 8 characters'); return; }
+  const { ok, data } = await api('/api/users','POST',{username,password,email,role});
+  if (!ok) { showAlert('cu-err', data.error||'Failed to create user'); return; }
+  closeModal('modal-create-user');
+  showAlert('users-ok', `User "${username}" created successfully`, 'ok');
+  loadUsers();
+}
+
+function openEditUser(id) {
+  const u = _users.find(x => x.id===id);
+  if (!u) return;
+  document.getElementById('eu-id').value      = id;
+  document.getElementById('eu-title').textContent = u.username;
+  document.getElementById('eu-email').value   = u.email||'';
+  document.getElementById('eu-role').value    = u.role;
+  document.getElementById('eu-enabled').value = String(u.enabled);
+  document.getElementById('eu-err').classList.remove('show');
+  openModal('modal-edit-user');
+}
+
+async function submitEditUser() {
+  const id      = document.getElementById('eu-id').value;
+  const email   = document.getElementById('eu-email').value.trim();
+  const role    = document.getElementById('eu-role').value;
+  const enabled = document.getElementById('eu-enabled').value === 'true';
+  const { ok, data } = await api(`/api/users/${id}`,'PATCH',{email,role,enabled});
+  if (!ok) { showAlert('eu-err', data.error||'Failed to update user'); return; }
+  closeModal('modal-edit-user');
+  showAlert('users-ok','User updated successfully','ok');
+  loadUsers();
+}
+
+function openResetPw() {
+  document.getElementById('rp-title').textContent = document.getElementById('eu-title').textContent;
+  document.getElementById('rp-password').value = '';
+  document.getElementById('rp-err').classList.remove('show');
+  closeModal('modal-edit-user');
+  openModal('modal-reset-pw');
+  setTimeout(() => document.getElementById('rp-password').focus(), 60);
+}
+
+async function submitResetPw() {
+  const id       = document.getElementById('eu-id').value;
+  const password = document.getElementById('rp-password').value;
+  if (password.length < 8) { showAlert('rp-err','Password must be at least 8 characters'); return; }
+  const { ok, data } = await api(`/api/users/${id}/reset-password`,'POST',{password});
+  if (!ok) { showAlert('rp-err', data.error||'Failed to reset password'); return; }
+  closeModal('modal-reset-pw');
+  showAlert('users-ok','Password reset successfully','ok');
+}
+
+function confirmDeleteUser(id, username) {
+  document.getElementById('confirm-title').textContent = 'Delete User';
+  document.getElementById('confirm-msg').textContent   = `Delete user "${username}"? They will immediately lose access. This cannot be undone.`;
+  document.getElementById('confirm-btn').onclick = async () => {
+    const { ok, data } = await api(`/api/users/${id}`,'DELETE');
+    closeModal('modal-confirm');
+    if (!ok) { showAlert('users-err', data.error||'Delete failed'); return; }
+    showAlert('users-ok', `User "${username}" deleted`, 'ok');
+    loadUsers();
+  };
+  openModal('modal-confirm');
+}
+
+// ── api keys ──────────────────────────────────────────────────────────────────
+async function loadKeys() {
+  const { ok, data } = await api('/api/keys');
+  if (!ok) { showAlert('keys-err', data.error||'Failed to load keys'); return; }
+  _keys = data.keys || [];
+  document.getElementById('keys-badge').textContent  = _keys.filter(k=>k.enabled).length;
+  document.getElementById('keys-count').textContent  = `${_keys.length} key${_keys.length!==1?'s':''}`;
+  renderKeys();
+}
+
+function renderKeys() {
+  const tbody = document.getElementById('keys-tbody');
+  if (!_keys.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty"><div class="empty-icon">🔑</div>No API keys yet</td></tr>';
+    return;
+  }
+  tbody.innerHTML = _keys.map(k => `
+    <tr>
+      <td style="color:var(--text)">${k.name}</td>
+      <td><code style="color:var(--cyan);font-size:11px;letter-spacing:1px">${k.prefix}…</code></td>
+      <td style="color:var(--muted)">${k.created_by}</td>
+      <td style="color:var(--muted);white-space:nowrap">${fmtDate(k.created_at)}</td>
+      <td style="color:${k.expires_at&&new Date(k.expires_at)<new Date()?'var(--red)':'var(--muted)'}">${k.expires_at?fmtDate(k.expires_at):'No expiry'}</td>
+      <td style="color:var(--muted)">${k.last_used_at?fmtDate(k.last_used_at):'Never'}</td>
+      <td><span class="badge ${k.enabled?'badge-green':'badge-red'}">${k.enabled?'Active':'Revoked'}</span></td>
+      <td>
+        <div class="td-actions">
+          ${k.enabled?`<button class="btn btn-sm btn-warn" onclick="confirmRevokeKey('${k.id}','${k.name}')">Revoke</button>`:''}
+          <button class="btn btn-sm btn-danger" onclick="confirmDeleteKey('${k.id}','${k.name}')">Delete</button>
+        </div>
+      </td>
+    </tr>`).join('');
+}
+
+function openCreateKey() {
+  document.getElementById('ck-name').value    = '';
+  document.getElementById('ck-expires').value = '';
+  document.getElementById('ck-err').classList.remove('show');
+  openModal('modal-create-key');
+  setTimeout(() => document.getElementById('ck-name').focus(), 60);
+}
+
+async function submitCreateKey() {
+  const name    = document.getElementById('ck-name').value.trim();
+  const expires = document.getElementById('ck-expires').value;
+  if (!name) { showAlert('ck-err','Key name is required'); return; }
+  const body = {name};
+  if (expires) body.expires_at = new Date(expires + 'T00:00:00').toISOString();
+  const { ok, data } = await api('/api/keys','POST',body);
+  if (!ok) { showAlert('ck-err', data.error||'Failed to create key'); return; }
+  closeModal('modal-create-key');
+
+  // Show raw key reveal prominently
+  const area = document.getElementById('key-reveal-area');
+  area.innerHTML = `
+    <div class="key-reveal">
+      <div class="key-reveal-label">
+        ⚠ Copy this key now — it will never be shown again
+        <button class="copy-btn" onclick="copyKey(this)">Copy</button>
+      </div>
+      <div class="key-reveal-val" id="raw-key-val">${data.raw_key}</div>
+      <div class="key-reveal-warn">Store it in a secrets manager or environment variable. This message disappears on refresh.</div>
+    </div>`;
+  showAlert('keys-ok', `Key "${name}" created — copy it below before leaving this page`, 'ok');
+  loadKeys();
+}
+
+function copyKey(btn) {
+  const val = document.getElementById('raw-key-val').textContent;
+  navigator.clipboard.writeText(val).then(() => {
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = 'Copy', 2000);
+  });
+}
+
+function confirmRevokeKey(id, name) {
+  document.getElementById('confirm-title').textContent = 'Revoke API Key';
+  document.getElementById('confirm-msg').textContent   = `Revoke key "${name}"? It will stop authenticating immediately. Revocation cannot be undone.`;
+  document.getElementById('confirm-btn').onclick = async () => {
+    const { ok, data } = await api(`/api/keys/${id}/revoke`,'POST');
+    closeModal('modal-confirm');
+    if (!ok) { showAlert('keys-err', data.error||'Revoke failed'); return; }
+    showAlert('keys-ok', `Key "${name}" revoked`, 'ok');
+    loadKeys();
+  };
+  openModal('modal-confirm');
+}
+
+function confirmDeleteKey(id, name) {
+  document.getElementById('confirm-title').textContent = 'Delete API Key';
+  document.getElementById('confirm-msg').textContent   = `Permanently delete key "${name}"?`;
+  document.getElementById('confirm-btn').onclick = async () => {
+    const { ok, data } = await api(`/api/keys/${id}`,'DELETE');
+    closeModal('modal-confirm');
+    if (!ok) { showAlert('keys-err', data.error||'Delete failed'); return; }
+    showAlert('keys-ok', `Key "${name}" deleted`, 'ok');
+    loadKeys();
+  };
+  openModal('modal-confirm');
+}
+
+// ── audit ─────────────────────────────────────────────────────────────────────
+async function loadAudit() {
+  const { ok, data } = await api('/api/audit');
+  if (!ok) return;
+  const entries = data.entries || [];
+  const tbody = document.getElementById('audit-tbody');
+  if (!entries.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty"><div class="empty-icon">📋</div>No audit events yet</td></tr>';
+    return;
+  }
+  tbody.innerHTML = entries.map(e => `
+    <tr>
+      <td style="color:var(--muted);white-space:nowrap">${fmtDate(e.timestamp)}<br><span style="font-size:8px">${fmtRelative(e.timestamp)}</span></td>
+      <td>${e.actor_name||e.actor_id||'—'}</td>
+      <td><span class="badge badge-dim ${actionClass(e.action)}" style="border-color:transparent">${e.action}</span></td>
+      <td style="color:var(--muted)">${e.target_type||'—'}</td>
+      <td>${e.target_name||e.target_id||'—'}</td>
+      <td style="color:var(--muted)">${e.ip||'—'}</td>
+      <td style="color:var(--dim)">${e.details||'—'}</td>
+    </tr>`).join('');
+}
+
+// ── modal bg click ────────────────────────────────────────────────────────────
+document.querySelectorAll('.modal-bg').forEach(bg =>
+  bg.addEventListener('click', e => { if (e.target===bg) bg.classList.remove('open'); })
+);
+
+// ── init ──────────────────────────────────────────────────────────────────────
+loadAll();
+</script>
+</body>
+</html>

@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"flag"
 	"os"
 	"os/signal"
@@ -15,12 +16,15 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/youredr/edr-backend/internal/api"
+	"github.com/youredr/edr-backend/internal/apikeys"
+	"github.com/youredr/edr-backend/internal/audit"
 	"github.com/youredr/edr-backend/internal/config"
 	"github.com/youredr/edr-backend/internal/db"
 	"github.com/youredr/edr-backend/internal/detection"
 	"github.com/youredr/edr-backend/internal/ingest"
 	"github.com/youredr/edr-backend/internal/models"
 	"github.com/youredr/edr-backend/internal/store"
+	"github.com/youredr/edr-backend/internal/users"
 
 	// Register JSON codec for gRPC
 	_ "github.com/youredr/edr-backend/internal/proto"
@@ -67,9 +71,46 @@ func main() {
 	// ── Store ─────────────────────────────────────────────────────────────────
 	st := store.New(database)
 
+	// ── JWT secret: env var or random ─────────────────────────────────────────
+	jwtSecret := []byte(os.Getenv("EDR_JWT_SECRET"))
+	if len(jwtSecret) == 0 {
+		jwtSecret = make([]byte, 32)
+		if _, err := rand.Read(jwtSecret); err != nil {
+			logger.Fatal().Err(err).Msg("generate jwt secret")
+		}
+		logger.Warn().Msg("EDR_JWT_SECRET not set — using ephemeral secret (sessions will not survive restarts)")
+	}
+
+	// ── User Manager ──────────────────────────────────────────────────────────
+	um := users.New(database, jwtSecret)
+	if username, password, created, err := um.Bootstrap(context.Background()); err != nil {
+		logger.Warn().Err(err).Msg("user bootstrap failed")
+	} else if created {
+		logger.Warn().
+			Str("username", username).
+			Str("password", password).
+			Msg("╔══════════════════════════════════════════════════════════╗")
+		logger.Warn().
+			Str("username", username).
+			Str("password", password).
+			Msg("║  ADMIN PORTAL FIRST RUN — SAVE THESE CREDENTIALS        ║")
+		logger.Warn().
+			Str("username", username).
+			Str("password", password).
+			Msg("╚══════════════════════════════════════════════════════════╝")
+	}
+
+	// ── Audit Logger ──────────────────────────────────────────────────────────
+	al := audit.New(database)
+
+	// ── API Key Manager ───────────────────────────────────────────────────────
+	km := apikeys.New(database)
+	if err := km.Bootstrap(context.Background(), cfg.Auth.APIKey); err != nil {
+		logger.Warn().Err(err).Msg("api key bootstrap failed")
+	}
+
 	// ── Detection Engine ──────────────────────────────────────────────────────
 	engine := detection.New(st, logger, func(ctx context.Context, alert *models.Alert) {
-		// Persist alert to database.
 		if err := st.InsertAlert(ctx, alert); err != nil {
 			logger.Error().Err(err).Str("rule", alert.RuleID).Msg("persist alert failed")
 		} else {
@@ -94,7 +135,7 @@ func main() {
 	}()
 
 	// ── REST API Server ───────────────────────────────────────────────────────
-	apiServer := api.New(st, engine, logger, cfg.Auth.APIKey)
+	apiServer := api.New(st, engine, km, um, al, logger, cfg.Auth.APIKey)
 	go func() {
 		if err := apiServer.Listen(cfg.Server.HTTPAddr); err != nil {
 			if err.Error() != "http: Server closed" {
@@ -104,12 +145,10 @@ func main() {
 	}()
 
 	// ── Agent heartbeat monitor ───────────────────────────────────────────────
-	// Mark agents offline if no heartbeat in 2 minutes.
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
-			// Mark agents offline if no heartbeat in 90 seconds.
 			if err := st.MarkStaleAgentsOffline(context.Background(), 90*time.Second); err != nil {
 				logger.Warn().Err(err).Msg("stale agent sweep failed")
 			}

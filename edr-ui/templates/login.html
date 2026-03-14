@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TraceGuard — Sign In</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg0:#04080e;--bg1:#080f18;--bg2:#0c1622;--bg3:#111e2e;
+  --line:#16253a;--line2:#1d3048;--muted:#3a5570;--dim:#5a7a96;
+  --body:#8daec8;--text:#c8dced;--bright:#e8f4ff;
+  --cyan:#00c8f0;--cyan2:#008fb0;
+  --red:#f03a3a;--green:#30e890;
+  --mono:'IBM Plex Mono',monospace;--sans:'IBM Plex Sans',sans-serif;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{
+  font-family:var(--sans);font-size:13px;background:var(--bg0);
+  color:var(--body);min-height:100vh;display:flex;align-items:center;
+  justify-content:center;overflow:hidden;
+}
+
+/* animated grid background */
+body::before{
+  content:'';position:fixed;inset:0;
+  background-image:
+    linear-gradient(rgba(0,200,240,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,200,240,0.03) 1px, transparent 1px);
+  background-size:40px 40px;
+  pointer-events:none;
+}
+
+/* radial glow */
+body::after{
+  content:'';position:fixed;inset:0;
+  background:radial-gradient(ellipse 60% 50% at 50% 50%, rgba(0,200,240,0.04) 0%, transparent 70%);
+  pointer-events:none;
+}
+
+.wrap{
+  position:relative;z-index:1;width:100%;max-width:380px;padding:0 20px;
+}
+
+.logo{
+  display:flex;align-items:center;gap:10px;margin-bottom:36px;justify-content:center;
+}
+.logo svg{width:36px;height:36px}
+.logo-name{
+  font-family:var(--mono);font-size:16px;font-weight:600;
+  letter-spacing:4px;color:var(--cyan);text-transform:uppercase;
+}
+.logo-sub{
+  font-family:var(--mono);font-size:8.5px;letter-spacing:2px;
+  color:var(--muted);text-transform:uppercase;margin-top:1px;
+}
+
+.card{
+  background:var(--bg1);border:1px solid var(--line);border-radius:3px;
+  padding:28px 28px 24px;
+}
+
+.card-head{
+  margin-bottom:22px;
+}
+.card-head h1{
+  font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:2.5px;
+  color:var(--text);text-transform:uppercase;
+}
+.card-head p{
+  font-family:var(--mono);font-size:8.5px;letter-spacing:1px;
+  color:var(--muted);margin-top:4px;text-transform:uppercase;
+}
+
+.field{margin-bottom:14px}
+.field label{
+  display:block;font-family:var(--mono);font-size:8.5px;letter-spacing:1.5px;
+  color:var(--dim);text-transform:uppercase;margin-bottom:5px;
+}
+.field input{
+  width:100%;background:var(--bg2);border:1px solid var(--line2);
+  border-radius:2px;padding:8px 11px;
+  font-family:var(--mono);font-size:12px;color:var(--text);
+  outline:none;transition:border-color .15s;
+}
+.field input:focus{border-color:var(--cyan2);}
+.field input::placeholder{color:var(--muted);opacity:.6}
+
+.err{
+  display:none;background:rgba(240,58,58,.08);border:1px solid rgba(240,58,58,.3);
+  border-radius:2px;padding:8px 11px;margin-bottom:14px;
+  font-family:var(--mono);font-size:9px;letter-spacing:1px;color:var(--red);
+  text-transform:uppercase;
+}
+.err.show{display:block;}
+
+.btn-login{
+  width:100%;margin-top:6px;
+  font-family:var(--mono);font-size:9.5px;letter-spacing:2px;
+  text-transform:uppercase;padding:9px 16px;
+  border:1px solid var(--cyan2);background:rgba(0,200,240,.08);
+  color:var(--cyan);cursor:pointer;border-radius:2px;
+  transition:all .15s;
+}
+.btn-login:hover{background:rgba(0,200,240,.15);}
+.btn-login:active{transform:scale(.99);}
+
+.footer{
+  margin-top:18px;text-align:center;
+  font-family:var(--mono);font-size:8px;letter-spacing:1.5px;
+  color:var(--muted);text-transform:uppercase;
+}
+.scan-line{
+  position:fixed;top:0;left:0;right:0;height:2px;
+  background:linear-gradient(90deg,transparent,var(--cyan),transparent);
+  animation:scan 3s ease-in-out infinite;pointer-events:none;z-index:10;
+  opacity:.5;
+}
+@keyframes scan{
+  0%{transform:translateX(-100%)}
+  100%{transform:translateX(100%)}
+}
+</style>
+</head>
+<body>
+<div class="scan-line"></div>
+<div class="wrap">
+  <div class="logo">
+    <svg viewBox="0 0 28 28" fill="none">
+      <polygon points="14,1 27,8 27,20 14,27 1,20 1,8" stroke="#00c8f0" stroke-width="1.2" fill="rgba(0,200,240,0.05)"/>
+      <polygon points="14,7 21,11 21,19 14,23 7,19 7,11" stroke="#00c8f0" stroke-width="0.8" stroke-dasharray="2,1.5" fill="none" opacity="0.5"/>
+      <circle cx="14" cy="14" r="2.5" fill="#00c8f0"/>
+    </svg>
+    <div>
+      <div class="logo-name">TraceGuard</div>
+      <div class="logo-sub">Endpoint Detection &amp; Response</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h1>Authenticate</h1>
+      <p>Restricted access — credentials required</p>
+    </div>
+
+    {% if error %}
+    <div class="err show">Invalid username or password</div>
+    {% endif %}
+
+    <form method="POST" action="/login">
+      <div class="field">
+        <label>Username</label>
+        <input type="text" name="username" autocomplete="username"
+               placeholder="admin" autofocus required>
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input type="password" name="password" autocomplete="current-password"
+               placeholder="••••••••" required>
+      </div>
+      <button type="submit" class="btn-login">Sign In →</button>
+    </form>
+  </div>
+
+  <div class="footer">TraceGuard Console · Authenticated Session Required</div>
+</div>
+</body>
+</html>

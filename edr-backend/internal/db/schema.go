@@ -231,6 +231,60 @@ var migrations = []struct {
 		ON CONFLICT (id) DO NOTHING;
 		`,
 	},
+	{
+		name: "create_api_keys",
+		sql: `
+		CREATE TABLE IF NOT EXISTS api_keys (
+			id           TEXT PRIMARY KEY,
+			name         TEXT NOT NULL,
+			prefix       TEXT NOT NULL,
+			hash         TEXT NOT NULL,
+			created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			expires_at   TIMESTAMPTZ,
+			last_used_at TIMESTAMPTZ,
+			created_by   TEXT NOT NULL DEFAULT 'api',
+			enabled      BOOLEAN NOT NULL DEFAULT TRUE
+		);
+		CREATE INDEX IF NOT EXISTS api_keys_prefix_idx  ON api_keys(prefix);
+		CREATE INDEX IF NOT EXISTS api_keys_enabled_idx ON api_keys(enabled);
+		`,
+	},
+	{
+		name: "create_users",
+		sql: `
+		CREATE TABLE IF NOT EXISTS users (
+			id            TEXT PRIMARY KEY,
+			username      TEXT NOT NULL UNIQUE,
+			email         TEXT NOT NULL DEFAULT '',
+			password_hash TEXT NOT NULL,
+			role          TEXT NOT NULL DEFAULT 'analyst',
+			enabled       BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			last_login_at TIMESTAMPTZ,
+			created_by    TEXT NOT NULL DEFAULT 'system'
+		);
+		CREATE INDEX IF NOT EXISTS users_username_idx ON users(username);
+		`,
+	},
+	{
+		name: "create_audit_log",
+		sql: `
+		CREATE TABLE IF NOT EXISTS audit_log (
+			id          BIGSERIAL PRIMARY KEY,
+			timestamp   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			actor_id    TEXT NOT NULL DEFAULT '',
+			actor_name  TEXT NOT NULL DEFAULT '',
+			action      TEXT NOT NULL,
+			target_type TEXT NOT NULL DEFAULT '',
+			target_id   TEXT NOT NULL DEFAULT '',
+			target_name TEXT NOT NULL DEFAULT '',
+			ip          TEXT NOT NULL DEFAULT '',
+			details     TEXT NOT NULL DEFAULT ''
+		);
+		CREATE INDEX IF NOT EXISTS audit_log_timestamp_idx ON audit_log(timestamp DESC);
+		CREATE INDEX IF NOT EXISTS audit_log_actor_id_idx  ON audit_log(actor_id);
+		`,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.

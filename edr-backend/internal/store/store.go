@@ -23,6 +23,11 @@ func New(db *sqlx.DB) *Store {
 	return &Store{db: db}
 }
 
+// DB returns the underlying sqlx.DB, used by the migration package.
+func (s *Store) DB() *sqlx.DB {
+	return s.db
+}
+
 // ─── Agents ───────────────────────────────────────────────────────────────────
 
 func (s *Store) UpsertAgent(ctx context.Context, a *models.Agent) error {
