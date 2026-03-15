@@ -7,13 +7,19 @@ package ingest
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"time"
 
 	"github.com/google/uuid"
+	"crypto/tls"
+	"crypto/x509"
+	"os"
+
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/peer"
 
@@ -32,8 +38,16 @@ type Server struct {
 	configVer string
 }
 
+// TLSConfig holds cert paths for the gRPC server.
+type TLSConfig struct {
+	Enabled  bool
+	CertFile string
+	KeyFile  string
+	CAFile   string // optional — for mutual TLS
+}
+
 // New creates an ingest Server.
-func New(st *store.Store, eng *detection.Engine, log zerolog.Logger) *Server {
+func New(st *store.Store, eng *detection.Engine, log zerolog.Logger, tls TLSConfig) *Server {
 	s := &Server{
 		store:     st,
 		engine:    eng,
@@ -57,6 +71,24 @@ func New(st *store.Store, eng *detection.Engine, log zerolog.Logger) *Server {
 		grpc.MaxSendMsgSize(1*1024*1024),  // 1 MB
 		grpc.ChainUnaryInterceptor(loggingInterceptor(log)),
 	)
+	if tls.Enabled {
+		creds, err := loadServerTLS(tls.CertFile, tls.KeyFile, tls.CAFile, log)
+		if err != nil {
+			log.Fatal().Err(err).Msg("load gRPC TLS credentials")
+		}
+		s.grpc = grpc.NewServer(
+			grpc.Creds(creds),
+			grpc.KeepaliveParams(keepalive.ServerParameters{
+				MaxConnectionIdle: 5 * time.Minute, MaxConnectionAge: 2 * time.Hour,
+				MaxConnectionAgeGrace: 30 * time.Second, Time: 30 * time.Second, Timeout: 10 * time.Second,
+			}),
+			grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{MinTime: 10 * time.Second, PermitWithoutStream: true}),
+			grpc.MaxRecvMsgSize(8*1024*1024), grpc.MaxSendMsgSize(1*1024*1024),
+			grpc.ChainUnaryInterceptor(loggingInterceptor(log)),
+		)
+		pb.RegisterEventServiceServer(s.grpc, s)
+		log.Info().Str("cert", tls.CertFile).Msg("gRPC TLS enabled")
+	}
 
 	pb.RegisterEventServiceServer(s.grpc, s)
 	return s
@@ -250,4 +282,29 @@ func peerIP(ctx context.Context) string {
 		return p.Addr.String()
 	}
 	return ""
+}
+
+// loadServerTLS builds gRPC server credentials from PEM files.
+// caFile is optional; when set it enables mutual TLS (client cert required).
+func loadServerTLS(certFile, keyFile, caFile string, log zerolog.Logger) (credentials.TransportCredentials, error) {
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load server cert: %w", err)
+	}
+	tlsCfg := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS13,
+	}
+	if caFile != "" {
+		pem, err := os.ReadFile(caFile)
+		if err != nil {
+			return nil, fmt.Errorf("read CA: %w", err)
+		}
+		pool := x509.NewCertPool()
+		pool.AppendCertsFromPEM(pem)
+		tlsCfg.ClientCAs  = pool
+		tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
+		log.Info().Str("ca", caFile).Msg("mutual TLS: client cert required")
+	}
+	return credentials.NewTLS(tlsCfg), nil
 }

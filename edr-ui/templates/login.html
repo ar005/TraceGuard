@@ -143,7 +143,9 @@ body::after{
       <p>Restricted access — credentials required</p>
     </div>
 
-    {% if error %}
+    {% if error == "expired" %}
+    <div class="err show" style="background:rgba(240,192,48,.08);border-color:rgba(240,192,48,.3);color:var(--yellow)">Session expired — please sign in again</div>
+    {% elif error %}
     <div class="err show">Invalid username or password</div>
     {% endif %}
 

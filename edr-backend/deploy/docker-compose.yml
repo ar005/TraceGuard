@@ -40,11 +40,13 @@ services:
       EDR_SERVER_HTTP_ADDR:  ":8080"
       EDR_LOG_LEVEL:         info
       EDR_LOG_FORMAT:        json
+      EDR_JWT_SECRET:         change-this-to-a-long-random-secret-in-production
     ports:
       - "50051:50051"   # gRPC (agents connect here)
       - "8080:8080"     # REST API
     volumes:
       - ./config:/app/config:ro
+      - ./certs:/etc/edr/tls:ro   # mount TLS certs; create with: make gen-certs
 
 volumes:
   postgres_data:

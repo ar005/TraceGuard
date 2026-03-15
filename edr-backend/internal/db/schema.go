@@ -285,6 +285,25 @@ var migrations = []struct {
 		CREATE INDEX IF NOT EXISTS audit_log_actor_id_idx  ON audit_log(actor_id);
 		`,
 	},
+	{
+		name: "create_suppression_rules",
+		sql: `
+		CREATE TABLE IF NOT EXISTS suppression_rules (
+			id          TEXT PRIMARY KEY,
+			name        TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			enabled     BOOLEAN NOT NULL DEFAULT TRUE,
+			event_types TEXT[] NOT NULL DEFAULT '{}',
+			conditions  JSONB NOT NULL DEFAULT '[]',
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			author      TEXT NOT NULL DEFAULT 'system',
+			hit_count   BIGINT NOT NULL DEFAULT 0,
+			last_hit_at TIMESTAMPTZ
+		);
+		CREATE INDEX IF NOT EXISTS sup_rules_enabled_idx ON suppression_rules(enabled);
+		`,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.

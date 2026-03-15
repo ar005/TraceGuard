@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"strconv"
 	"time"
@@ -104,16 +105,24 @@ func (s *Server) registerRoutes() {
 		// Alerts
 		v1.GET("/alerts",             s.handleListAlerts)
 		v1.GET("/alerts/:id",         s.handleGetAlert)
-		v1.GET("/alerts/:id/events",  s.handleGetAlertEvents)
-		v1.PATCH("/alerts/:id",       s.handleUpdateAlert)
+		v1.GET("/alerts/:id/events",   s.handleGetAlertEvents)
+		v1.GET("/alerts/:id/timeline", s.handleGetAlertTimeline)
+		v1.PATCH("/alerts/:id",        s.handleUpdateAlert)
 
 		// Rules
-		v1.GET("/rules",         s.handleListRules)
-		v1.GET("/rules/:id",     s.handleGetRule)
-		v1.POST("/rules",        s.handleCreateRule)
-		v1.PUT("/rules/:id",     s.handleUpdateRule)
-		v1.DELETE("/rules/:id",  s.handleDeleteRule)
-		v1.POST("/rules/reload", s.handleReloadRules)
+		v1.GET("/rules",              s.handleListRules)
+		v1.GET("/rules/:id",          s.handleGetRule)
+		v1.POST("/rules",             s.handleCreateRule)
+		v1.PUT("/rules/:id",          s.handleUpdateRule)
+		v1.DELETE("/rules/:id",       s.handleDeleteRule)
+		v1.POST("/rules/reload",      s.handleReloadRules)
+		v1.POST("/rules/:id/backtest", s.handleBacktestRule)
+
+		// Suppression rules
+		v1.GET("/suppressions",        s.handleListSuppressions)
+		v1.POST("/suppressions",       s.handleCreateSuppression)
+		v1.PUT("/suppressions/:id",    s.handleUpdateSuppression)
+		v1.DELETE("/suppressions/:id", s.handleDeleteSuppression)
 
 		// Migration
 		mig := v1.Group("/migrate")
@@ -801,6 +810,231 @@ func (s *Server) handleInjectEvent(c *gin.Context) {
 		"alerts_fired": firedAlerts,
 		"matched":      len(firedAlerts) > 0,
 	})
+}
+
+// handleGetAlertTimeline returns all events from the alert's agent in
+// the window_minutes before/after the alert's first_seen timestamp.
+//   GET /api/v1/alerts/:id/timeline?window_minutes=30
+func (s *Server) handleGetAlertTimeline(c *gin.Context) {
+	ctx := c.Request.Context()
+	alert, err := s.store.GetAlert(ctx, c.Param("id"))
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	window := time.Duration(intQuery(c, "window_minutes", 30)) * time.Minute
+	before := alert.FirstSeen.Add(-window)
+	after  := alert.FirstSeen.Add(+window)
+	events, err := s.store.QueryEvents(ctx, store.QueryEventsParams{
+		AgentID: alert.AgentID, Since: &before, Until: &after, Limit: 500,
+	})
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"alert":        alert,
+		"events":       events,
+		"total":        len(events),
+		"window_start": before,
+		"window_end":   after,
+	})
+}
+
+// ─── Suppression Rules ───────────────────────────────────────────────────────
+
+// GET /api/v1/suppressions
+func (s *Server) handleListSuppressions(c *gin.Context) {
+	sups, err := s.store.ListSuppressions(c.Request.Context())
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"suppressions": sups, "total": len(sups)})
+}
+
+// POST /api/v1/suppressions
+func (s *Server) handleCreateSuppression(c *gin.Context) {
+	var body struct {
+		Name        string      `json:"name"        binding:"required"`
+		Description string      `json:"description"`
+		Enabled     bool        `json:"enabled"`
+		EventTypes  []string    `json:"event_types" binding:"required"`
+		Conditions  interface{} `json:"conditions"`
+		Author      string      `json:"author"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	raw, _ := marshalToRaw(body.Conditions)
+	r := &models.SuppressionRule{
+		ID:          "sup-" + uuid.New().String(),
+		Name:        body.Name,
+		Description: body.Description,
+		Enabled:     body.Enabled,
+		EventTypes:  pq.StringArray(body.EventTypes),
+		Conditions:  raw,
+		Author:      body.Author,
+	}
+	if r.Author == "" {
+		r.Author = "api"
+	}
+	if err := s.store.UpsertSuppression(c.Request.Context(), r); err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	_ = s.engine.Reload(c.Request.Context())
+	c.JSON(http.StatusCreated, r)
+}
+
+// PUT /api/v1/suppressions/:id
+func (s *Server) handleUpdateSuppression(c *gin.Context) {
+	existing, err := s.store.GetSuppression(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	var body struct {
+		Name        *string     `json:"name"`
+		Description *string     `json:"description"`
+		Enabled     *bool       `json:"enabled"`
+		EventTypes  []string    `json:"event_types"`
+		Conditions  interface{} `json:"conditions"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if body.Name        != nil { existing.Name        = *body.Name }
+	if body.Description != nil { existing.Description = *body.Description }
+	if body.Enabled     != nil { existing.Enabled     = *body.Enabled }
+	if body.EventTypes  != nil { existing.EventTypes  = pq.StringArray(body.EventTypes) }
+	if body.Conditions  != nil {
+		if raw, err := marshalToRaw(body.Conditions); err == nil {
+			existing.Conditions = raw
+		}
+	}
+	if err := s.store.UpsertSuppression(c.Request.Context(), existing); err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	_ = s.engine.Reload(c.Request.Context())
+	c.JSON(http.StatusOK, existing)
+}
+
+// DELETE /api/v1/suppressions/:id
+func (s *Server) handleDeleteSuppression(c *gin.Context) {
+	if err := s.store.DeleteSuppression(c.Request.Context(), c.Param("id")); err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	_ = s.engine.Reload(c.Request.Context())
+	c.Status(http.StatusNoContent)
+}
+
+// ─── Rule backtest ────────────────────────────────────────────────────────────
+
+// POST /api/v1/rules/:id/backtest?window_hours=168
+// Runs the rule's conditions against up to 10k historical events and returns
+// match count, match rate, and up to 5 sample matches.
+func (s *Server) handleBacktestRule(c *gin.Context) {
+	ctx := c.Request.Context()
+	rule, err := s.store.GetRule(ctx, c.Param("id"))
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	window := intQuery(c, "window_hours", 168)
+
+	total, events, err := s.store.BacktestRule(ctx, store.BacktestParams{
+		EventTypes:  []string(rule.EventTypes),
+		Conditions:  rule.Conditions,
+		WindowHours: window,
+	})
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+
+	// Run conditions client-side (reuse engine logic via a mini eval loop)
+	matched := 0
+	var samples []models.Event
+	for _, ev := range events {
+		var payload map[string]interface{}
+		if err := json.Unmarshal(ev.Payload, &payload); err != nil {
+			continue
+		}
+		dst := make(map[string]interface{})
+		for k, v := range payload { dst[k] = v }
+		flattenForBacktest(payload, "", dst)
+
+		var conds []models.RuleCondition
+		if err := json.Unmarshal(rule.Conditions, &conds); err != nil {
+			continue
+		}
+		if backTestMatchAll(dst, conds) {
+			matched++
+			if len(samples) < 5 {
+				samples = append(samples, ev)
+			}
+		}
+	}
+
+	matchRate := 0.0
+	if total > 0 {
+		matchRate = float64(matched) / float64(total) * 100
+	}
+
+	c.JSON(http.StatusOK, models.BacktestResult{
+		RuleID:       rule.ID,
+		TotalScanned: total,
+		Matched:      matched,
+		MatchRate:    matchRate,
+		WindowHours:  window,
+		Samples:      samples,
+	})
+}
+
+// flattenForBacktest is a standalone flatten used in the backtest handler.
+func flattenForBacktest(src map[string]interface{}, prefix string, dst map[string]interface{}) {
+	for k, v := range src {
+		key := k
+		if prefix != "" { key = prefix + "." + k }
+		switch val := v.(type) {
+		case map[string]interface{}:
+			flattenForBacktest(val, key, dst)
+		default:
+			dst[key] = val
+		}
+	}
+}
+
+// backTestMatchAll checks all conditions against a flattened payload map.
+func backTestMatchAll(payload map[string]interface{}, conds []models.RuleCondition) bool {
+	for _, c := range conds {
+		act, ok := payload[c.Field]
+		if !ok { return false }
+		switch c.Op {
+		case "eq":       if fmt.Sprintf("%v", act) != fmt.Sprintf("%v", c.Value) { return false }
+		case "ne":       if fmt.Sprintf("%v", act) == fmt.Sprintf("%v", c.Value) { return false }
+		case "contains": if !strings.Contains(fmt.Sprintf("%v", act), fmt.Sprintf("%v", c.Value)) { return false }
+		case "startswith": if !strings.HasPrefix(fmt.Sprintf("%v", act), fmt.Sprintf("%v", c.Value)) { return false }
+		case "in":
+			var vals []string
+			switch v := c.Value.(type) {
+			case []interface{}: for _, s := range v { vals = append(vals, fmt.Sprintf("%v", s)) }
+			case []string: vals = v
+			}
+			found := false
+			for _, v := range vals { if v == fmt.Sprintf("%v", act) { found = true; break } }
+			if !found { return false }
+		case "regex":
+			if matched, err := regexp.MatchString(fmt.Sprintf("%v", c.Value), fmt.Sprintf("%v", act)); err != nil || !matched { return false }
+		default: return false
+		}
+	}
+	return true
 }
 
 // ─── Rules ────────────────────────────────────────────────────────────────────

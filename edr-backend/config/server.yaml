@@ -3,6 +3,11 @@
 server:
   grpc_addr: ":50051"
   http_addr: ":8080"
+  tls:
+    enabled:   false          # set true + fill cert/key to enable TLS on gRPC
+    cert_file: "/etc/edr/tls/server.crt"
+    key_file:  "/etc/edr/tls/server.key"
+    ca_file:   ""             # set for mutual TLS (client cert required)
 
 database:
   host:     "postgres"
@@ -18,3 +23,9 @@ log:
 
 auth:
   api_key: ""
+
+# Retention: auto-delete old data to prevent disk fill.
+# Set to 0 to disable. Alerts are only deleted when CLOSED/RESOLVED.
+retention:
+  event_days: 90    # delete events older than 90 days
+  alert_days:  0    # 0 = keep all alerts (only closed ones would be deleted)

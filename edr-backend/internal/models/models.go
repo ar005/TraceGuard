@@ -72,10 +72,37 @@ type Rule struct {
 	Author      string          `db:"author"      json:"author"`
 }
 
+// SuppressionRule silences events that match its conditions before detection runs.
+// Use it to filter known-good noise (automated tasks, deploy pipelines, etc.)
+// so analysts don't drown in false positives.
+type SuppressionRule struct {
+	ID          string          `db:"id"          json:"id"`
+	Name        string          `db:"name"        json:"name"`
+	Description string          `db:"description" json:"description"`
+	Enabled     bool            `db:"enabled"     json:"enabled"`
+	EventTypes  pq.StringArray  `db:"event_types" json:"event_types"`
+	Conditions  json.RawMessage `db:"conditions"  json:"conditions"`
+	CreatedAt   time.Time       `db:"created_at"  json:"created_at"`
+	UpdatedAt   time.Time       `db:"updated_at"  json:"updated_at"`
+	Author      string          `db:"author"      json:"author"`
+	HitCount    int64           `db:"hit_count"   json:"hit_count"`
+	LastHitAt   *time.Time      `db:"last_hit_at" json:"last_hit_at,omitempty"`
+}
+
+// BacktestResult is returned by the rule backtest endpoint.
+type BacktestResult struct {
+	RuleID       string  `json:"rule_id"`
+	TotalScanned int     `json:"total_scanned"`
+	Matched      int     `json:"matched"`
+	MatchRate    float64 `json:"match_rate"`
+	WindowHours  int     `json:"window_hours"`
+	Samples      []Event `json:"samples"` // up to 5 matching events
+}
+
 // RuleCondition is a single condition in a rule's condition list.
 type RuleCondition struct {
 	Field string      `json:"field"` // e.g. "process.comm", "dst_port"
-	Op    string      `json:"op"`    // eq, ne, in, gt, lt, startswith, regex
+	Op    string      `json:"op"`    // eq, ne, in, gt, lt, startswith, contains, regex
 	Value interface{} `json:"value"`
 }
 

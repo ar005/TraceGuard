@@ -215,6 +215,32 @@ func (s *Store) CountEvents(ctx context.Context, agentID string, since time.Time
 	return n, err
 }
 
+// DeleteOldEvents deletes events older than the given cutoff time.
+// Returns the number of rows deleted.
+func (s *Store) DeleteOldEvents(ctx context.Context, olderThan time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM events WHERE timestamp < $1`, olderThan)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// DeleteOldAlerts deletes CLOSED/RESOLVED alerts older than the given cutoff.
+// Open alerts are never auto-deleted.
+func (s *Store) DeleteOldAlerts(ctx context.Context, olderThan time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM alerts
+		WHERE status IN ('CLOSED','RESOLVED')
+		  AND last_seen < $1`, olderThan)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 // ─── Alerts ───────────────────────────────────────────────────────────────────
 
 func (s *Store) InsertAlert(ctx context.Context, a *models.Alert) error {
@@ -402,3 +428,90 @@ func (s *Store) DeleteRule(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM rules WHERE id=$1`, id)
 	return err
 }
+
+// ─── Suppression Rules ────────────────────────────────────────────────────────
+
+func (s *Store) ListSuppressions(ctx context.Context) ([]models.SuppressionRule, error) {
+	var sups []models.SuppressionRule
+	err := s.db.SelectContext(ctx, &sups,
+		`SELECT * FROM suppression_rules ORDER BY created_at DESC`)
+	return sups, err
+}
+
+func (s *Store) GetSuppression(ctx context.Context, id string) (*models.SuppressionRule, error) {
+	var r models.SuppressionRule
+	err := s.db.GetContext(ctx, &r, `SELECT * FROM suppression_rules WHERE id=$1`, id)
+	return &r, err
+}
+
+func (s *Store) UpsertSuppression(ctx context.Context, r *models.SuppressionRule) error {
+	conds, err := json.Marshal(r.Conditions)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO suppression_rules
+			(id, name, description, enabled, event_types, conditions, author, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,NOW(),NOW())
+		ON CONFLICT (id) DO UPDATE SET
+			name        = EXCLUDED.name,
+			description = EXCLUDED.description,
+			enabled     = EXCLUDED.enabled,
+			event_types = EXCLUDED.event_types,
+			conditions  = EXCLUDED.conditions,
+			updated_at  = NOW()
+	`, r.ID, r.Name, r.Description, r.Enabled,
+		pq.Array(r.EventTypes), conds, r.Author)
+	return err
+}
+
+func (s *Store) DeleteSuppression(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM suppression_rules WHERE id=$1`, id)
+	return err
+}
+
+// IncrSuppressionHits increments the hit counter for a suppression rule.
+// Called asynchronously — errors are intentionally ignored.
+func (s *Store) IncrSuppressionHits(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE suppression_rules
+		SET hit_count = hit_count + 1, last_hit_at = NOW()
+		WHERE id = $1`, id)
+	return err
+}
+
+// ─── Rule backtest ────────────────────────────────────────────────────────────
+
+// BacktestParams defines parameters for a rule backtest query.
+type BacktestParams struct {
+	EventTypes  []string
+	Conditions  []byte // raw JSON conditions
+	WindowHours int    // how many hours of history to scan
+	Limit       int    // max events to scan
+}
+
+// BacktestRule runs a rule's conditions against recent historical events and
+// returns matching counts + up to 5 sample matches.
+func (s *Store) BacktestRule(ctx context.Context, p BacktestParams) (int, []models.Event, error) {
+	if p.WindowHours == 0 {
+		p.WindowHours = 168 // 7 days default
+	}
+	if p.Limit == 0 {
+		p.Limit = 10000
+	}
+	since := time.Now().Add(-time.Duration(p.WindowHours) * time.Hour)
+
+	params := QueryEventsParams{
+		Since: &since,
+		Limit: p.Limit,
+	}
+	if len(p.EventTypes) > 0 && p.EventTypes[0] != "*" {
+		params.EventTypes = p.EventTypes
+	}
+	events, err := s.QueryEvents(ctx, params)
+	if err != nil {
+		return 0, nil, err
+	}
+	return len(events), events, nil
+}
+

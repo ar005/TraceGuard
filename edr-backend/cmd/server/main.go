@@ -127,7 +127,12 @@ func main() {
 	}
 
 	// ── gRPC Ingest Server ────────────────────────────────────────────────────
-	grpcServer := ingest.New(st, engine, logger)
+	grpcServer := ingest.New(st, engine, logger, ingest.TLSConfig{
+		Enabled:  cfg.Server.TLS.Enabled,
+		CertFile: cfg.Server.TLS.CertFile,
+		KeyFile:  cfg.Server.TLS.KeyFile,
+		CAFile:   cfg.Server.TLS.CAFile,
+	})
 	go func() {
 		if err := grpcServer.Listen(cfg.Server.GRPCAddr); err != nil {
 			logger.Fatal().Err(err).Msg("gRPC server failed")
@@ -152,6 +157,39 @@ func main() {
 			if err := st.MarkStaleAgentsOffline(context.Background(), 90*time.Second); err != nil {
 				logger.Warn().Err(err).Msg("stale agent sweep failed")
 			}
+		}
+	}()
+
+	// ── Retention sweep (runs every 6 hours) ────────────────────────────────
+	go func() {
+		if cfg.Retention.EventDays == 0 && cfg.Retention.AlertDays == 0 {
+			return // retention disabled
+		}
+		runSweep := func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			if cfg.Retention.EventDays > 0 {
+				cutoff := time.Now().AddDate(0, 0, -cfg.Retention.EventDays)
+				if n, err := st.DeleteOldEvents(ctx, cutoff); err != nil {
+					logger.Error().Err(err).Msg("retention: event sweep failed")
+				} else if n > 0 {
+					logger.Info().Int64("deleted", n).Int("days", cfg.Retention.EventDays).Msg("retention: events pruned")
+				}
+			}
+			if cfg.Retention.AlertDays > 0 {
+				cutoff := time.Now().AddDate(0, 0, -cfg.Retention.AlertDays)
+				if n, err := st.DeleteOldAlerts(ctx, cutoff); err != nil {
+					logger.Error().Err(err).Msg("retention: alert sweep failed")
+				} else if n > 0 {
+					logger.Info().Int64("deleted", n).Int("days", cfg.Retention.AlertDays).Msg("retention: alerts pruned")
+				}
+			}
+		}
+		runSweep() // run once at startup
+		ticker := time.NewTicker(6 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			runSweep()
 		}
 	}()
 

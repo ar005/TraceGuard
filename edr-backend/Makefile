@@ -43,3 +43,33 @@ db-start:
 
 help:
 	@echo "Targets: build run test clean docker-up docker-down docker-logs db-start"
+
+# Generate self-signed TLS certs for dev/testing.
+# Puts files in deploy/certs/. Copy to /etc/edr/tls/ on the backend host.
+# For agents: copy ca.crt and optionally issue per-agent client certs.
+gen-certs:
+	@echo "==> Generating self-signed CA + server cert in deploy/certs/"
+	@mkdir -p deploy/certs
+	@# 1. CA key + cert (10-year)
+	openssl genrsa -out deploy/certs/ca.key 4096
+	openssl req -new -x509 -days 3650 -key deploy/certs/ca.key \
+		-subj "/CN=EDR-CA/O=TraceGuard" \
+		-out deploy/certs/ca.crt
+	@# 2. Server key + CSR
+	openssl genrsa -out deploy/certs/server.key 2048
+	openssl req -new -key deploy/certs/server.key \
+		-subj "/CN=edr-backend/O=TraceGuard" \
+		-out deploy/certs/server.csr
+	@# 3. Sign server cert with CA; include localhost + 127.0.0.1 as SANs
+	@echo "subjectAltName=DNS:localhost,DNS:edr-backend,IP:127.0.0.1" > /tmp/edr-san.ext
+	openssl x509 -req -days 825 \
+		-in deploy/certs/server.csr \
+		-CA deploy/certs/ca.crt -CAkey deploy/certs/ca.key -CAcreateserial \
+		-extfile /tmp/edr-san.ext \
+		-out deploy/certs/server.crt
+	@echo "==> Certs written to deploy/certs/"
+	@echo "    ca.crt     — distribute to every agent"
+	@echo "    server.crt — backend certificate"
+	@echo "    server.key — backend private key (keep secret)"
+	@echo "Next: copy to /etc/edr/tls/ and set server.tls.enabled: true"
+

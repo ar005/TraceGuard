@@ -291,6 +291,10 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
       <svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 3h12v1.5H2zM2 7h12v1.5H2zM2 11h8v1.5H2z"/></svg>
       Rules
     </div>
+    <div class="nav-tab" id="tb-suppress" onclick="nav('suppress')">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="6"/><path d="M5 8h6M8 5v6" stroke-width="1.3"/></svg>
+      Suppression
+    </div>
     <div class="nav-tab" id="tb-builder" onclick="nav('builder')">
       <svg viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M8 5v3l2 2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
       Rule Builder
@@ -576,6 +580,72 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
   </div>
 </section>
 
+
+<!-- ── SUPPRESSION RULES ── -->
+<section class="page" id="pg-suppress">
+  <div class="ph">
+    <div><h1><span class="sl">//</span>SUPPRESSION RULES</h1><p>SILENCE KNOWN-GOOD NOISE BEFORE DETECTION RUNS</p></div>
+    <div class="ph-r">
+      <button class="btn suc" onclick="openSuppressionForm()">＋ NEW SUPPRESSION</button>
+      <button class="btn pri" onclick="loadSuppressions()">⟳ REFRESH</button>
+    </div>
+  </div>
+
+  <!-- Create/Edit form (hidden by default) -->
+  <div id="sup-form-card" class="card" style="display:none;margin-bottom:16px">
+    <div class="ch"><span class="ct" id="sup-form-title">NEW SUPPRESSION RULE</span>
+      <button class="btn" onclick="closeSuppressionForm()">✕ CANCEL</button></div>
+    <div class="rb" style="padding:16px">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Rule Name *</label>
+          <input class="form-input" id="sup-name" placeholder="e.g. Suppress deploy pipeline commands">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Author</label>
+          <input class="form-input" id="sup-author" placeholder="analyst">
+        </div>
+      </div>
+      <div class="form-row full">
+        <div class="form-group">
+          <label class="form-label">Description — why is this noise?</label>
+          <textarea class="form-textarea" id="sup-desc" placeholder="Ansible runs this every 5 minutes. Not suspicious."></textarea>
+        </div>
+      </div>
+      <div class="rb-section">
+        <div class="rb-title">Event Types</div>
+        <div id="sup-evt-chips" class="evt-chips">
+          <div class="evt-chip" data-type="CMD_EXEC" onclick="toggleChip(this)">CMD_EXEC</div>
+          <div class="evt-chip" data-type="CMD_HISTORY" onclick="toggleChip(this)">CMD_HISTORY</div>
+          <div class="evt-chip" data-type="PROCESS_EXEC" onclick="toggleChip(this)">PROCESS_EXEC</div>
+          <div class="evt-chip" data-type="FILE_CREATE" onclick="toggleChip(this)">FILE_CREATE</div>
+          <div class="evt-chip" data-type="FILE_WRITE" onclick="toggleChip(this)">FILE_WRITE</div>
+          <div class="evt-chip" data-type="NET_CONNECT" onclick="toggleChip(this)">NET_CONNECT</div>
+          <div class="evt-chip" data-type="*" onclick="toggleChip(this)">ALL EVENTS</div>
+        </div>
+      </div>
+      <div class="rb-section">
+        <div class="rb-title">Match Conditions — ALL must match to suppress</div>
+        <div id="sup-cond-list" style="margin-bottom:8px"></div>
+        <button class="btn" onclick="addSupCondition()">＋ ADD CONDITION</button>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:16px">
+        <button class="btn suc" onclick="saveSuppression()">✓ SAVE SUPPRESSION RULE</button>
+        <button class="btn" onclick="closeSuppressionForm()">CANCEL</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="sup-backtest-result" style="display:none"></div>
+
+  <div class="card">
+    <div class="tw"><table>
+      <thead><tr><th>State</th><th>Name</th><th>Event Types</th><th>Conditions</th><th>Author</th><th>Hits</th><th>Last Hit</th><th>Actions</th></tr></thead>
+      <tbody id="sup-tbody"><tr><td colspan="8" class="st-row st-load">LOADING</td></tr></tbody>
+    </table></div>
+  </div>
+</section>
+
 <!-- ── RULE BUILDER ── -->
 <section class="page" id="pg-builder">
   <div class="ph">
@@ -669,6 +739,9 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
             <button class="btn" onclick="testRule()" style="padding:9px 16px">
               ⚡ TEST AGAINST RECENT EVENTS
             </button>
+            <button class="btn" id="rb-backtest-btn" onclick="backtestCurrentRule()" style="padding:9px 16px;color:var(--cyan);border-color:rgba(0,200,240,.3);display:none">
+              📊 BACKTEST (7 DAYS)
+            </button>
           </div>
         </div>
       </div>
@@ -692,6 +765,18 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
     </div>
   </div>
 </section>
+
+
+<!-- ── BACKTEST RESULTS MODAL ── -->
+<div id="backtest-modal" style="display:none;position:fixed;inset:0;background:rgba(4,8,14,.85);z-index:800;align-items:center;justify-content:center">
+  <div style="background:var(--bg1);border:1px solid var(--line2);border-radius:3px;width:580px;max-width:96vw;max-height:85vh;overflow-y:auto;padding:24px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:18px">
+      <span style="font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:2px;color:var(--text);text-transform:uppercase;flex:1" id="bt-modal-title">BACKTEST RESULTS</span>
+      <button onclick="document.getElementById('backtest-modal').style.display='none'" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px">✕</button>
+    </div>
+    <div id="bt-modal-body"></div>
+  </div>
+</div>
 
 </main>
 
@@ -758,11 +843,21 @@ function cmdSevTag(sev, tags){
 // ─── api ─────────────────────────────────────────────
 async function api(path){
   const r=await fetch(path);
+  if(r.status===401){
+    // Session expired — show banner then redirect after a short delay
+    // so the current render cycle completes cleanly.
+    setTimeout(()=>{ window.location.href='/login?error=expired'; }, 100);
+    throw new Error('session-expired');
+  }
   if(!r.ok) throw new Error('HTTP '+r.status);
   return r.json();
 }
 async function apiMethod(path,method,body){
   const r=await fetch(path,{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(r.status===401){
+    setTimeout(()=>{ window.location.href='/login?error=expired'; }, 100);
+    throw new Error('session-expired');
+  }
   if(!r.ok) throw new Error(`HTTP ${r.status}: `+(await r.text()));
   return r.json();
 }
@@ -779,6 +874,29 @@ function toast(msg, ok=true){
 setInterval(()=>{$('clock').textContent=new Date().toUTCString().slice(17,25)+' UTC';},1000);
 
 // ─── nav ─────────────────────────────────────────────
+
+// ── drawer ───────────────────────────────────────────
+function openDrawer(title, body) {
+  const d = document.getElementById('drawer');
+  const ov = document.getElementById('ov');
+  document.getElementById('d-title').textContent = title;
+  document.getElementById('d-body').innerHTML = body;
+  d.classList.add('open');
+  if (ov) ov.classList.add('open');
+}
+
+function closeDrawer() {
+  const d = document.getElementById('drawer');
+  const ov = document.getElementById('ov');
+  if (d)  d.classList.remove('open');
+  if (ov) ov.classList.remove('open');
+}
+
+// dr() renders a label+value row in the drawer detail grid
+function dr(label, value) {
+  return '<div class="dk">' + label + '</div><div class="dv">' + value + '</div>';
+}
+
 function nav(name){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));
   document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('active'));
@@ -790,6 +908,7 @@ function nav(name){
   if(name==='events')  loadEvents();
   if(name==='agents')  loadAgents();
   if(name==='rules')   loadRules();
+  if(name==='suppress') loadSuppressions();
   if(name==='builder'){updatePreview();renderFieldRef();}
 }
 
@@ -838,7 +957,7 @@ async function loadDash(){
     // feed
     const al=dash.recent_alerts||[];
     $('dash-feed').innerHTML=al.length
-      ?al.map(a=>`<div class="fi" onclick='openAlert(${JSON.stringify(JSON.stringify(a))})'>
+      ?al.map(a=>`<div class="fi" onclick="openAlert(${JSON.stringify(JSON.stringify(a))})">
           <div><div class="fsb fsb${a.severity}"></div></div>
           <div><div class="ft">${esc(a.title)}</div>
           <div class="fm"><span>${esc(a.hostname||'–')}</span><span>${sev(a.severity)}</span><span>${stb(a.status)}</span><span>${ago(a.first_seen)}</span></div></div>
@@ -849,14 +968,18 @@ async function loadDash(){
     const ad=await api('/api/agents');
     const ags=(ad.agents||[]).slice(0,6);
     $('dash-ag').innerHTML=ags.length
-      ?ags.map(a=>`<tr onclick='openAgent(${JSON.stringify(JSON.stringify(a))})'>
+      ?ags.map(a=>`<tr onclick="openAgent(${JSON.stringify(JSON.stringify(a))})">
           <td><span class="obadge"><span class="dot ${a.is_online?'don':'doff'}"></span>${a.is_online?'<span style="color:var(--green)">ONLINE</span>':'<span class="dim">OFFLINE</span>'}</span></td>
           <td class="mono">${esc(a.hostname)}</td><td>${esc(a.os||'–')}</td>
           <td class="mono dim">${esc(a.ip||'–')}</td><td class="mono dim">${esc(a.agent_ver||'–')}</td>
           <td class="mono dim">${ago(a.last_seen)}</td>
         </tr>`).join('')
       :'<tr><td colspan="6" class="st-row">NO AGENTS</td></tr>';
-  }catch(e){setStatus(false,'ERROR');console.error(e);}
+  }catch(e){
+    if(e.message==='session-expired') return; // redirect already scheduled
+    setStatus(false,'BACKEND OFFLINE');
+    console.error('loadDash error:',e);
+  }
 }
 
 // ─── alerts ──────────────────────────────────────────
@@ -867,7 +990,7 @@ async function loadAlerts(){
     const d=await api('/api/alerts'+(_alertFilter?`?status=${_alertFilter}`:''));
     const al=d.alerts||[];
     tb.innerHTML=al.length
-      ?al.map(a=>`<tr onclick='openAlert(${JSON.stringify(JSON.stringify(a))})'>
+      ?al.map(a=>`<tr onclick="openAlert(${JSON.stringify(JSON.stringify(a))})">
           <td>${sev(a.severity)}</td><td class="trunc">${esc(a.title)}</td>
           <td class="mono">${esc(a.hostname||'–')}</td>
           <td class="mono dim" style="font-size:9.5px">${esc(a.rule_name||'–')}</td>
@@ -950,7 +1073,7 @@ async function loadCmd(){
       const prompt=isHist?`<span style="color:var(--dim);margin-right:6px">[history]</span>`
                          :`<span style="color:var(--green);margin-right:6px">${esc(user)}@${esc(e.hostname||'?')} $</span>`;
 
-      return `<div class="cmd-row" onclick='openCmdDrawer(${JSON.stringify(JSON.stringify(e))})'>
+      return `<div class="cmd-row" onclick="openCmdDrawer(${JSON.stringify(JSON.stringify(e))})">
         <div class="cmd-line">${prompt}<span>${esc(cmdline)}</span></div>
         <div class="cmd-meta">
           <span>${ago(e.timestamp)}</span>
@@ -989,7 +1112,7 @@ function renderEventsTable(ev){
     ?ev.map(e=>{
         const py=e.payload||{};
         const det=py.cmdline||py.filename||py.path||(py.resolved_domain&&py.dst_ip?`${py.resolved_domain} (${py.dst_ip}:${py.dst_port||'?'})`:'')||py.dst_ip||(py.process&&py.process.comm)||py.comm||JSON.stringify(py).slice(0,80);
-        return `<tr style="cursor:pointer" onclick='openEventDrawer(${JSON.stringify(JSON.stringify(e))})'>
+        return `<tr style="cursor:pointer" onclick="openEventDrawer(${JSON.stringify(JSON.stringify(e))})">
           <td class="mono dim">${ts(e.timestamp)}</td><td>${evtTag(e.event_type)}</td>
           <td class="mono">${esc(e.hostname||'–')}</td>
           <td class="mono dim trunc">${esc(det||'–')}</td>
@@ -1112,7 +1235,7 @@ async function loadAgents(){
     const d=await api('/api/agents');
     const ags=d.agents||[];
     tb.innerHTML=ags.length
-      ?ags.map(a=>`<tr onclick='openAgent(${JSON.stringify(JSON.stringify(a))})'>
+      ?ags.map(a=>`<tr onclick="openAgent(${JSON.stringify(JSON.stringify(a))})">
           <td><span class="obadge"><span class="dot ${a.is_online?'don':'doff'}"></span>${a.is_online?'<span style="color:var(--green)">ONLINE</span>':'<span class="dim">OFFLINE</span>'}</span></td>
           <td class="mono" style="font-weight:600">${esc(a.hostname)}</td>
           <td class="mono dim" style="font-size:9px">${esc(a.id||'–')}</td>
@@ -1132,7 +1255,7 @@ async function loadRules(){
     const d=await api('/api/rules');
     const rl=d.rules||[];
     tb.innerHTML=rl.length
-      ?rl.map(r=>`<tr onclick='openRule(${JSON.stringify(JSON.stringify(r))})'>
+      ?rl.map(r=>`<tr onclick="openRule(${JSON.stringify(JSON.stringify(r))})">
           <td><span class="badge" style="${r.enabled?'color:var(--green);border:1px solid rgba(48,232,144,.3);background:rgba(48,232,144,.08)':'color:var(--muted);border:1px solid var(--line2)'}">${r.enabled?'ENABLED':'DISABLED'}</span></td>
           <td style="font-weight:500">${esc(r.name)}</td><td>${sev(r.severity)}</td>
           <td>${(r.event_types||[]).map(t=>`<span style="font-family:var(--mono);font-size:8.5px;color:var(--cyan);opacity:.7;margin-right:4px">${esc(t)}</span>`).join('')||'–'}</td>
@@ -1141,6 +1264,7 @@ async function loadRules(){
           <td onclick="event.stopPropagation()" style="display:flex;gap:6px;padding:5px 11px">
             <button class="btn ${r.enabled?'dng':''}" onclick="toggleRule('${esc(r.id)}',${!r.enabled},this)">${r.enabled?'DISABLE':'ENABLE'}</button>
             <button class="btn" onclick="editRule('${esc(r.id)}',event)">EDIT</button>
+            <button class="btn" style="color:var(--cyan);border-color:rgba(0,200,240,.3)" onclick="backtestRule('${esc(r.id)}','${esc(r.name)}',event)">BACKTEST</button>
             <button class="btn dng" onclick="deleteRule('${esc(r.id)}',event)">DEL</button>
           </td>
         </tr>`).join('')
@@ -1170,6 +1294,8 @@ async function deleteRule(id,ev){
 
 async function editRule(id,ev){
   ev.stopPropagation();
+  _editRuleId=id;
+  const btBtn=$('rb-backtest-btn'); if(btBtn) btBtn.style.display='';
   try{
     const r=await api(`/api/rules/${id}`);
     loadBuilder(r);
@@ -1626,7 +1752,7 @@ async function testRule(){
       const detail = py.path || py.cmdline || py.dst_ip
         || (py.dst_ip ? `${py.dst_ip}:${py.dst_port}` : '')
         || py.filename || py.comm || '';
-      return `<div class="cmd-row" style="cursor:pointer" onclick='openEventDrawer(${JSON.stringify(JSON.stringify(ev))})'>
+      return `<div class="cmd-row" style="cursor:pointer" onclick="openEventDrawer(${JSON.stringify(JSON.stringify(ev))})">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
           ${evtTag(ev.event_type)}
           <span class="mono dim" style="font-size:9px">${ts(ev.timestamp)}</span>
@@ -1663,7 +1789,7 @@ async function injectTestEvent(js) {
     if(alerts.length) {
       html += `<div class="slbl" style="color:var(--green)">⬡ Alerts Fired (${alerts.length})</div>`;
       html += alerts.map(a => `<div style="background:var(--bg0);border:1px solid rgba(0,220,100,.2);padding:8px 10px;border-radius:2px;margin-bottom:6px;cursor:pointer"
-        onclick='openAlert(${JSON.stringify(JSON.stringify(a))})'>
+        onclick="openAlert(${JSON.stringify(JSON.stringify(a))})">
         <div style="display:flex;gap:8px;align-items:center">
           ${sev(a.severity)} ${stb(a.status)}
           <b style="font-size:11px">${esc(a.rule_name||a.title||'')}</b>
@@ -1685,6 +1811,112 @@ async function injectTestEvent(js) {
   }
 }
 
+// ── Alert drawer ─────────────────────────────────────────────────────────────
+
+function openAlert(js) {
+  const a = JSON.parse(js);
+  const drawerHtml = `
+    <div class="dg">
+      ${dr('RULE',   '<span style="font-weight:600">' + esc(a.rule_name||a.title||'–') + '</span>')}
+      ${dr('HOST',   '<span class="mono">' + esc(a.hostname||'–') + '</span>')}
+      ${dr('SEV',    sev(a.severity))}
+      ${dr('STATUS', stb(a.status))}
+      ${dr('FIRST',  '<span class="mono">' + ts(a.first_seen) + '</span>')}
+      ${dr('LAST',   '<span class="mono">' + ts(a.last_seen) + '</span>')}
+      ${a.assignee ? dr('ASSIGNEE', esc(a.assignee)) : ''}
+    </div>
+    ${a.description ? '<div class="slbl">Description</div><div class="desc">' + esc(a.description) + '</div>' : ''}
+    <div style="display:flex;gap:6px;margin-bottom:10px">
+      <select class="act-sel" onchange="updAlertDrawer('${esc(a.id)}',this.value)">
+        <option value="">– change status –</option>
+        <option value="OPEN"${a.status==='OPEN'?' selected':''}>OPEN</option>
+        <option value="INVESTIGATING"${a.status==='INVESTIGATING'?' selected':''}>INVESTIGATING</option>
+        <option value="RESOLVED"${a.status==='RESOLVED'?' selected':''}>RESOLVED</option>
+        <option value="CLOSED"${a.status==='CLOSED'?' selected':''}>CLOSED</option>
+      </select>
+    </div>
+    <div style="display:flex;gap:0;border-bottom:1px solid var(--line);margin-bottom:12px">
+      <button id="al-tab-ev" onclick="alTab('ev')"
+        style="font-family:var(--mono);font-size:8.5px;letter-spacing:1.5px;text-transform:uppercase;padding:6px 14px;border:none;border-bottom:2px solid var(--cyan);background:transparent;color:var(--cyan);cursor:pointer">
+        EVENTS <span id="al-ev-count"></span>
+      </button>
+      <button id="al-tab-tl" onclick="alTab('tl')"
+        style="font-family:var(--mono);font-size:8.5px;letter-spacing:1.5px;text-transform:uppercase;padding:6px 14px;border:none;border-bottom:2px solid transparent;background:transparent;color:var(--dim);cursor:pointer">
+        TIMELINE ±30m
+      </button>
+    </div>
+    <div id="al-ev-list" style="font-size:9.5px;color:var(--dim);font-family:var(--mono)">Loading events…</div>
+    <div id="al-tl-list" style="display:none"></div>
+  `;
+  openDrawer('ALERT — ' + esc(a.title||a.rule_name||''), drawerHtml);
+  window._currentAlert = a;
+  loadAlertEvents(a);
+}
+
+function alTab(tab) {
+  const evDiv = document.getElementById('al-ev-list');
+  const tlDiv = document.getElementById('al-tl-list');
+  const evBtn = document.getElementById('al-tab-ev');
+  const tlBtn = document.getElementById('al-tab-tl');
+  if (!evDiv || !tlDiv) return;
+  if (tab === 'ev') {
+    evDiv.style.display = '';  tlDiv.style.display = 'none';
+    evBtn.style.borderBottom = '2px solid var(--cyan)'; evBtn.style.color = 'var(--cyan)';
+    tlBtn.style.borderBottom = '2px solid transparent'; tlBtn.style.color = 'var(--dim)';
+  } else {
+    evDiv.style.display = 'none'; tlDiv.style.display = '';
+    evBtn.style.borderBottom = '2px solid transparent'; evBtn.style.color = 'var(--dim)';
+    tlBtn.style.borderBottom = '2px solid var(--cyan)'; tlBtn.style.color = 'var(--cyan)';
+    loadAlertTimeline((window._currentAlert||{}).id);
+  }
+}
+
+async function loadAlertTimeline(alertId) {
+  const el = document.getElementById('al-tl-list');
+  if (!el) return;
+  el.innerHTML = '<div style="font-family:var(--mono);font-size:9px;color:var(--muted)">Loading…</div>';
+  try {
+    const data   = await api('/api/alerts/' + alertId + '/timeline');
+    const events = (data.events || []).sort((a,b) => new Date(a.timestamp)-new Date(b.timestamp));
+    const pivot  = (data.alert||{}).first_seen || (window._currentAlert||{}).first_seen;
+    const wStart = data.window_start;
+    const wEnd   = data.window_end;
+    if (!events.length) { el.innerHTML = '<div style="font-family:var(--mono);font-size:9px;color:var(--muted)">No events in ±30m window.</div>'; return; }
+    const before = events.filter(e => new Date(e.timestamp) < new Date(pivot));
+    const after  = events.filter(e => new Date(e.timestamp) >= new Date(pivot));
+    const row = (e, hi) => {
+      const p = e.payload||{}, proc = p.process||{};
+      const detail = proc.comm||proc.cmdline||p.cmdline||p.path||p.dst_ip||'';
+      const bg = hi ? 'background:rgba(240,58,58,.08);border-color:rgba(240,58,58,.3)' : 'background:var(--bg2);border-color:var(--line)';
+      const eJson = JSON.stringify(JSON.stringify(e));
+      return '<div style="display:flex;gap:8px;align-items:center;padding:5px 8px;border:1px solid;border-radius:2px;margin-bottom:3px;cursor:pointer;' + bg + '" onclick="openEventDrawer(' + eJson + ')">'
+        + '<span style="font-family:var(--mono);font-size:8px;color:var(--muted);white-space:nowrap;min-width:50px">' + ago(e.timestamp) + '</span>'
+        + evtTag(e.event_type||'')
+        + '<span style="font-family:var(--mono);font-size:9px;color:var(--body);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(detail) + '</span>'
+        + '</div>';
+    };
+    let h = '<div style="font-family:var(--mono);font-size:8px;color:var(--muted);letter-spacing:1px;margin-bottom:8px">' + events.length + ' events · ' + ts(wStart) + ' → ' + ts(wEnd) + '</div>';
+    if (before.length) h += '<div style="font-family:var(--mono);font-size:7.5px;letter-spacing:1.5px;color:var(--muted);text-transform:uppercase;margin:8px 0 5px">Before (' + before.length + ')</div>' + before.map(e=>row(e,false)).join('');
+    h += '<div style="display:flex;align-items:center;gap:8px;margin:10px 0 6px"><div style="flex:1;height:1px;background:var(--red);opacity:.5"></div><span style="font-family:var(--mono);font-size:8px;color:var(--red);letter-spacing:1px">▲ ALERT · ' + ts(pivot) + '</span><div style="flex:1;height:1px;background:var(--red);opacity:.5"></div></div>';
+    if (after.length)  h += '<div style="font-family:var(--mono);font-size:7.5px;letter-spacing:1.5px;color:var(--muted);text-transform:uppercase;margin:8px 0 5px">After (' + after.length + ')</div>' + after.map(e=>row(e,false)).join('');
+    el.innerHTML = h;
+  } catch(err) {
+    el.innerHTML = '<div style="font-family:var(--mono);font-size:9px;color:var(--red)">Error: ' + esc(err.message) + '</div>';
+  }
+}
+
+function renderAlertEventList(events) {
+  if (!events.length) return '<div style="font-family:var(--mono);font-size:9px;color:var(--muted)">No events for this alert.</div>';
+  return events.map(e => {
+    const p = e.payload||{}, proc = p.process||{};
+    const detail = proc.comm||proc.cmdline||p.cmdline||p.path||p.dst_ip||'';
+    return '<div style="display:flex;gap:8px;align-items:center;padding:5px 8px;background:var(--bg2);border:1px solid var(--line);border-radius:2px;margin-bottom:3px;cursor:pointer" onclick=\"openEventDrawer(' + JSON.stringify(JSON.stringify(e)) + ')\">'
+      + '<span style="font-family:var(--mono);font-size:8px;color:var(--muted);white-space:nowrap;min-width:50px">' + ago(e.timestamp) + '</span>'
+      + evtTag(e.event_type||'')
+      + '<span style="font-family:var(--mono);font-size:9px;color:var(--body);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(detail) + '</span>'
+      + '</div>';
+  }).join('');
+}
 
 async function loadAlertEvents(a) {
   try {
@@ -1828,7 +2060,7 @@ async function runSearch() {
           } else {
             wrap.innerHTML = `
               <div style="background:rgba(144,96,240,.07);border:1px solid rgba(144,96,240,.2);padding:9px 12px;border-radius:2px;margin-bottom:10px;display:flex;align-items:center;gap:10px;cursor:pointer"
-                onclick='openAlert(${JSON.stringify(JSON.stringify(alertData))})'>
+                onclick="openAlert(${JSON.stringify(JSON.stringify(alertData))})">
                 <span style="font-family:var(--mono);font-size:8px;padding:2px 7px;border:1px solid rgba(144,96,240,.4);color:var(--violet);border-radius:2px">ALERT</span>
                 ${sev(alertData.severity)}
                 ${stb(alertData.status)}
@@ -1840,7 +2072,7 @@ async function runSearch() {
                 const proc = py.process||{};
                 const detail = py.cmdline||py.path||(py.dst_ip?`${py.dst_ip}:${py.dst_port||'?'}`:'')
                   ||proc.exe_path||proc.comm||'';
-                return `<div class="cmd-row" style="cursor:pointer" onclick='openEventDrawer(${JSON.stringify(JSON.stringify(ev))})'>
+                return `<div class="cmd-row" style="cursor:pointer" onclick="openEventDrawer(${JSON.stringify(JSON.stringify(ev))})">
                   <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
                     ${evtTag(ev.event_type)}
                     ${ev.severity ? sev(ev.severity) : ''}
@@ -1921,7 +2153,7 @@ async function runSearch() {
         const detail = p.cmdline || p.path || p.filename || p.dest_ip ||
                        (p.process && p.process.cmdline) || p.comm || '';
         const user   = p.username || p.user || (p.process && p.process.username) || '';
-        return `<div class="cmd-row" onclick='openEventDrawer(${JSON.stringify(JSON.stringify(r))})'>
+        return `<div class="cmd-row" onclick="openEventDrawer(${JSON.stringify(JSON.stringify(r))})">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
             ${evtTag(r.event_type)}
             ${r.severity ? sev(r.severity) : ''}
@@ -1935,7 +2167,7 @@ async function runSearch() {
         </div>`;
       } else {
         // alert row
-        return `<div class="cmd-row" onclick='openAlert(${JSON.stringify(JSON.stringify(r))})'>
+        return `<div class="cmd-row" onclick="openAlert(${JSON.stringify(JSON.stringify(r))})">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
             <span class="badge" style="background:rgba(144,96,240,.1);color:var(--violet);border:1px solid rgba(144,96,240,.3);font-size:8px">ALERT</span>
             ${sev(r.severity)}
@@ -2221,7 +2453,7 @@ function renderProcTree(events, currentId) {
         ? (py.cmdline||py.path||`${py.dst_ip||''}:${py.dst_port||''}`)
         : (proc.exe_path || proc.comm || '');
       return `<div style="display:flex;gap:8px;padding:6px 10px;background:${isCurrent?'rgba(0,220,180,.06)':'var(--bg0)'};border-bottom:1px solid var(--line);cursor:pointer;align-items:flex-start"
-        onclick='openEventDrawer(${JSON.stringify(JSON.stringify(ev))})'>
+        onclick="openEventDrawer(${JSON.stringify(JSON.stringify(ev))})">
         <span style="font-family:var(--mono);font-size:8px;color:var(--muted);white-space:nowrap;min-width:54px;padding-top:1px">${new Date(ev.timestamp).toISOString().slice(11,19)}</span>
         <span style="font-family:var(--mono);font-size:8px;padding:1px 5px;border:1px solid ${col};color:${col};border-radius:2px;white-space:nowrap;min-width:90px;text-align:center">${ev.event_type}</span>
         <span style="font-family:var(--mono);font-size:9px;color:${isCurrent?'var(--text)':'var(--dim)'};word-break:break-all;flex:1">${isCurrent?'▶ ':''} ${esc(detail||'–')}</span>
@@ -2292,7 +2524,7 @@ function renderNetActivity(netEvents) {
     const knownPort = py.dst_port && KNOWN_PORTS[py.dst_port] ? ` (${KNOWN_PORTS[py.dst_port]})` : '';
     const dns = py.dns_query && py.dns_query !== py.dst_ip ? py.dns_query : '';
     return `<div style="display:flex;gap:8px;align-items:flex-start;padding:7px 10px;background:var(--bg0);border-bottom:1px solid var(--line);font-family:var(--mono);font-size:9px;cursor:pointer"
-      onclick='openEventDrawer(${JSON.stringify(JSON.stringify(ev))})'>
+      onclick="openEventDrawer(${JSON.stringify(JSON.stringify(ev))})">
       <span style="color:var(--muted);white-space:nowrap;padding-top:1px;min-width:52px">${new Date(ev.timestamp).toISOString().slice(11,19)}</span>
       <span style="font-size:8px;padding:1px 5px;border:1px solid ${dirCol};color:${dirCol};border-radius:2px;white-space:nowrap">${dir}</span>
       <span style="font-size:8px;color:var(--muted);border:1px solid var(--line2);padding:1px 4px;border-radius:2px">${proto}</span>
@@ -2344,6 +2576,265 @@ async function refresh(){
 
 loadDash();
 setInterval(refresh,30000);
+
+// ── JWT auto-refresh ─────────────────────────────────────────────────────────
+// Silently re-issues the JWT every 10 minutes so the 12h token
+// never expires mid-session. On failure, redirects to /login.
+(function startTokenRefresh() {
+  async function doRefresh() {
+    try {
+      const r = await fetch('/api/auth/refresh', {method:'POST'});
+      if (!r.ok) { window.location.href = '/login'; }
+    } catch(e) { console.warn('Token refresh error:', e); }
+  }
+  setInterval(doRefresh, 10 * 60 * 1000);
+})();
+
+
+
+// ─── Suppression Rules ───────────────────────────────────────────────────────
+
+let _supEditId = null;
+let _supConditions = [];
+
+function nav_suppress() {
+  loadSuppressions();
+}
+
+async function loadSuppressions() {
+  const tb = $('sup-tbody');
+  if (!tb) return;
+  tb.innerHTML = '<tr><td colspan="8" class="st-row st-load">LOADING</td></tr>';
+  try {
+    const d = await api('/api/suppressions');
+    const sups = d.suppressions || [];
+    tb.innerHTML = sups.length
+      ? sups.map(s => `<tr>
+          <td><span class="badge" style="${s.enabled
+            ? 'color:var(--green);border:1px solid rgba(48,232,144,.3);background:rgba(48,232,144,.08)'
+            : 'color:var(--muted);border:1px solid var(--line2)'}">${s.enabled ? 'ACTIVE' : 'OFF'}</span></td>
+          <td style="font-weight:500">${esc(s.name)}</td>
+          <td>${(s.event_types||[]).map(t=>`<span style="font-family:var(--mono);font-size:8.5px;color:var(--cyan);opacity:.7;margin-right:4px">${esc(t)}</span>`).join('')||'–'}</td>
+          <td style="font-family:var(--mono);font-size:9px;color:var(--dim)">${Array.isArray(s.conditions)?s.conditions.length+' condition(s)':'–'}</td>
+          <td class="mono dim">${esc(s.author||'–')}</td>
+          <td style="font-family:var(--mono);font-size:10px;color:var(--yellow)">${s.hit_count||0}</td>
+          <td class="mono dim">${s.last_hit_at ? ago(s.last_hit_at) : '–'}</td>
+          <td onclick="event.stopPropagation()" style="display:flex;gap:6px;padding:5px 11px">
+            <button class="btn ${s.enabled?'dng':''}" onclick="toggleSup('${esc(s.id)}',${!s.enabled},this)">${s.enabled?'DISABLE':'ENABLE'}</button>
+            <button class="btn" onclick="editSuppression(${JSON.stringify(JSON.stringify(s))})">EDIT</button>
+            <button class="btn dng" onclick="deleteSuppression('${esc(s.id)}')">DEL</button>
+          </td>
+        </tr>`).join('')
+      : '<tr><td colspan="8" class="st-row">NO SUPPRESSION RULES — events fire rules freely</td></tr>';
+  } catch(e) {
+    tb.innerHTML = `<tr><td colspan="8" class="st-row st-err">ERROR: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function toggleSup(id, enable, btn) {
+  btn.textContent = '...'; btn.disabled = true;
+  try {
+    const r = await api(`/api/suppressions/${id}`);
+    // PUT with toggled enabled
+    const body = {...r, enabled: enable};
+    delete body.hit_count; delete body.last_hit_at; delete body.created_at; delete body.updated_at;
+    await apiMethod(`/api/suppressions/${id}`, 'PUT', body);
+    toast(enable ? 'Suppression enabled' : 'Suppression disabled');
+    loadSuppressions();
+  } catch(e) { btn.textContent = 'ERR'; btn.disabled = false; }
+}
+
+async function deleteSuppression(id) {
+  if (!confirm('Delete this suppression rule permanently?')) return;
+  try {
+    await fetch(`/api/suppressions/${id}`, {method:'DELETE'});
+    toast('Suppression deleted');
+    loadSuppressions();
+  } catch(e) { toast('Delete failed: '+e.message, false); }
+}
+
+function openSuppressionForm() {
+  _supEditId = null;
+  _supConditions = [];
+  $('sup-form-title').textContent = 'NEW SUPPRESSION RULE';
+  $('sup-name').value = '';
+  $('sup-author').value = '';
+  $('sup-desc').value = '';
+  // Reset chips
+  document.querySelectorAll('#sup-evt-chips .evt-chip').forEach(c => c.classList.remove('on'));
+  renderSupConditions();
+  $('sup-form-card').style.display = 'block';
+  $('sup-name').focus();
+}
+
+function closeSuppressionForm() {
+  $('sup-form-card').style.display = 'none';
+  _supEditId = null;
+  _supConditions = [];
+}
+
+function editSuppression(js) {
+  const s = JSON.parse(js);
+  _supEditId = s.id;
+  _supConditions = Array.isArray(s.conditions) ? JSON.parse(JSON.stringify(s.conditions)) : [];
+  $('sup-form-title').textContent = 'EDIT SUPPRESSION RULE';
+  $('sup-name').value   = s.name || '';
+  $('sup-author').value = s.author || '';
+  $('sup-desc').value   = s.description || '';
+  // Set chips
+  document.querySelectorAll('#sup-evt-chips .evt-chip').forEach(c => {
+    c.classList.toggle('on', (s.event_types||[]).includes(c.dataset.type));
+  });
+  renderSupConditions();
+  $('sup-form-card').style.display = 'block';
+  $('sup-name').focus();
+}
+
+function addSupCondition() {
+  _supConditions.push({field:'', op:'eq', value:''});
+  renderSupConditions();
+}
+
+function removeSupCondition(i) {
+  _supConditions.splice(i, 1);
+  renderSupConditions();
+}
+
+function renderSupConditions() {
+  const el = $('sup-cond-list');
+  if (!el) return;
+  if (!_supConditions.length) {
+    el.innerHTML = '<div style="font-family:var(--mono);font-size:9px;color:var(--muted)">No conditions — rule will suppress ALL matching events of these types.</div>';
+    return;
+  }
+  const ops = ['eq','ne','contains','startswith','in','regex'];
+  el.innerHTML = _supConditions.map(function(c, i) {
+    const opOpts = ops.map(function(op) {
+      return '<option value="' + op + '"' + (c.op===op?' selected':'') + '>' + op + '</option>';
+    }).join('');
+    return '<div style="display:grid;grid-template-columns:1fr auto 1fr auto;gap:6px;align-items:center;margin-bottom:6px">'
+      + '<input class="form-input" style="font-size:11px" placeholder="field (e.g. username)" value="' + esc(c.field) + '"'
+      + ' oninput="_supConditions[' + i + '].field=this.value">'
+      + '<select class="form-select" style="font-size:10px;width:110px" onchange="_supConditions[' + i + '].op=this.value">'
+      + opOpts + '</select>'
+      + '<input class="form-input" style="font-size:11px" placeholder="value" value="' + esc(String(c.value||'')) + '"'
+      + ' oninput="_supConditions[' + i + '].value=this.value">'
+      + '<button class="btn dng" style="padding:3px 9px" onclick="removeSupCondition(' + i + ')">&#10005;</button>'
+      + '</div>';
+  }).join('');
+}
+
+async function saveSuppression() {
+  const name   = $('sup-name').value.trim();
+  const author = $('sup-author').value.trim() || 'analyst';
+  const desc   = $('sup-desc').value.trim();
+  const types  = [...document.querySelectorAll('#sup-evt-chips .evt-chip.on')].map(c=>c.dataset.type);
+
+  if (!name)         { toast('Rule name is required', false); return; }
+  if (!types.length) { toast('Select at least one event type', false); return; }
+
+  const conds = _supConditions.filter(c => c.field && c.value !== '');
+  const body  = {
+    name, description: desc, enabled: true,
+    event_types: types, conditions: conds, author
+  };
+
+  try {
+    if (_supEditId) {
+      await apiMethod(`/api/suppressions/${_supEditId}`, 'PUT', body);
+      toast('Suppression rule updated');
+    } else {
+      await apiMethod('/api/suppressions', 'POST', body);
+      toast('Suppression rule created');
+    }
+    closeSuppressionForm();
+    loadSuppressions();
+  } catch(e) { toast('Save failed: '+e.message, false); }
+}
+
+// ─── Rule Backtest ────────────────────────────────────────────────────────────
+
+async function backtestRule(id, name, ev) {
+  if (ev) ev.stopPropagation();
+  const modal = $('backtest-modal');
+  const body  = $('bt-modal-body');
+  $('bt-modal-title').textContent = 'BACKTEST — ' + name.toUpperCase();
+  modal.style.display = 'flex';
+  body.innerHTML = '<div style="font-family:var(--mono);font-size:9px;color:var(--muted)">Running against last 7 days of events…</div>';
+
+  try {
+    const d = await apiMethod(`/api/rules/${id}/backtest`, 'POST', {});
+    renderBacktestResult(body, d);
+  } catch(e) {
+    body.innerHTML = `<div style="font-family:var(--mono);font-size:9px;color:var(--red)">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+async function backtestCurrentRule() {
+  // Save first if no edit ID
+  const p = buildRulePayload();
+  if (!p.conditions.length) { toast('Add at least one condition first', false); return; }
+  if (!_editRuleId)         { toast('Save the rule first, then backtest it', false); return; }
+  await backtestRule(_editRuleId, p.name || 'current rule', null);
+}
+
+function renderBacktestResult(el, d) {
+  const rate = d.match_rate ? d.match_rate.toFixed(2) : '0.00';
+  const rateColor = d.matched === 0 ? 'var(--green)' : d.match_rate > 10 ? 'var(--red)' : d.match_rate > 1 ? 'var(--yellow)' : 'var(--cyan)';
+  const verdict = d.matched === 0
+    ? '✓ Rule is quiet — no historical matches'
+    : d.match_rate > 10
+      ? '⚠ High match rate — this rule may be noisy, consider adding more conditions'
+      : d.match_rate > 1
+        ? '! Moderate match rate — review samples below'
+        : '✓ Low match rate — looks reasonable';
+
+  let h = `
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px">
+      <div style="background:var(--bg2);border:1px solid var(--line);border-radius:3px;padding:12px 14px;text-align:center">
+        <div style="font-family:var(--mono);font-size:22px;font-weight:600;color:var(--bright)">${d.total_scanned.toLocaleString()}</div>
+        <div style="font-family:var(--mono);font-size:8px;letter-spacing:1.5px;color:var(--muted);text-transform:uppercase;margin-top:5px">Events Scanned</div>
+      </div>
+      <div style="background:var(--bg2);border:1px solid var(--line);border-radius:3px;padding:12px 14px;text-align:center">
+        <div style="font-family:var(--mono);font-size:22px;font-weight:600;color:${rateColor}">${d.matched}</div>
+        <div style="font-family:var(--mono);font-size:8px;letter-spacing:1.5px;color:var(--muted);text-transform:uppercase;margin-top:5px">Would Have Fired</div>
+      </div>
+      <div style="background:var(--bg2);border:1px solid var(--line);border-radius:3px;padding:12px 14px;text-align:center">
+        <div style="font-family:var(--mono);font-size:22px;font-weight:600;color:${rateColor}">${rate}%</div>
+        <div style="font-family:var(--mono);font-size:8px;letter-spacing:1.5px;color:var(--muted);text-transform:uppercase;margin-top:5px">Match Rate</div>
+      </div>
+    </div>
+    <div style="background:${d.matched===0?'rgba(48,232,144,.07)':d.match_rate>10?'rgba(240,58,58,.08)':'rgba(240,192,48,.07)'};border:1px solid ${d.matched===0?'rgba(48,232,144,.25)':d.match_rate>10?'rgba(240,58,58,.3)':'rgba(240,192,48,.25)'};border-radius:2px;padding:9px 12px;margin-bottom:14px;font-family:var(--mono);font-size:9px;color:${rateColor}">
+      ${verdict}
+    </div>
+    <div style="font-family:var(--mono);font-size:8px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;margin-bottom:8px">Window: last ${d.window_hours}h</div>`;
+
+  if (d.samples && d.samples.length) {
+    h += `<div style="font-family:var(--mono);font-size:8px;letter-spacing:1.5px;color:var(--muted);text-transform:uppercase;margin-bottom:8px">Sample Matches (up to 5)</div>`;
+    h += d.samples.map(e => {
+      const p = (typeof e.payload === 'string' ? JSON.parse(e.payload) : e.payload) || {};
+      const proc = p.process||{};
+      const detail = proc.comm||proc.cmdline||p.cmdline||p.path||p.dst_ip||e.id;
+      return `<div style="display:flex;gap:8px;align-items:center;padding:6px 8px;background:var(--bg2);border:1px solid var(--line);border-radius:2px;margin-bottom:4px;cursor:pointer"
+        onclick="document.getElementById('backtest-modal').style.display='none'; openEventDrawer(${JSON.stringify(JSON.stringify(e))})">
+        <span style="font-family:var(--mono);font-size:8px;color:var(--muted);white-space:nowrap">${ago(e.timestamp)}</span>
+        ${evtTag(e.event_type||'')}
+        <span style="font-family:var(--mono);font-size:9px;color:var(--body);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(detail)}</span>
+        <span style="font-family:var(--mono);font-size:8px;color:var(--dim)">${esc(e.hostname||'')}</span>
+      </div>`;
+    }).join('');
+  }
+
+  el.innerHTML = h;
+}
+
+// Close backtest modal on background click
+document.getElementById('backtest-modal').addEventListener('click', function(e) {
+  if (e.target === this) this.style.display = 'none';
+});
+
+// editRule already sets _editRuleId — backtest button shown in editRule itself
+
 </script>
 </body>
 </html>

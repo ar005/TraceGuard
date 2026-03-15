@@ -9,10 +9,11 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig   `mapstructure:"server"`
-	Database DatabaseConfig `mapstructure:"database"`
-	Log      LogConfig      `mapstructure:"log"`
-	Auth     AuthConfig     `mapstructure:"auth"`
+	Server    ServerConfig    `mapstructure:"server"`
+	Database  DatabaseConfig  `mapstructure:"database"`
+	Log       LogConfig       `mapstructure:"log"`
+	Auth      AuthConfig      `mapstructure:"auth"`
+	Retention RetentionConfig `mapstructure:"retention"`
 }
 
 type ServerConfig struct {
@@ -57,6 +58,11 @@ type AuthConfig struct {
 	APIKey string `mapstructure:"api_key"`
 }
 
+type RetentionConfig struct {
+	EventDays int `mapstructure:"event_days"` // 0 = disabled
+	AlertDays int `mapstructure:"alert_days"` // 0 = disabled (only CLOSED)
+}
+
 func Load(path string) (*Config, error) {
 	v := viper.New()
 
@@ -70,6 +76,8 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("database.ssl_mode", "disable")
 	v.SetDefault("log.level",  "info")
 	v.SetDefault("log.format", "json")
+	v.SetDefault("retention.event_days", 90)
+	v.SetDefault("retention.alert_days", 0)   // keep CLOSED alerts by default
 
 	// Allow env overrides with EDR_ prefix, replacing _ with . for nesting
 	v.SetEnvPrefix("EDR")
