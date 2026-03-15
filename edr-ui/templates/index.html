@@ -877,27 +877,23 @@ setInterval(()=>{$('clock').textContent=new Date().toUTCString().slice(17,25)+' 
 
 // ── drawer ───────────────────────────────────────────
 function openDrawer(title, body) {
-  try {
-    const d  = document.getElementById('drawer');
-    const ov = document.getElementById('ov');
-    const dt = document.getElementById('d-title');
-    const db = document.getElementById('d-body');
-    if (!d || !dt || !db) { console.error('openDrawer: missing element'); return; }
-    dt.textContent = title;
-    db.innerHTML   = body;
-    d.classList.add('open');
-    d.style.display = 'flex';
-    if (ov) { ov.classList.add('open'); ov.style.display = 'block'; }
-  } catch(e) {
-    alert('openDrawer ERROR: ' + e.message);
-  }
+  const d  = document.getElementById('drawer');
+  const ov = document.getElementById('ov');
+  const dt = document.getElementById('d-title');
+  const db = document.getElementById('d-body');
+  if (!d || !dt || !db) return;
+  dt.textContent = title;
+  db.innerHTML   = body;
+  d.style.display  = 'flex';
+  d.style.transform = 'translateX(0)';
+  if (ov) { ov.style.display = 'block'; }
 }
 
 function closeDrawer() {
-  const d = document.getElementById('drawer');
+  const d  = document.getElementById('drawer');
   const ov = document.getElementById('ov');
-  if (d)  d.classList.remove('open');
-  if (ov) ov.classList.remove('open');
+  if (d)  { d.style.display  = 'none'; d.style.transform = 'translateX(100%)'; }
+  if (ov) { ov.style.display = 'none'; }
 }
 
 // dr() renders a label+value row in the drawer detail grid
