@@ -236,7 +236,32 @@ func (e *Engine) compiledRe(pattern string) (*regexp.Regexp, error) {
 	return re, nil
 }
 
+// dedupeWindow controls how long an open alert stays "active" for grouping.
+// Events from the same rule + agent within this window bump the existing alert
+// instead of creating a new one — eliminating alert floods.
+const dedupeWindow = 10 * time.Minute
+
 func (e *Engine) fireAlert(ctx context.Context, ev *models.Event, rule *models.Rule) {
+	// ── Deduplication: check for an existing open alert ──────────────────────
+	// If one exists for this (rule, agent) within dedupeWindow, bump it and return.
+	existing, err := e.store.FindOpenAlert(ctx, rule.ID, ev.AgentID, dedupeWindow)
+	if err != nil {
+		e.log.Warn().Err(err).Str("rule", rule.ID).Msg("dedup check failed — firing new alert")
+	} else if existing != nil {
+		go func() {
+			if berr := e.store.BumpAlert(context.Background(), existing.ID, ev.ID); berr != nil {
+				e.log.Debug().Err(berr).Str("alert", existing.ID).Msg("bump alert failed")
+			}
+		}()
+		e.log.Debug().
+			Str("rule",     rule.Name).
+			Str("alert",    existing.ID).
+			Str("event_id", ev.ID).
+			Msg("alert deduped — bumping existing")
+		return
+	}
+
+	// ── New alert ─────────────────────────────────────────────────────────────
 	alertID := "alert-" + uuid.New().String()
 	alert := &models.Alert{
 		ID:          alertID,
@@ -259,7 +284,7 @@ func (e *Engine) fireAlert(ctx context.Context, ev *models.Event, rule *models.R
 		Str("event_id", ev.ID).
 		Str("agent",    ev.Hostname).
 		Int("severity", int(rule.Severity)).
-		Msg("rule fired")
+		Msg("rule fired — new alert")
 
 	if e.onAlert != nil {
 		e.onAlert(ctx, alert)

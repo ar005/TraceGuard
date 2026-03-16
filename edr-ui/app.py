@@ -197,6 +197,12 @@ def agent(aid):
 @login_required
 def alert_explain(aid): return proxy(f"/api/v1/alerts/{aid}/explain", "POST")
 
+@app.route("/api/settings/retention", methods=["GET", "POST"])
+@login_required
+def settings_retention():
+    body = request.get_json() if request.method == "POST" else None
+    return proxy("/api/v1/settings/retention", request.method, body)
+
 @app.route("/api/events")
 @login_required
 def events(): return proxy("/api/v1/events")

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -266,10 +267,11 @@ func (s *Store) DeleteOldAlerts(ctx context.Context, olderThan time.Time) (int64
 func (s *Store) InsertAlert(ctx context.Context, a *models.Alert) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO alerts
-		  (id, title, description, severity, status, rule_id, rule_name, mitre_ids, event_ids, agent_id, hostname, first_seen, last_seen)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW(),NOW())
+		  (id, title, description, severity, status, rule_id, rule_name, mitre_ids, event_ids, agent_id, hostname, first_seen, last_seen, hit_count)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW(),NOW(),1)
 		ON CONFLICT (id) DO UPDATE SET
 			last_seen  = NOW(),
+			hit_count  = alerts.hit_count + 1,
 			event_ids  = alerts.event_ids || EXCLUDED.event_ids,
 			status     = CASE WHEN alerts.status='CLOSED' THEN 'OPEN' ELSE alerts.status END
 	`, a.ID, a.Title, a.Description, a.Severity, a.Status,
@@ -534,10 +536,80 @@ func (s *Store) BacktestRule(ctx context.Context, p BacktestParams) (int, []mode
 	}
 	return len(events), events, nil
 }
+// FindOpenAlert returns the most recent OPEN/INVESTIGATING alert for this
+// (rule_id, agent_id) pair that was last seen within dedupeWindow.
+// Returns nil, nil when no match (caller should insert a new alert).
+func (s *Store) FindOpenAlert(ctx context.Context, ruleID, agentID string, dedupeWindow time.Duration) (*models.Alert, error) {
+	var a models.Alert
+	cutoff := time.Now().Add(-dedupeWindow)
+	err := s.db.GetContext(ctx, &a, `
+		SELECT * FROM alerts
+		WHERE rule_id  = $1
+		  AND agent_id = $2
+		  AND status   IN ('OPEN','INVESTIGATING')
+		  AND last_seen >= $3
+		ORDER BY last_seen DESC
+		LIMIT 1`,
+		ruleID, agentID, cutoff)
+	if err != nil {
+		if err.Error() == "sql: no rows in result set" {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &a, nil
+}
+
+// BumpAlert updates last_seen, increments hit_count, and appends eventID
+// to the event_ids array of an existing alert. Used for deduplication.
+func (s *Store) BumpAlert(ctx context.Context, alertID, eventID string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE alerts SET
+			last_seen  = NOW(),
+			hit_count  = hit_count + 1,
+			event_ids  = CASE
+				WHEN $2 = ANY(event_ids) THEN event_ids
+				ELSE event_ids || ARRAY[$2]::TEXT[]
+			END
+		WHERE id = $1`, alertID, eventID)
+	return err
+}
+
 // UpdateAgentTags sets tags, env, and notes for an agent.
 func (s *Store) UpdateAgentTags(ctx context.Context, id, env, notes string, tags []string) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE agents SET tags=$2, env=$3, notes=$4 WHERE id=$1`,
 		id, pq.Array(tags), env, notes)
 	return err
+}
+// ─── Settings ─────────────────────────────────────────────────────────────────
+
+// GetSetting returns a setting value by key, or the default if not found.
+func (s *Store) GetSetting(ctx context.Context, key, defaultVal string) string {
+	var val string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=$1`, key).Scan(&val)
+	if err != nil {
+		return defaultVal
+	}
+	return val
+}
+
+// SetSetting upserts a setting value.
+func (s *Store) SetSetting(ctx context.Context, key, value string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO settings (key, value, updated_at) VALUES ($1, $2, NOW())
+		ON CONFLICT (key) DO UPDATE SET value=$2, updated_at=NOW()`,
+		key, value)
+	return err
+}
+
+// GetRetentionDays returns (eventDays, alertDays) from settings.
+func (s *Store) GetRetentionDays(ctx context.Context) (int, int) {
+	evtStr  := s.GetSetting(ctx, "retention_events_days", "30")
+	alrtStr := s.GetSetting(ctx, "retention_alerts_days", "90")
+	evt,  _ := strconv.Atoi(evtStr)
+	alrt, _ := strconv.Atoi(alrtStr)
+	if evt  == 0 { evt  = 30 }
+	if alrt == 0 { alrt = 90 }
+	return evt, alrt
 }

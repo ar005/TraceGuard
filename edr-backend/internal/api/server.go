@@ -131,6 +131,10 @@ func (s *Server) registerRoutes() {
 		v1.PUT("/suppressions/:id",    s.handleUpdateSuppression)
 		v1.DELETE("/suppressions/:id", s.handleDeleteSuppression)
 
+		// Settings / Retention
+		v1.GET("/settings/retention",   s.handleGetRetention)
+		v1.POST("/settings/retention",  s.handleSetRetention)
+
 		// Migration
 		mig := v1.Group("/migrate")
 		{
@@ -1234,6 +1238,48 @@ func (s *Server) handleMigrateImport(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "result": result})
+}
+
+// ─── Settings / Retention ────────────────────────────────────────────────────
+
+// GET /api/v1/settings/retention
+func (s *Server) handleGetRetention(c *gin.Context) {
+	evtDays, alrtDays := s.store.GetRetentionDays(c.Request.Context())
+	c.JSON(http.StatusOK, gin.H{
+		"events_days": evtDays,
+		"alerts_days": alrtDays,
+	})
+}
+
+// POST /api/v1/settings/retention
+// Body: {"events_days": 30, "alerts_days": 90}
+func (s *Server) handleSetRetention(c *gin.Context) {
+	var body struct {
+		EventsDays int `json:"events_days"`
+		AlertsDays int `json:"alerts_days"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	ctx := c.Request.Context()
+	if body.EventsDays > 0 {
+		if err := s.store.SetSetting(ctx, "retention_events_days",
+			strconv.Itoa(body.EventsDays)); err != nil {
+			s.jsonError(c, err); return
+		}
+	}
+	if body.AlertsDays > 0 {
+		if err := s.store.SetSetting(ctx, "retention_alerts_days",
+			strconv.Itoa(body.AlertsDays)); err != nil {
+			s.jsonError(c, err); return
+		}
+	}
+	actorID, actorName := currentUser(c)
+	s.al.Log(ctx, actorID, actorName, "update_retention", "settings", "", "",
+		c.ClientIP(), fmt.Sprintf("events=%dd alerts=%dd", body.EventsDays, body.AlertsDays))
+	c.JSON(http.StatusOK, gin.H{"ok": true,
+		"events_days": body.EventsDays, "alerts_days": body.AlertsDays})
 }
 
 // ─── API key handlers ─────────────────────────────────────────────────────────

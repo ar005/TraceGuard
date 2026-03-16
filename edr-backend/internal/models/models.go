@@ -58,6 +58,7 @@ type Alert struct {
 	LastSeen    time.Time      `db:"last_seen"   json:"last_seen"`
 	Assignee    string         `db:"assignee"    json:"assignee"`
 	Notes       string         `db:"notes"       json:"notes"`
+	HitCount    int64          `db:"hit_count"   json:"hit_count"`
 }
 
 // Rule represents a detection rule.

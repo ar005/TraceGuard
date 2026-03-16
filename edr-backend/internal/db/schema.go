@@ -295,6 +295,27 @@ var migrations = []struct {
 		`,
 	},
 	{
+		name: "create_settings",
+		sql: `
+		CREATE TABLE IF NOT EXISTS settings (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+		-- Default retention: 30 days events, 90 days alerts
+		INSERT INTO settings (key, value) VALUES
+			('retention_events_days', '30'),
+			('retention_alerts_days', '90')
+		ON CONFLICT (key) DO NOTHING;
+		`,
+	},
+	{
+		name: "add_alert_dedup_fields",
+		sql: `
+		ALTER TABLE alerts ADD COLUMN IF NOT EXISTS hit_count BIGINT NOT NULL DEFAULT 1;
+		`,
+	},
+	{
 		name: "create_suppression_rules",
 		sql: `
 		CREATE TABLE IF NOT EXISTS suppression_rules (

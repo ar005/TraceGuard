@@ -1,6 +1,6 @@
-# Ollama Integration — OEDR Alert Explanation
+# Ollama Integration — TraceGuard Alert Explanation
 
-OEDR can use a locally-running [Ollama](https://ollama.com) instance to explain security alerts in plain English. When enabled, a **🤖 EXPLAIN WITH AI** button appears in every alert drawer. Clicking it sends the alert metadata and triggering events to Ollama and displays a concise analyst-facing explanation: what likely happened, what the attacker was trying to achieve, and what to investigate next.
+TraceGuard can use a locally-running [Ollama](https://ollama.com) instance to explain security alerts in plain English. When enabled, a **🤖 EXPLAIN WITH AI** button appears in every alert drawer. Clicking it sends the alert metadata and triggering events to Ollama and displays a concise analyst-facing explanation: what likely happened, what the attacker was trying to achieve, and what to investigate next.
 
 ---
 
@@ -169,7 +169,7 @@ Then `sudo make docker-up` to pick up the new value.
 
 ## Verifying it works
 
-1. Open the OEDR UI and click any alert
+1. Open the TraceGuard UI and click any alert
 2. Click **🤖 EXPLAIN WITH AI** in the alert drawer
 3. You should see a spinner then a plain-English explanation
 

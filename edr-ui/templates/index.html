@@ -299,6 +299,10 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
       <svg viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M8 5v3l2 2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
       Rule Builder
     </div>
+    <div class="nav-tab" id="tb-settings" onclick="nav('settings')">
+      <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 10.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z"/><path d="M13.5 8a5.5 5.5 0 01-.08.9l1.34 1.04-1 1.73-1.6-.64a5.5 5.5 0 01-1.56.9l-.24 1.7h-2l-.24-1.7a5.5 5.5 0 01-1.56-.9l-1.6.64-1-1.73L4.58 8.9A5.5 5.5 0 014.5 8a5.5 5.5 0 01.08-.9L3.24 6.06l1-1.73 1.6.64a5.5 5.5 0 011.56-.9L7.64 2.3h2l.24 1.7a5.5 5.5 0 011.56.9l1.6-.64 1 1.73L12.42 7.1c.05.3.08.6.08.9z" stroke="currentColor" stroke-width="1.1" fill="none"/></svg>
+      Settings
+    </div>
   </nav>
   <div class="topbar-right">
     <div style="display:flex;align-items:center;gap:5px;font-family:var(--mono);font-size:8.5px;letter-spacing:1px">
@@ -809,6 +813,58 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
   </div>
 </div>
 
+
+<!-- ── SETTINGS PAGE ── -->
+<section id="pg-settings" class="page">
+  <div class="ph">
+    <span class="pt">SETTINGS</span>
+  </div>
+
+  <!-- Retention -->
+  <div style="max-width:560px">
+    <div style="font-family:var(--mono);font-size:9px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;margin-bottom:16px;padding-bottom:8px;border-bottom:1px solid var(--line)">DATA RETENTION</div>
+    <p style="font-size:11px;color:var(--dim);margin-bottom:20px;line-height:1.6">
+      Events and resolved alerts are automatically deleted after the configured number of days.
+      Open alerts are never auto-deleted.
+    </p>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px">
+      <div>
+        <label style="font-family:var(--mono);font-size:9px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;display:block;margin-bottom:6px">EVENTS — keep for</label>
+        <div style="display:flex;align-items:center;gap:10px">
+          <input type="range" id="ret-events" min="7" max="365" step="1" value="30"
+            style="flex:1;accent-color:var(--cyan)"
+            oninput="document.getElementById('ret-events-val').textContent=this.value">
+          <span style="font-family:var(--mono);font-size:11px;color:var(--cyan);min-width:40px" id="ret-events-val">30</span>
+          <span style="font-family:var(--mono);font-size:9px;color:var(--muted)">days</span>
+        </div>
+        <div style="font-family:var(--mono);font-size:8px;color:var(--muted);margin-top:4px">min 7 · max 365</div>
+      </div>
+      <div>
+        <label style="font-family:var(--mono);font-size:9px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;display:block;margin-bottom:6px">CLOSED ALERTS — keep for</label>
+        <div style="display:flex;align-items:center;gap:10px">
+          <input type="range" id="ret-alerts" min="30" max="730" step="1" value="90"
+            style="flex:1;accent-color:var(--cyan)"
+            oninput="document.getElementById('ret-alerts-val').textContent=this.value">
+          <span style="font-family:var(--mono);font-size:11px;color:var(--cyan);min-width:40px" id="ret-alerts-val">90</span>
+          <span style="font-family:var(--mono);font-size:9px;color:var(--muted)">days</span>
+        </div>
+        <div style="font-family:var(--mono);font-size:8px;color:var(--muted);margin-top:4px">min 30 · max 730</div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="btn suc" onclick="saveRetention()">✓ SAVE RETENTION POLICY</button>
+      <span id="ret-status" style="font-family:var(--mono);font-size:9px;color:var(--green);display:none">Saved</span>
+    </div>
+
+    <div style="margin-top:28px;padding-top:16px;border-top:1px solid var(--line)">
+      <div style="font-family:var(--mono);font-size:9px;letter-spacing:1px;color:var(--muted);margin-bottom:8px">CURRENT USAGE ESTIMATE</div>
+      <div id="ret-stats" style="font-family:var(--mono);font-size:10px;color:var(--dim)">Loading…</div>
+    </div>
+  </div>
+</section>
+
 </main>
 
 <!-- DRAWER -->
@@ -975,6 +1031,7 @@ function nav(name){
   if(name==='agents')  loadAgents();
   if(name==='rules')   loadRules();
   if(name==='suppress') loadSuppressions();
+  if(name==='settings') loadRetention();
   if(name==='builder'){updatePreview();renderFieldRef();}
 }
 
@@ -1057,7 +1114,8 @@ async function loadAlerts(){
     const al=d.alerts||[];
     tb.innerHTML=al.length
       ?al.map(a=>`<tr data-action="openAlert" data-idx="${_rc_set(a)}" style="cursor:pointer">
-          <td>${sev(a.severity)}</td><td class="trunc">${esc(a.title)}</td>
+          <td>${sev(a.severity)}</td>
+          <td class="trunc">${esc(a.title)}${a.hit_count>1?`<span style="font-family:var(--mono);font-size:8px;background:rgba(255,160,0,.15);color:#ffa000;border:1px solid rgba(255,160,0,.3);border-radius:2px;padding:1px 5px;margin-left:6px">×${a.hit_count}</span>`:''}</td>
           <td class="mono">${esc(a.hostname||'–')}</td>
           <td class="mono dim" style="font-size:9.5px">${esc(a.rule_name||'–')}</td>
           <td>${mitres(a.mitre_ids)}</td><td>${stb(a.status)}</td>
@@ -1906,9 +1964,17 @@ function openAlert(js) {
         <option value="CLOSED"${a.status==='CLOSED'?' selected':''}>CLOSED</option>
       </select>
     </div>
-    <div style="display:flex;gap:6px;margin-bottom:10px">
+    <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap">
       <button class="btn" id="al-explain-btn" style="color:var(--cyan);border-color:rgba(0,200,240,.3);font-size:9px"
         onclick="explainAlert('${esc(a.id)}')">🤖 EXPLAIN WITH AI</button>
+      <button class="btn" style="font-size:9px" onclick="assignToMe('${esc(a.id)}')" title="Assign this alert to yourself">👤 ASSIGN TO ME</button>
+    </div>
+    <div style="margin-bottom:12px">
+      <div style="font-family:var(--mono);font-size:9px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;margin-bottom:4px">Assignee</div>
+      <input class="form-input" id="al-assignee" value="${esc(a.assignee||'')}" placeholder="unassigned" style="width:100%;box-sizing:border-box;margin-bottom:8px">
+      <div style="font-family:var(--mono);font-size:9px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;margin-bottom:4px">Investigation Notes</div>
+      <textarea class="form-input" id="al-notes" placeholder="Add investigation notes…" style="width:100%;box-sizing:border-box;min-height:80px;resize:vertical;font-family:var(--mono);font-size:10px">${esc(a.notes||'')}</textarea>
+      <button class="btn suc" style="font-size:9px;margin-top:6px" onclick="saveAlertNotes('${esc(a.id)}')">✓ SAVE NOTES</button>
     </div>
     <div id="al-explain-out" style="display:none;margin-bottom:10px;padding:10px 12px;background:rgba(0,200,240,.04);border:1px solid rgba(0,200,240,.15);border-radius:2px;font-size:11px;line-height:1.6;color:var(--body)"></div>
     <div style="display:flex;gap:0;border-bottom:1px solid var(--line);margin-bottom:12px">
@@ -2980,6 +3046,73 @@ async function explainAlert(alertId) {
     btn.textContent = '🤖 EXPLAIN WITH AI';
     btn.disabled = false;
   }
+}
+
+
+// ── Alert notes + assignment ──────────────────────────────────────────────────
+
+async function assignToMe(alertId) {
+  // Get current user from the /me endpoint
+  try {
+    const me = await api('/api/me');
+    const assignee = me.username || 'me';
+    document.getElementById('al-assignee').value = assignee;
+    await saveAlertNotes(alertId);
+  } catch(e) { toast('Failed: ' + e.message, false); }
+}
+
+async function saveAlertNotes(alertId) {
+  const assignee = (document.getElementById('al-assignee')||{}).value || '';
+  const notes    = (document.getElementById('al-notes')||{}).value    || '';
+  const statusEl = document.querySelector('.act-sel');
+  const status   = statusEl ? statusEl.value : '';
+  try {
+    await apiMethod('/api/alerts/' + alertId, 'PATCH',
+      { assignee, notes, status: status || undefined });
+    toast('Saved');
+    loadAlerts();
+    loadDash();
+  } catch(e) { toast('Save failed: ' + e.message, false); }
+}
+
+// ── Retention settings ────────────────────────────────────────────────────────
+
+async function loadRetention() {
+  try {
+    const d = await api('/api/settings/retention');
+    const evtSlider = document.getElementById('ret-events');
+    const alrtSlider = document.getElementById('ret-alerts');
+    if (evtSlider) {
+      evtSlider.value = d.events_days || 30;
+      document.getElementById('ret-events-val').textContent = d.events_days || 30;
+    }
+    if (alrtSlider) {
+      alrtSlider.value = d.alerts_days || 90;
+      document.getElementById('ret-alerts-val').textContent = d.alerts_days || 90;
+    }
+    // Load usage stats
+    const statsEl = document.getElementById('ret-stats');
+    if (statsEl) {
+      const evts = await api('/api/events?limit=1');
+      const alts = await api('/api/alerts?limit=1');
+      statsEl.innerHTML =
+        '<span style="color:var(--cyan)">' + (evts.total||0).toLocaleString() + '</span> events stored' +
+        ' &nbsp;·&nbsp; ' +
+        '<span style="color:var(--cyan)">' + (alts.total||0).toLocaleString() + '</span> alerts stored';
+    }
+  } catch(e) { console.warn('loadRetention:', e.message); }
+}
+
+async function saveRetention() {
+  const evtDays  = parseInt(document.getElementById('ret-events').value);
+  const alrtDays = parseInt(document.getElementById('ret-alerts').value);
+  try {
+    await apiMethod('/api/settings/retention', 'POST',
+      { events_days: evtDays, alerts_days: alrtDays });
+    const st = document.getElementById('ret-status');
+    if (st) { st.style.display='inline'; setTimeout(()=>st.style.display='none', 2000); }
+    toast('Retention policy saved');
+  } catch(e) { toast('Save failed: ' + e.message, false); }
 }
 
 </script>

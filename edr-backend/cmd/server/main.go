@@ -177,20 +177,22 @@ func main() {
 		runSweep := func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
-			if cfg.Retention.EventDays > 0 {
-				cutoff := time.Now().AddDate(0, 0, -cfg.Retention.EventDays)
+			// Read retention settings from DB (configurable via UI)
+			evtDays, alrtDays := st.GetRetentionDays(ctx)
+			if evtDays > 0 {
+				cutoff := time.Now().AddDate(0, 0, -evtDays)
 				if n, err := st.DeleteOldEvents(ctx, cutoff); err != nil {
 					logger.Error().Err(err).Msg("retention: event sweep failed")
 				} else if n > 0 {
-					logger.Info().Int64("deleted", n).Int("days", cfg.Retention.EventDays).Msg("retention: events pruned")
+					logger.Info().Int64("deleted", n).Int("days", evtDays).Msg("retention: events pruned")
 				}
 			}
-			if cfg.Retention.AlertDays > 0 {
-				cutoff := time.Now().AddDate(0, 0, -cfg.Retention.AlertDays)
+			if alrtDays > 0 {
+				cutoff := time.Now().AddDate(0, 0, -alrtDays)
 				if n, err := st.DeleteOldAlerts(ctx, cutoff); err != nil {
 					logger.Error().Err(err).Msg("retention: alert sweep failed")
 				} else if n > 0 {
-					logger.Info().Int64("deleted", n).Int("days", cfg.Retention.AlertDays).Msg("retention: alerts pruned")
+					logger.Info().Int64("deleted", n).Int("days", alrtDays).Msg("retention: alerts pruned")
 				}
 			}
 		}
