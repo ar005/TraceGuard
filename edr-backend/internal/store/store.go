@@ -32,8 +32,8 @@ func (s *Store) DB() *sqlx.DB {
 
 func (s *Store) UpsertAgent(ctx context.Context, a *models.Agent) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO agents (id, hostname, os, os_version, ip, agent_ver, first_seen, last_seen, is_online, config_ver)
-		VALUES ($1,$2,$3,$4,$5,$6,NOW(),NOW(),TRUE,$7)
+		INSERT INTO agents (id, hostname, os, os_version, ip, agent_ver, first_seen, last_seen, is_online, config_ver, tags, env, notes)
+		VALUES ($1,$2,$3,$4,$5,$6,NOW(),NOW(),TRUE,$7,$8,$9,$10)
 		ON CONFLICT (id) DO UPDATE SET
 			hostname   = EXCLUDED.hostname,
 			os         = EXCLUDED.os,
@@ -41,9 +41,22 @@ func (s *Store) UpsertAgent(ctx context.Context, a *models.Agent) error {
 			ip         = EXCLUDED.ip,
 			agent_ver  = EXCLUDED.agent_ver,
 			last_seen  = NOW(),
-			is_online  = TRUE
-	`, a.ID, a.Hostname, a.OS, a.OSVersion, a.IP, a.AgentVer, a.ConfigVer)
+			is_online  = TRUE,
+			tags  = CASE WHEN array_length(EXCLUDED.tags,1) > 0 THEN EXCLUDED.tags ELSE agents.tags END,
+			env   = CASE WHEN EXCLUDED.env   != '' THEN EXCLUDED.env   ELSE agents.env   END,
+			notes = CASE WHEN EXCLUDED.notes != '' THEN EXCLUDED.notes ELSE agents.notes END
+	`, a.ID, a.Hostname, a.OS, a.OSVersion, a.IP, a.AgentVer, a.ConfigVer,
+		pq.Array(coalesceStringSlice(a.Tags)), a.Env, a.Notes)
 	return err
+}
+
+// coalesceStringSlice returns an empty slice instead of nil so pq.Array
+// never sends NULL for a NOT NULL TEXT[] column.
+func coalesceStringSlice(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 func (s *Store) TouchAgent(ctx context.Context, agentID string) error {
@@ -208,10 +221,17 @@ func (s *Store) GetEvent(ctx context.Context, id string) (*models.Event, error) 
 
 func (s *Store) CountEvents(ctx context.Context, agentID string, since time.Time) (int64, error) {
 	var n int64
-	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM events WHERE agent_id=$1 AND timestamp >= $2`,
-		agentID, since,
-	).Scan(&n)
+	var err error
+	if agentID == "" {
+		err = s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM events WHERE timestamp >= $1`, since,
+		).Scan(&n)
+	} else {
+		err = s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM events WHERE agent_id=$1 AND timestamp >= $2`,
+			agentID, since,
+		).Scan(&n)
+	}
 	return n, err
 }
 
@@ -514,4 +534,10 @@ func (s *Store) BacktestRule(ctx context.Context, p BacktestParams) (int, []mode
 	}
 	return len(events), events, nil
 }
-
+// UpdateAgentTags sets tags, env, and notes for an agent.
+func (s *Store) UpdateAgentTags(ctx context.Context, id, env, notes string, tags []string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE agents SET tags=$2, env=$3, notes=$4 WHERE id=$1`,
+		id, pq.Array(tags), env, notes)
+	return err
+}

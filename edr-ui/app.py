@@ -187,9 +187,15 @@ def dashboard(): return proxy("/api/v1/dashboard")
 @login_required
 def agents(): return proxy("/api/v1/agents")
 
-@app.route("/api/agents/<aid>")
+@app.route("/api/agents/<aid>", methods=["GET", "PATCH"])
 @login_required
-def agent(aid): return proxy(f"/api/v1/agents/{aid}")
+def agent(aid):
+    body = request.get_json() if request.method == "PATCH" else None
+    return proxy(f"/api/v1/agents/{aid}", request.method, body)
+
+@app.route("/api/alerts/<aid>/explain", methods=["POST"])
+@login_required
+def alert_explain(aid): return proxy(f"/api/v1/alerts/{aid}/explain", "POST")
 
 @app.route("/api/events")
 @login_required

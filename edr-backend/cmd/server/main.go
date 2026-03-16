@@ -16,6 +16,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/youredr/edr-backend/internal/api"
+	"github.com/youredr/edr-backend/internal/llm"
 	"github.com/youredr/edr-backend/internal/apikeys"
 	"github.com/youredr/edr-backend/internal/audit"
 	"github.com/youredr/edr-backend/internal/config"
@@ -140,7 +141,15 @@ func main() {
 	}()
 
 	// ── REST API Server ───────────────────────────────────────────────────────
-	apiServer := api.New(st, engine, km, um, al, logger, cfg.Auth.APIKey)
+	// LLM client (Ollama) — disabled unless OLLAMA_ENABLED=true
+	llmClient := llm.New(logger)
+	if llmClient.Enabled() {
+		logger.Info().Str("model", os.Getenv("OLLAMA_MODEL")).Msg("Ollama LLM enabled")
+	} else {
+		logger.Info().Msg("Ollama LLM disabled (set OLLAMA_ENABLED=true to enable)")
+	}
+
+	apiServer := api.New(st, engine, km, um, al, llmClient, logger, cfg.Auth.APIKey)
 	go func() {
 		if err := apiServer.Listen(cfg.Server.HTTPAddr); err != nil {
 			if err.Error() != "http: Server closed" {

@@ -56,10 +56,13 @@ type streamResponse struct {
 }
 
 type registerRequest struct {
-	AgentID  string `json:"agent_id"`
-	Hostname string `json:"hostname"`
-	OS       string `json:"os"`
-	AgentVer string `json:"agent_ver"`
+	AgentID  string   `json:"agent_id"`
+	Hostname string   `json:"hostname"`
+	OS       string   `json:"os"`
+	AgentVer string   `json:"agent_ver"`
+	Tags     []string `json:"tags"`
+	Env      string   `json:"env"`
+	Notes    string   `json:"notes"`
 }
 
 type registerResponse struct {
@@ -99,6 +102,9 @@ type Config struct {
 	Insecure          bool
 	ReconnectDelay    time.Duration
 	MaxReconnectDelay time.Duration
+	Tags              []string
+	Env               string
+	Notes             string
 }
 
 func (c *Config) applyDefaults() {
@@ -205,6 +211,10 @@ func (t *GRPCTransport) connect(ctx context.Context) error {
 		AgentID:  t.cfg.AgentID,
 		Hostname: t.cfg.Hostname,
 		OS:       "linux",
+		AgentVer: t.cfg.AgentID, // version field
+		Tags:     t.cfg.Tags,
+		Env:      t.cfg.Env,
+		Notes:    t.cfg.Notes,
 	}, &regResp, grpc.CallContentSubtype("json"))
 	if err != nil {
 		conn.Close()

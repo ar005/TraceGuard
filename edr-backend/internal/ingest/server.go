@@ -126,6 +126,9 @@ func (s *Server) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Reg
 		IP:        req.IP,
 		AgentVer:  req.AgentVer,
 		ConfigVer: s.configVer,
+		Tags:      req.Tags,
+		Env:       req.Env,
+		Notes:     req.Notes,
 	}
 
 	if err := s.store.UpsertAgent(ctx, agent); err != nil {

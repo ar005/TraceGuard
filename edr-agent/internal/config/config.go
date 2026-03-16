@@ -25,6 +25,9 @@ type AgentConfig struct {
 	Hostname   string    `mapstructure:"hostname"`
 	BackendURL string    `mapstructure:"backend_url"`
 	TLS        TLSConfig `mapstructure:"tls"`
+	Tags       []string  `mapstructure:"tags"`
+	Env        string    `mapstructure:"env"`
+	Notes      string    `mapstructure:"notes"`
 }
 
 type TLSConfig struct {

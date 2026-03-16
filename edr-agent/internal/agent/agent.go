@@ -89,6 +89,9 @@ func New(cfg *config.Config) (*Agent, error) {
 		Insecure:   cfg.Agent.TLS.Insecure,
 		AgentID:    agentID,
 		Hostname:   hostname,
+		Tags:       cfg.Agent.Tags,
+		Env:        cfg.Agent.Env,
+		Notes:      cfg.Agent.Notes,
 	}, log)
 
 	a := &Agent{

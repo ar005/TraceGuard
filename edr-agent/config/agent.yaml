@@ -7,11 +7,17 @@ agent:
   id_file: "/var/lib/edr/agent.id"
   hostname: ""   # auto-detected from OS
   backend_url: "localhost:50051"
+  # Tags label this agent for filtering in the UI
+  tags: []       # e.g. [prod, webserver, k8s]
+  env: ""        # e.g. production | staging | dev
+  notes: ""      # free-text description
   tls:
-    cert: ""
-    key:  ""
-    ca:   ""
-    insecure: true   # set true for dev/testing only
+    # For production: copy ca.crt from backend's deploy/certs/ to /etc/edr/tls/
+    # Then set insecure: false and point ca to the CA cert.
+    cert:     ""                      # leave empty unless using mutual TLS
+    key:      ""
+    ca:       ""                      # /etc/edr/tls/ca.crt
+    insecure: true                    # CHANGE TO false IN PRODUCTION
 
 monitors:
   process:
@@ -78,4 +84,4 @@ log:
 self_protect:
   bin_path: ""        # auto-detected from /proc/self/exe
   watchdog: true      # respawn agent if killed
-  immutable_bin: false  # chattr +i on agent binary (requires root)
+  immutable_bin: false  # chattr +i on agent binary (requir

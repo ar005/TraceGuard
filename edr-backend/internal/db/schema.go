@@ -286,6 +286,15 @@ var migrations = []struct {
 		`,
 	},
 	{
+		name: "add_agent_tags",
+		sql: `
+		ALTER TABLE agents ADD COLUMN IF NOT EXISTS tags  TEXT[]  NOT NULL DEFAULT '{}';
+		ALTER TABLE agents ADD COLUMN IF NOT EXISTS env   TEXT    NOT NULL DEFAULT '';
+		ALTER TABLE agents ADD COLUMN IF NOT EXISTS notes TEXT    NOT NULL DEFAULT '';
+		CREATE INDEX IF NOT EXISTS agents_tags_idx ON agents USING GIN(tags);
+		`,
+	},
+	{
 		name: "create_suppression_rules",
 		sql: `
 		CREATE TABLE IF NOT EXISTS suppression_rules (

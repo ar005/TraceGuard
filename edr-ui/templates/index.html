@@ -778,6 +778,37 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
   </div>
 </div>
 
+
+<!-- ── AGENT TAG EDITOR ── -->
+<div id="tag-modal" style="display:none;position:fixed;inset:0;background:rgba(4,8,14,.85);z-index:800;align-items:center;justify-content:center">
+  <div style="background:var(--bg1);border:1px solid var(--line2);border-radius:3px;width:460px;padding:24px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
+      <span style="font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:2px;color:var(--text);flex:1" id="tag-modal-title">EDIT AGENT TAGS</span>
+      <button onclick="document.getElementById('tag-modal').style.display='none'" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px">✕</button>
+    </div>
+    <div style="margin-bottom:12px">
+      <label style="font-family:var(--mono);font-size:9px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;display:block;margin-bottom:6px">Environment</label>
+      <select class="form-select" id="tag-env-sel" style="width:100%;margin-bottom:10px">
+        <option value="">– none –</option>
+        <option value="production">production</option>
+        <option value="staging">staging</option>
+        <option value="dev">dev</option>
+        <option value="lab">lab</option>
+      </select>
+      <label style="font-family:var(--mono);font-size:9px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;display:block;margin-bottom:6px">Tags (comma-separated)</label>
+      <input class="form-input" id="tag-input" placeholder="webserver, k8s, dmz" style="width:100%;box-sizing:border-box">
+      <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap" id="tag-quick-btns">
+        <span style="font-family:var(--mono);font-size:9px;color:var(--muted)">Quick:</span>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:16px">
+      <button class="btn suc" onclick="saveAgentTags()" style="flex:1">✓ SAVE</button>
+      <button class="btn" onclick="document.getElementById('tag-modal').style.display='none'">CANCEL</button>
+    </div>
+    <input type="hidden" id="tag-agent-id">
+  </div>
+</div>
+
 </main>
 
 <!-- DRAWER -->
@@ -1276,7 +1307,11 @@ async function loadAgents(){
           <td class="mono dim" style="font-size:9px">${esc(a.id||'–')}</td>
           <td>${esc(a.os||'–')}</td><td class="mono dim">${esc(a.ip||'–')}</td>
           <td class="mono dim">${esc(a.agent_ver||'–')}</td>
-          <td class="mono dim">${ts(a.first_seen)}</td><td class="mono dim">${ago(a.last_seen)}</td>
+          <td class="mono dim">${ago(a.last_seen)}</td>
+          <td>${(a.tags||[]).map(t=>`<span style="font-family:var(--mono);font-size:8px;padding:2px 6px;border-radius:2px;background:rgba(0,200,240,.1);border:1px solid rgba(0,200,240,.25);color:var(--cyan);margin-right:3px">${esc(t)}</span>`).join('')||'<span class="dim">–</span>'}</td>
+          <td onclick="event.stopPropagation()">
+            <button class="btn" style="font-size:9px;padding:4px 10px" onclick="openEditTags('${esc(a.id)}','${esc(a.hostname)}',${JSON.stringify(a.tags||[])}.join(','))">TAGS</button>
+          </td>
         </tr>`).join('')
       :'<tr><td colspan="8" class="st-row">NO AGENTS</td></tr>';
   }catch(e){$('ag-tbody').innerHTML=`<tr><td colspan="8" class="st-row st-err">ERROR: ${esc(e.message)}</td></tr>`;}
@@ -1871,6 +1906,11 @@ function openAlert(js) {
         <option value="CLOSED"${a.status==='CLOSED'?' selected':''}>CLOSED</option>
       </select>
     </div>
+    <div style="display:flex;gap:6px;margin-bottom:10px">
+      <button class="btn" id="al-explain-btn" style="color:var(--cyan);border-color:rgba(0,200,240,.3);font-size:9px"
+        onclick="explainAlert('${esc(a.id)}')">🤖 EXPLAIN WITH AI</button>
+    </div>
+    <div id="al-explain-out" style="display:none;margin-bottom:10px;padding:10px 12px;background:rgba(0,200,240,.04);border:1px solid rgba(0,200,240,.15);border-radius:2px;font-size:11px;line-height:1.6;color:var(--body)"></div>
     <div style="display:flex;gap:0;border-bottom:1px solid var(--line);margin-bottom:12px">
       <button id="al-tab-ev" onclick="alTab('ev')"
         style="font-family:var(--mono);font-size:8.5px;letter-spacing:1.5px;text-transform:uppercase;padding:6px 14px;border:none;border-bottom:2px solid var(--cyan);background:transparent;color:var(--cyan);cursor:pointer">
@@ -2869,6 +2909,78 @@ document.getElementById('backtest-modal').addEventListener('click', function(e) 
 });
 
 // editRule already sets _editRuleId — backtest button shown in editRule itself
+
+
+// ── Agent Tags ───────────────────────────────────────────────────────────────
+
+const QUICK_TAGS = ['webserver','database','k8s','docker','dmz','internal','external','critical','monitoring'];
+
+function openEditTags(agentId, hostname, tagsStr) {
+  document.getElementById('tag-agent-id').value = agentId;
+  document.getElementById('tag-modal-title').textContent = 'TAGS — ' + hostname.toUpperCase();
+  document.getElementById('tag-input').value = tagsStr || '';
+  // Quick tag buttons
+  const qb = document.getElementById('tag-quick-btns');
+  qb.innerHTML = '<span style="font-family:var(--mono);font-size:9px;color:var(--muted)">Quick:</span>';
+  QUICK_TAGS.forEach(t => {
+    const btn = document.createElement('button');
+    btn.className = 'btn';
+    btn.style.cssText = 'font-size:9px;padding:3px 8px';
+    btn.textContent = t;
+    btn.onclick = function() {
+      const inp = document.getElementById('tag-input');
+      const cur = inp.value.split(',').map(s=>s.trim()).filter(Boolean);
+      if (!cur.includes(t)) { cur.push(t); inp.value = cur.join(', '); }
+    };
+    qb.appendChild(btn);
+  });
+  document.getElementById('tag-modal').style.display = 'flex';
+  setTimeout(()=>document.getElementById('tag-input').focus(), 50);
+}
+
+async function saveAgentTags() {
+  const id  = document.getElementById('tag-agent-id').value;
+  const env = document.getElementById('tag-env-sel').value;
+  const raw = document.getElementById('tag-input').value;
+  const tags = raw.split(',').map(s=>s.trim()).filter(Boolean);
+  try {
+    await apiMethod('/api/agents/' + id, 'PATCH', {tags, env, notes: ''});
+    toast('Tags saved');
+    document.getElementById('tag-modal').style.display = 'none';
+    loadAgents();
+  } catch(e) { toast('Save failed: ' + e.message, false); }
+}
+
+document.getElementById('tag-modal').addEventListener('click', function(e) {
+  if (e.target === this) this.style.display = 'none';
+});
+
+// ── LLM Alert Explanation ────────────────────────────────────────────────────
+
+async function explainAlert(alertId) {
+  const btn = document.getElementById('al-explain-btn');
+  const out = document.getElementById('al-explain-out');
+  if (!btn || !out) return;
+  btn.textContent = '⏳ Asking AI…';
+  btn.disabled = true;
+  out.style.display = 'block';
+  out.textContent = 'Waiting for Ollama…';
+  try {
+    const d = await apiMethod('/api/alerts/' + alertId + '/explain', 'POST', {});
+    out.innerHTML = '<div style="font-family:var(--mono);font-size:8px;color:var(--muted);margin-bottom:6px;letter-spacing:1px">AI EXPLANATION · ' + (d.model||'') + '</div>'
+      + '<div style="white-space:pre-wrap">' + esc(d.explanation||'No explanation returned.') + '</div>';
+    btn.textContent = '🤖 RE-EXPLAIN';
+    btn.disabled = false;
+  } catch(e) {
+    out.innerHTML = '<span style="color:var(--red)">'
+      + (e.message.includes('503') || e.message.includes('unavailable')
+         ? 'Ollama not enabled. Set OLLAMA_ENABLED=true and OLLAMA_URL in backend environment.'
+         : 'Error: ' + esc(e.message))
+      + '</span>';
+    btn.textContent = '🤖 EXPLAIN WITH AI';
+    btn.disabled = false;
+  }
+}
 
 </script>
 </body>

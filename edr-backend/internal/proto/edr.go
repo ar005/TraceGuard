@@ -53,12 +53,15 @@ type StreamResponse struct {
 }
 
 type RegisterRequest struct {
-	AgentID   string `json:"agent_id"`
-	Hostname  string `json:"hostname"`
-	OS        string `json:"os"`
-	OSVersion string `json:"os_version"`
-	AgentVer  string `json:"agent_ver"`
-	IP        string `json:"ip"`
+	AgentID   string   `json:"agent_id"`
+	Hostname  string   `json:"hostname"`
+	OS        string   `json:"os"`
+	OSVersion string   `json:"os_version"`
+	AgentVer  string   `json:"agent_ver"`
+	IP        string   `json:"ip"`
+	Tags      []string `json:"tags"`
+	Env       string   `json:"env"`
+	Notes     string   `json:"notes"`
 }
 
 type RegisterResponse struct {

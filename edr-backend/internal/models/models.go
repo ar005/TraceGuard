@@ -12,16 +12,19 @@ import (
 
 // Agent represents a registered endpoint agent.
 type Agent struct {
-	ID        string    `db:"id"         json:"id"`
-	Hostname  string    `db:"hostname"   json:"hostname"`
-	OS        string    `db:"os"         json:"os"`
-	OSVersion string    `db:"os_version" json:"os_version"`
-	IP        string    `db:"ip"         json:"ip"`
-	AgentVer  string    `db:"agent_ver"  json:"agent_ver"`
-	FirstSeen time.Time `db:"first_seen" json:"first_seen"`
-	LastSeen  time.Time `db:"last_seen"  json:"last_seen"`
-	IsOnline  bool      `db:"is_online"  json:"is_online"`
-	ConfigVer string    `db:"config_ver" json:"config_ver"`
+	ID        string         `db:"id"         json:"id"`
+	Hostname  string         `db:"hostname"   json:"hostname"`
+	OS        string         `db:"os"         json:"os"`
+	OSVersion string         `db:"os_version" json:"os_version"`
+	IP        string         `db:"ip"         json:"ip"`
+	AgentVer  string         `db:"agent_ver"  json:"agent_ver"`
+	FirstSeen time.Time      `db:"first_seen" json:"first_seen"`
+	LastSeen  time.Time      `db:"last_seen"  json:"last_seen"`
+	IsOnline  bool           `db:"is_online"  json:"is_online"`
+	ConfigVer string         `db:"config_ver" json:"config_ver"`
+	Tags      pq.StringArray `db:"tags"       json:"tags"`
+	Env       string         `db:"env"        json:"env"`
+	Notes     string         `db:"notes"      json:"notes"`
 }
 
 // Event represents a stored security event.

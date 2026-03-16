@@ -6,6 +6,7 @@ package api
 
 import (
 	"context"
+	"os"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/youredr/edr-backend/internal/apikeys"
+	"github.com/youredr/edr-backend/internal/llm"
 	"github.com/youredr/edr-backend/internal/audit"
 	"github.com/youredr/edr-backend/internal/detection"
 	"github.com/youredr/edr-backend/internal/migrate"
@@ -35,6 +37,7 @@ type Server struct {
 	keys   *apikeys.Manager
 	um     *users.Manager
 	al     *audit.Logger
+	llm    *llm.Client
 	log    zerolog.Logger
 	router *gin.Engine
 	http   *http.Server
@@ -44,6 +47,7 @@ type Server struct {
 // New creates the API server and registers all routes.
 func New(st *store.Store, eng *detection.Engine, km *apikeys.Manager,
 	um *users.Manager, al *audit.Logger,
+	lc *llm.Client,
 	log zerolog.Logger, apiKey string) *Server {
 
 	gin.SetMode(gin.ReleaseMode)
@@ -56,6 +60,7 @@ func New(st *store.Store, eng *detection.Engine, km *apikeys.Manager,
 		keys:   km,
 		um:     um,
 		al:     al,
+		llm:    lc,
 		log:    log.With().Str("component", "api").Logger(),
 		router: r,
 		apiKey: apiKey,
@@ -94,8 +99,9 @@ func (s *Server) registerRoutes() {
 		v1.GET("/me",        s.handleMe)
 
 		// Agents
-		v1.GET("/agents",     s.handleListAgents)
-		v1.GET("/agents/:id", s.handleGetAgent)
+		v1.GET("/agents",          s.handleListAgents)
+		v1.GET("/agents/:id",      s.handleGetAgent)
+		v1.PATCH("/agents/:id",    s.handleUpdateAgent)
 
 		// Events
 		v1.GET("/events",         s.handleListEvents)
@@ -107,6 +113,7 @@ func (s *Server) registerRoutes() {
 		v1.GET("/alerts/:id",         s.handleGetAlert)
 		v1.GET("/alerts/:id/events",   s.handleGetAlertEvents)
 		v1.GET("/alerts/:id/timeline", s.handleGetAlertTimeline)
+		v1.POST("/alerts/:id/explain",  s.handleExplainAlert)
 		v1.PATCH("/alerts/:id",        s.handleUpdateAlert)
 
 		// Rules
@@ -650,6 +657,25 @@ func (s *Server) handleGetAgent(c *gin.Context) {
 	c.JSON(http.StatusOK, agent)
 }
 
+// PATCH /api/v1/agents/:id — update tags, env label, notes
+func (s *Server) handleUpdateAgent(c *gin.Context) {
+	var body struct {
+		Tags  []string `json:"tags"`
+		Env   string   `json:"env"`
+		Notes string   `json:"notes"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := s.store.UpdateAgentTags(c.Request.Context(),
+		c.Param("id"), body.Env, body.Notes, body.Tags); err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
 // ─── Events ───────────────────────────────────────────────────────────────────
 
 func (s *Server) handleListEvents(c *gin.Context) {
@@ -1035,6 +1061,41 @@ func backTestMatchAll(payload map[string]interface{}, conds []models.RuleConditi
 		}
 	}
 	return true
+}
+
+// ─── LLM Alert Explanation ───────────────────────────────────────────────────
+
+// POST /api/v1/alerts/:id/explain
+// Sends the alert + triggering events to Ollama and returns a plain-English explanation.
+// Response is cached in the alert notes field if it was empty.
+func (s *Server) handleExplainAlert(c *gin.Context) {
+	if s.llm == nil || !s.llm.Enabled() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": "LLM not enabled — set OLLAMA_ENABLED=true and OLLAMA_URL in environment",
+		})
+		return
+	}
+	ctx := c.Request.Context()
+	alert, err := s.store.GetAlert(ctx, c.Param("id"))
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	events, err := s.store.GetAlertEvents(ctx, c.Param("id"))
+	if err != nil {
+		events = nil // non-fatal
+	}
+	explanation, err := s.llm.ExplainAlert(ctx, alert, events)
+	if err != nil {
+		s.log.Warn().Err(err).Str("alert", alert.ID).Msg("LLM explain failed")
+		c.JSON(http.StatusBadGateway, gin.H{"error": "LLM request failed: " + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"alert_id":    alert.ID,
+		"explanation": explanation,
+		"model":       os.Getenv("OLLAMA_MODEL"),
+	})
 }
 
 // ─── Rules ────────────────────────────────────────────────────────────────────
