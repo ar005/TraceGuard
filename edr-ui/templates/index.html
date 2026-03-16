@@ -335,7 +335,15 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
 <section class="page on" id="pg-dashboard">
   <div class="ph">
     <div><h1><span class="sl">//</span>OVERVIEW</h1><p id="dash-ts">LAST UPDATED: —</p></div>
-    <div class="ph-r"><button class="btn pri" onclick="loadDash()">⟳ REFRESH</button></div>
+    <div class="ph-r" style="display:flex;align-items:center;gap:8px">
+      <div id="range-btns" style="display:flex;gap:0;border:1px solid var(--line2);border-radius:2px">
+        <button class="range-btn" data-range="1h"  onclick="setDashRange('1h')"  style="background:var(--cyan);color:var(--bg0);font-family:var(--mono);font-size:9px;padding:5px 10px;border:none;cursor:pointer">1H</button>
+        <button class="range-btn" data-range="6h"  onclick="setDashRange('6h')"  style="font-family:var(--mono);font-size:9px;padding:5px 10px;border:none;border-left:1px solid var(--line2);background:transparent;color:var(--dim);cursor:pointer">6H</button>
+        <button class="range-btn" data-range="24h" onclick="setDashRange('24h')" style="font-family:var(--mono);font-size:9px;padding:5px 10px;border:none;border-left:1px solid var(--line2);background:transparent;color:var(--dim);cursor:pointer">24H</button>
+        <button class="range-btn" data-range="7d"  onclick="setDashRange('7d')"  style="font-family:var(--mono);font-size:9px;padding:5px 10px;border:none;border-left:1px solid var(--line2);background:transparent;color:var(--dim);cursor:pointer">7D</button>
+      </div>
+      <button class="btn pri" onclick="loadDash()">⟳ REFRESH</button>
+    </div>
   </div>
   <div class="stats">
     <div class="stat s-cy"><div class="stat-lbl">Agents Online</div><div class="stat-val" id="s-on">–</div><div class="stat-sub" id="s-tot">of – endpoints</div></div>
@@ -374,6 +382,11 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
         <button class="pill" onclick="fAlerts('RESOLVED',this)">Resolved</button>
       </div>
     </div>
+  </div>
+  <!-- Agent filter banner (shown when coming from Endpoints) -->
+  <div id="al-agent-filter-banner" style="display:none;align-items:center;gap:10px;padding:8px 14px;background:rgba(0,200,240,.08);border:1px solid rgba(0,200,240,.2);border-radius:2px;margin-bottom:10px;font-family:var(--mono);font-size:10px;color:var(--cyan)">
+    <span></span>
+    <button class="btn" style="font-size:9px;padding:3px 8px;margin-left:auto" onclick="window._alertAgentFilter='';window._alertAgentLabel='';loadAlerts()">✕ CLEAR FILTER</button>
   </div>
   <div class="card">
     <div class="tw"><table>
@@ -1046,7 +1059,8 @@ function setStatus(ok,msg){
 // ─── dashboard ───────────────────────────────────────
 async function loadDash(){
   try{
-    const [dash,rules]=await Promise.all([api('/api/dashboard'),api('/api/rules')]);
+    const range = window._dashRange || '1h';
+    const [dash,rules]=await Promise.all([api('/api/dashboard?range='+range),api('/api/rules')]);
     setStatus(true,'ONLINE');
 
     const s=dash.alert_stats||{};
@@ -1109,8 +1123,18 @@ async function loadDash(){
 async function loadAlerts(){
   const tb=$('al-tbody');
   tb.innerHTML='<tr><td colspan="8" class="st-row st-load">LOADING</td></tr>';
+  const agentFilter = window._alertAgentFilter || '';
+  const agentLabel  = window._alertAgentLabel  || '';
+  const bannerEl = document.getElementById('al-agent-filter-banner');
+  if (bannerEl) {
+    bannerEl.style.display = agentFilter ? 'flex' : 'none';
+    const sp = bannerEl.querySelector('span');
+    if (sp && agentFilter) sp.textContent = 'Filtered: ' + agentLabel;
+  }
   try{
-    const d=await api('/api/alerts'+(_alertFilter?`?status=${_alertFilter}`:''));
+    let qp = _alertFilter ? `status=${_alertFilter}` : '';
+    if (agentFilter) qp += (qp?'&':'') + `agent_id=${encodeURIComponent(agentFilter)}`;
+    const d=await api('/api/alerts' + (qp ? '?' + qp : ''));
     const al=d.alerts||[];
     tb.innerHTML=al.length
       ?al.map(a=>`<tr data-action="openAlert" data-idx="${_rc_set(a)}" style="cursor:pointer">
@@ -2091,6 +2115,11 @@ function openAgent(js){
       ${dr('VERSION',`<span class="mono">${esc(a.agent_ver||'–')}</span>`)}
       ${dr('FIRST SEEN',`<span class="mono">${ts(a.first_seen)}</span>`)}
       ${dr('LAST SEEN',`<span class="mono">${ts(a.last_seen)}</span>`)}
+    </div>
+    <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
+      <button class="btn suc" onclick="viewAgentAlerts('${esc(a.id)}','${esc(a.hostname)}')" style="font-size:9px">🔔 VIEW ALERTS</button>
+      <button class="btn" onclick="viewAgentEvents('${esc(a.id)}','${esc(a.hostname)}')" style="font-size:9px">⚡ VIEW EVENTS</button>
+      <button class="btn" onclick="openEditTags('${esc(a.id)}','${esc(a.hostname)}','${(a.tags||[]).join(',')}')" style="font-size:9px">🏷 TAGS</button>
     </div>`);
 }
 
@@ -3113,6 +3142,37 @@ async function saveRetention() {
     if (st) { st.style.display='inline'; setTimeout(()=>st.style.display='none', 2000); }
     toast('Retention policy saved');
   } catch(e) { toast('Save failed: ' + e.message, false); }
+}
+
+
+// ── Dashboard time range picker ───────────────────────────────────────────────
+window._dashRange = '1h';
+
+function setDashRange(r) {
+  window._dashRange = r;
+  document.querySelectorAll('.range-btn').forEach(b => {
+    const active = b.dataset.range === r;
+    b.style.background = active ? 'var(--cyan)' : 'transparent';
+    b.style.color       = active ? 'var(--bg0)'  : 'var(--dim)';
+  });
+  loadDash();
+}
+
+// ── Per-agent filtering from Endpoints page ───────────────────────────────────
+
+function viewAgentAlerts(agentId, hostname) {
+  window._alertAgentFilter = agentId;
+  window._alertAgentLabel  = hostname;
+  closeDrawer();
+  nav('alerts');
+}
+
+function viewAgentEvents(agentId, hostname) {
+  window._evtAgentFilter = agentId;
+  window._evtAgentLabel  = hostname;
+  closeDrawer();
+  nav('events');
+  // loadEvents picks up _evtAgentFilter automatically if wired below
 }
 
 </script>

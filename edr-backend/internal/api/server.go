@@ -617,6 +617,10 @@ func (s *Server) handleMetrics(c *gin.Context) {
 func (s *Server) handleDashboard(c *gin.Context) {
 	ctx := c.Request.Context()
 
+	// ?range=1h|6h|24h|7d — default 24h
+	sinceDur := parseDashRange(c.Query("range"))
+	sinceTime := time.Now().Add(-sinceDur)
+
 	agents, _ := s.store.ListAgents(ctx)
 	online := 0
 	for _, a := range agents {
@@ -629,7 +633,7 @@ func (s *Server) handleDashboard(c *gin.Context) {
 	recentAlerts, _ := s.store.QueryAlerts(ctx, store.QueryAlertsParams{
 		Status: "OPEN", Severity: 3, Limit: 10,
 	})
-	since24h := time.Now().Add(-24 * time.Hour)
+	since24h := sinceTime
 	eventCount, _ := s.store.CountEvents(ctx, "", since24h)
 
 	c.JSON(http.StatusOK, gin.H{
@@ -638,7 +642,19 @@ func (s *Server) handleDashboard(c *gin.Context) {
 		"events_24h":    eventCount,
 		"alert_stats":   alertStats,
 		"recent_alerts": recentAlerts,
+		"range":         c.Query("range"),
+		"since":         sinceTime,
 	})
+}
+
+// parseDashRange converts a range query param to a time.Duration.
+func parseDashRange(r string) time.Duration {
+	switch r {
+	case "1h":  return time.Hour
+	case "6h":  return 6 * time.Hour
+	case "7d":  return 7 * 24 * time.Hour
+	default:    return 24 * time.Hour // "24h" or empty
+	}
 }
 
 // ─── Agents ───────────────────────────────────────────────────────────────────
@@ -1124,14 +1140,18 @@ func (s *Server) handleGetRule(c *gin.Context) {
 
 func (s *Server) handleCreateRule(c *gin.Context) {
 	var body struct {
-		Name        string      `json:"name"        binding:"required"`
-		Description string      `json:"description"`
-		Enabled     bool        `json:"enabled"`
-		Severity    int16       `json:"severity"`
-		EventTypes  []string    `json:"event_types" binding:"required"`
-		Conditions  interface{} `json:"conditions"`
-		MitreIDs    []string    `json:"mitre_ids"`
-		Author      string      `json:"author"`
+		Name             string      `json:"name"              binding:"required"`
+		Description      string      `json:"description"`
+		Enabled          bool        `json:"enabled"`
+		Severity         int16       `json:"severity"`
+		EventTypes       []string    `json:"event_types"       binding:"required"`
+		Conditions       interface{} `json:"conditions"`
+		MitreIDs         []string    `json:"mitre_ids"`
+		Author           string      `json:"author"`
+		RuleType         string      `json:"rule_type"`
+		ThresholdCount   int         `json:"threshold_count"`
+		ThresholdWindowS int         `json:"threshold_window_s"`
+		GroupBy          string      `json:"group_by"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -1139,16 +1159,22 @@ func (s *Server) handleCreateRule(c *gin.Context) {
 	}
 
 	import_json, _ := marshalToRaw(body.Conditions)
+	if body.RuleType == "" { body.RuleType = "match" }
+	if body.GroupBy  == "" { body.GroupBy  = "agent_id" }
 	rule := &models.Rule{
-		ID:          "rule-" + uuid.New().String(),
-		Name:        body.Name,
-		Description: body.Description,
-		Enabled:     body.Enabled,
-		Severity:    body.Severity,
-		EventTypes:  pq.StringArray(body.EventTypes),
-		Conditions:  import_json,
-		MitreIDs:    pq.StringArray(body.MitreIDs),
-		Author:      body.Author,
+		ID:               "rule-" + uuid.New().String(),
+		Name:             body.Name,
+		Description:      body.Description,
+		Enabled:          body.Enabled,
+		Severity:         body.Severity,
+		EventTypes:       pq.StringArray(body.EventTypes),
+		Conditions:       import_json,
+		MitreIDs:         pq.StringArray(body.MitreIDs),
+		Author:           body.Author,
+		RuleType:         body.RuleType,
+		ThresholdCount:   body.ThresholdCount,
+		ThresholdWindowS: body.ThresholdWindowS,
+		GroupBy:          body.GroupBy,
 	}
 	if rule.Author == "" {
 		rule.Author = "api"
@@ -1169,26 +1195,34 @@ func (s *Server) handleUpdateRule(c *gin.Context) {
 	}
 
 	var body struct {
-		Name        *string     `json:"name"`
-		Description *string     `json:"description"`
-		Enabled     *bool       `json:"enabled"`
-		Severity    *int16      `json:"severity"`
-		EventTypes  []string    `json:"event_types"`
-		Conditions  interface{} `json:"conditions"`
-		MitreIDs    []string    `json:"mitre_ids"`
+		Name             *string     `json:"name"`
+		Description      *string     `json:"description"`
+		Enabled          *bool       `json:"enabled"`
+		Severity         *int16      `json:"severity"`
+		EventTypes       []string    `json:"event_types"`
+		Conditions       interface{} `json:"conditions"`
+		MitreIDs         []string    `json:"mitre_ids"`
+		RuleType         *string     `json:"rule_type"`
+		ThresholdCount   *int        `json:"threshold_count"`
+		ThresholdWindowS *int        `json:"threshold_window_s"`
+		GroupBy          *string     `json:"group_by"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	if body.Name        != nil { existing.Name        = *body.Name        }
-	if body.Description != nil { existing.Description = *body.Description }
-	if body.Enabled     != nil { existing.Enabled     = *body.Enabled     }
-	if body.Severity    != nil { existing.Severity    = *body.Severity    }
-	if body.EventTypes  != nil { existing.EventTypes  = pq.StringArray(body.EventTypes) }
-	if body.MitreIDs    != nil { existing.MitreIDs    = pq.StringArray(body.MitreIDs) }
-	if body.Conditions  != nil {
+	if body.Name             != nil { existing.Name             = *body.Name             }
+	if body.Description      != nil { existing.Description      = *body.Description      }
+	if body.Enabled          != nil { existing.Enabled          = *body.Enabled          }
+	if body.Severity         != nil { existing.Severity         = *body.Severity         }
+	if body.EventTypes       != nil { existing.EventTypes       = pq.StringArray(body.EventTypes) }
+	if body.MitreIDs         != nil { existing.MitreIDs         = pq.StringArray(body.MitreIDs) }
+	if body.RuleType         != nil { existing.RuleType         = *body.RuleType         }
+	if body.ThresholdCount   != nil { existing.ThresholdCount   = *body.ThresholdCount   }
+	if body.ThresholdWindowS != nil { existing.ThresholdWindowS = *body.ThresholdWindowS }
+	if body.GroupBy          != nil { existing.GroupBy          = *body.GroupBy          }
+	if body.Conditions       != nil {
 		if raw, err := marshalToRaw(body.Conditions); err == nil {
 			existing.Conditions = raw
 		}

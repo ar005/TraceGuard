@@ -73,7 +73,11 @@ type Rule struct {
 	MitreIDs    pq.StringArray  `db:"mitre_ids"   json:"mitre_ids"`
 	CreatedAt   time.Time       `db:"created_at"  json:"created_at"`
 	UpdatedAt   time.Time       `db:"updated_at"  json:"updated_at"`
-	Author      string          `db:"author"      json:"author"`
+	Author             string          `db:"author"              json:"author"`
+	RuleType           string          `db:"rule_type"           json:"rule_type"`
+	ThresholdCount     int             `db:"threshold_count"     json:"threshold_count"`
+	ThresholdWindowS   int             `db:"threshold_window_s"  json:"threshold_window_s"`
+	GroupBy            string          `db:"group_by"            json:"group_by"`
 }
 
 // SuppressionRule silences events that match its conditions before detection runs.

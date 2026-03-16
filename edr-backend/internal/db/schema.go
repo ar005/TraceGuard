@@ -316,6 +316,65 @@ var migrations = []struct {
 		`,
 	},
 	{
+		name: "add_threshold_rule_fields",
+		sql: `
+		-- rule_type: 'match' (default, current behaviour) or 'threshold'
+		ALTER TABLE rules ADD COLUMN IF NOT EXISTS rule_type           TEXT    NOT NULL DEFAULT 'match';
+		ALTER TABLE rules ADD COLUMN IF NOT EXISTS threshold_count     INT     NOT NULL DEFAULT 0;
+		ALTER TABLE rules ADD COLUMN IF NOT EXISTS threshold_window_s  INT     NOT NULL DEFAULT 60;
+		ALTER TABLE rules ADD COLUMN IF NOT EXISTS group_by            TEXT    NOT NULL DEFAULT 'agent_id';
+		-- Threshold rules: seed three real-world examples
+		INSERT INTO rules (id, name, description, severity, event_types, conditions, mitre_ids, author,
+		                   rule_type, threshold_count, threshold_window_s, group_by)
+		VALUES
+		(
+			'rule-thresh-port-scan',
+			'Port Scan Detected (threshold)',
+			'A single process made 20+ outbound TCP connections in 30 seconds — likely port scanning.',
+			3,
+			ARRAY['NET_CONNECT'],
+			'[{"field":"direction","op":"eq","value":"OUTBOUND"}]',
+			ARRAY['T1046'],
+			'system',
+			'threshold', 20, 30, 'process.pid'
+		),
+		(
+			'rule-thresh-brute-force',
+			'SSH Brute Force (threshold)',
+			'20+ inbound SSH connections from different sources in 60 seconds — possible brute force.',
+			3,
+			ARRAY['NET_ACCEPT','NET_CONNECT'],
+			'[{"field":"dst_port","op":"eq","value":22}]',
+			ARRAY['T1110'],
+			'system',
+			'threshold', 20, 60, 'agent_id'
+		),
+		(
+			'rule-thresh-beaconing',
+			'C2 Beaconing Detected (threshold)',
+			'10+ outbound connections to the same external host in 5 minutes — possible C2 beaconing.',
+			3,
+			ARRAY['NET_CONNECT'],
+			'[{"field":"direction","op":"eq","value":"OUTBOUND"},{"field":"is_private","op":"eq","value":false}]',
+			ARRAY['T1071'],
+			'system',
+			'threshold', 10, 300, 'dst_ip'
+		),
+		(
+			'rule-thresh-exec-burst',
+			'Execution Burst (threshold)',
+			'30+ process executions in 60 seconds on the same host — possible script-based attack.',
+			2,
+			ARRAY['PROCESS_EXEC'],
+			'[]',
+			ARRAY['T1059'],
+			'system',
+			'threshold', 30, 60, 'agent_id'
+		)
+		ON CONFLICT (id) DO NOTHING;
+		`,
+	},
+	{
 		name: "create_suppression_rules",
 		sql: `
 		CREATE TABLE IF NOT EXISTS suppression_rules (

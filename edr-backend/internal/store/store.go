@@ -429,20 +429,28 @@ func (s *Store) UpsertRule(ctx context.Context, r *models.Rule) error {
 	if err != nil {
 		return err
 	}
+	if r.RuleType == "" { r.RuleType = "match" }
+	if r.GroupBy  == "" { r.GroupBy  = "agent_id" }
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO rules (id, name, description, enabled, severity, event_types, conditions, mitre_ids, author, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW(),NOW())
+		INSERT INTO rules (id, name, description, enabled, severity, event_types, conditions, mitre_ids, author,
+		                   rule_type, threshold_count, threshold_window_s, group_by, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW(),NOW())
 		ON CONFLICT (id) DO UPDATE SET
-			name        = EXCLUDED.name,
-			description = EXCLUDED.description,
-			enabled     = EXCLUDED.enabled,
-			severity    = EXCLUDED.severity,
-			event_types = EXCLUDED.event_types,
-			conditions  = EXCLUDED.conditions,
-			mitre_ids   = EXCLUDED.mitre_ids,
-			updated_at  = NOW()
+			name              = EXCLUDED.name,
+			description       = EXCLUDED.description,
+			enabled           = EXCLUDED.enabled,
+			severity          = EXCLUDED.severity,
+			event_types       = EXCLUDED.event_types,
+			conditions        = EXCLUDED.conditions,
+			mitre_ids         = EXCLUDED.mitre_ids,
+			rule_type         = EXCLUDED.rule_type,
+			threshold_count   = EXCLUDED.threshold_count,
+			threshold_window_s= EXCLUDED.threshold_window_s,
+			group_by          = EXCLUDED.group_by,
+			updated_at        = NOW()
 	`, r.ID, r.Name, r.Description, r.Enabled, r.Severity,
-		pq.Array(r.EventTypes), conds, pq.Array(r.MitreIDs), r.Author)
+		pq.Array(r.EventTypes), conds, pq.Array(r.MitreIDs), r.Author,
+		r.RuleType, r.ThresholdCount, r.ThresholdWindowS, r.GroupBy)
 	return err
 }
 
