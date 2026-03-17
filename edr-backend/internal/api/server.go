@@ -22,6 +22,7 @@ import (
 
 	"github.com/youredr/edr-backend/internal/apikeys"
 	"github.com/youredr/edr-backend/internal/llm"
+	"github.com/youredr/edr-backend/internal/sse"
 	"github.com/youredr/edr-backend/internal/audit"
 	"github.com/youredr/edr-backend/internal/detection"
 	"github.com/youredr/edr-backend/internal/migrate"
@@ -38,6 +39,7 @@ type Server struct {
 	um     *users.Manager
 	al     *audit.Logger
 	llm    *llm.Client
+	sse    *sse.Broker
 	log    zerolog.Logger
 	router *gin.Engine
 	http   *http.Server
@@ -47,7 +49,7 @@ type Server struct {
 // New creates the API server and registers all routes.
 func New(st *store.Store, eng *detection.Engine, km *apikeys.Manager,
 	um *users.Manager, al *audit.Logger,
-	lc *llm.Client,
+	lc *llm.Client, sb *sse.Broker,
 	log zerolog.Logger, apiKey string) *Server {
 
 	gin.SetMode(gin.ReleaseMode)
@@ -61,6 +63,7 @@ func New(st *store.Store, eng *detection.Engine, km *apikeys.Manager,
 		um:     um,
 		al:     al,
 		llm:    lc,
+		sse:    sb,
 		log:    log.With().Str("component", "api").Logger(),
 		router: r,
 		apiKey: apiKey,
@@ -107,6 +110,7 @@ func (s *Server) registerRoutes() {
 		v1.GET("/events",         s.handleListEvents)
 		v1.GET("/events/:id",     s.handleGetEvent)
 		v1.POST("/events/inject", s.handleInjectEvent)
+		v1.GET("/events/stream",  s.handleEventStream)
 
 		// Alerts
 		v1.GET("/alerts",             s.handleListAlerts)
@@ -208,6 +212,10 @@ const (
 func (s *Server) authMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		raw := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
+		// SSE clients cannot set headers, so also accept ?token= query param.
+		if raw == "" {
+			raw = c.Query("token")
+		}
 
 		// ── Try JWT first ──────────────────────────────────────────────────
 		if s.um != nil && raw != "" {
@@ -885,6 +893,18 @@ func (s *Server) handleGetAlertTimeline(c *gin.Context) {
 		"window_start": before,
 		"window_end":   after,
 	})
+}
+
+// ─── SSE Event Stream ─────────────────────────────────────────────────────────
+
+// GET /api/v1/events/stream — real-time SSE feed of all incoming events.
+// Optional filters: ?event_type=NET_CONNECT  ?agent_id=<id>
+func (s *Server) handleEventStream(c *gin.Context) {
+	if s.sse == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "SSE broker not initialised"})
+		return
+	}
+	s.sse.Handler()(c)
 }
 
 // ─── Suppression Rules ───────────────────────────────────────────────────────

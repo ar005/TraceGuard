@@ -16,6 +16,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/youredr/edr-backend/internal/api"
+	"github.com/youredr/edr-backend/internal/sse"
 	"github.com/youredr/edr-backend/internal/llm"
 	"github.com/youredr/edr-backend/internal/apikeys"
 	"github.com/youredr/edr-backend/internal/audit"
@@ -111,6 +112,9 @@ func main() {
 	}
 
 	// ── Detection Engine ──────────────────────────────────────────────────────
+		// SSE broker — fans live events to connected browser clients.
+	sseBroker := sse.New(logger)
+
 	engine := detection.New(st, logger, func(ctx context.Context, alert *models.Alert) {
 		if err := st.InsertAlert(ctx, alert); err != nil {
 			logger.Error().Err(err).Str("rule", alert.RuleID).Msg("persist alert failed")
@@ -128,7 +132,7 @@ func main() {
 	}
 
 	// ── gRPC Ingest Server ────────────────────────────────────────────────────
-	grpcServer := ingest.New(st, engine, logger, ingest.TLSConfig{
+	grpcServer := ingest.New(st, engine, sseBroker, logger, ingest.TLSConfig{
 		Enabled:  cfg.Server.TLS.Enabled,
 		CertFile: cfg.Server.TLS.CertFile,
 		KeyFile:  cfg.Server.TLS.KeyFile,
@@ -149,7 +153,7 @@ func main() {
 		logger.Info().Msg("Ollama LLM disabled (set OLLAMA_ENABLED=true to enable)")
 	}
 
-	apiServer := api.New(st, engine, km, um, al, llmClient, logger, cfg.Auth.APIKey)
+	apiServer := api.New(st, engine, km, um, al, llmClient, sseBroker, logger, cfg.Auth.APIKey)
 	go func() {
 		if err := apiServer.Listen(cfg.Server.HTTPAddr); err != nil {
 			if err.Error() != "http: Server closed" {

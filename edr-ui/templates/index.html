@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>TraceGuard — Open EDR</title>
+<meta id="TraceGuard-meta" data-token="{{ token }}" data-backend="{{ backend }}">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root{
@@ -45,7 +46,7 @@ body{font-family:var(--sans);font-size:13px;line-height:1.5;background:var(--bg0
 /* ── page ── */
 .page{display:none;padding:18px 22px;animation:pi .18s ease}
 .page.on{display:block}
-@keyframes pi{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+@keyframes blink{50%{opacity:0}}@keyframes pi{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
 
 /* ── page header ── */
 .ph{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:18px;padding-bottom:12px;border-bottom:1px solid var(--line)}
@@ -433,9 +434,15 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
         <button class="pill" onclick="fEvents('NET_CONNECT',this)">Network</button>
         <button class="pill" onclick="fEvents('FILE_WRITE',this)">File</button>
       </div>
-      <button class="btn" onclick="importLogs()" title="Import events from JSON file" style="padding:5px 11px;font-size:10px">⬆ IMPORT</button>
-      <button class="btn pri" onclick="exportLogs()" title="Export current view to JSON/CSV" style="padding:5px 11px;font-size:10px">⬇ EXPORT</button>
+      <button id="live-btn" class="btn" onclick="toggleLiveStream()" style="padding:5px 11px;font-size:10px">◉ LIVE</button>
+      <button class="btn" onclick="importLogs()" style="padding:5px 11px;font-size:10px">⬆ IMPORT</button>
+      <button class="btn pri" onclick="exportLogs()" style="padding:5px 11px;font-size:10px">⬇ EXPORT</button>
     </div>
+  </div>
+  <div id="live-bar" style="display:none;align-items:center;gap:8px;padding:6px 14px;background:rgba(0,220,100,.07);border:1px solid rgba(0,220,100,.2);border-radius:2px;margin-bottom:10px;font-family:var(--mono);font-size:9px;color:var(--green)">
+    <span style="animation:blink 1s step-end infinite">●</span>
+    <span>LIVE — events streaming in real time</span>
+    <span id="live-count" style="margin-left:auto;color:var(--muted)">0 received</span>
   </div>
   <!-- Hidden import file input -->
   <input type="file" id="ev-import-file" accept=".json,.ndjson,.jsonl" style="display:none" onchange="handleImportFile(this)">
@@ -2577,6 +2584,11 @@ function renderProcessDetail(p) {
     </div>`;
   }
 
+  // ── Process ancestry tree ─────────────────────────────────────────────────
+  if ((p.ancestry && p.ancestry.length > 0) || p.parent_process) {
+    html += renderProcessTree(p);
+  }
+
   return html;
 }
 
@@ -2750,6 +2762,17 @@ setInterval(refresh,30000);
 // ── JWT auto-refresh ─────────────────────────────────────────────────────────
 // Silently re-issues the JWT every 10 minutes so the 12h token
 // never expires mid-session. On failure, redirects to /login.
+// Read JWT token and backend URL from server-injected meta tag.
+(function initMeta() {
+  const m = document.getElementById("TraceGuard-meta");
+  if (m) {
+    window._jwtToken    = m.dataset.token   || "";
+    window._backendURL  = m.dataset.backend  || "";
+    // Strip trailing slash from backend URL
+    if (window._backendURL.endsWith("/")) window._backendURL = window._backendURL.slice(0,-1);
+  }
+})();
+
 (function startTokenRefresh() {
   async function doRefresh() {
     try {
@@ -3175,6 +3198,140 @@ function viewAgentEvents(agentId, hostname) {
   // loadEvents picks up _evtAgentFilter automatically if wired below
 }
 
+
+// ── Process Tree Renderer ─────────────────────────────────────────────────────
+// Renders the ancestry chain of a process exec event as a visual tree.
+// Uses the ancestry[] array (oldest ancestor first) + the process itself.
+
+function renderProcessTree(p) {
+  const proc     = p.process     || p;
+  const ancestry = (p.ancestry   || []).slice().reverse(); // root→parent order
+  const parent   = p.parent_process;
+
+  // Build ordered chain: [root ancestor ... parent, current process]
+  const chain = [];
+  ancestry.forEach(a => chain.push(a));
+  if (parent && parent.pid && !chain.find(c => c.pid === parent.pid)) {
+    chain.push(parent);
+  }
+  chain.push(proc);
+
+  if (chain.length < 2) return ''; // nothing interesting to show
+
+  const nodeLabel = (n) => {
+    const comm = esc(n.comm || n.exe_path?.split('/').pop() || '?');
+    const pid  = n.pid  ? `<span style="color:var(--muted);font-size:8px"> [${n.pid}]</span>` : '';
+    const user = n.username ? `<span style="color:var(--muted);font-size:8px"> ${esc(n.username)}</span>` : '';
+    const isLast = n === chain[chain.length - 1];
+    const color  = isLast ? 'var(--text)' : 'var(--dim)';
+    const weight = isLast ? '600' : '400';
+    return `<span style="color:${color};font-weight:${weight}">${comm}</span>${pid}${user}`;
+  };
+
+  let out = '<div class="slbl">Process Tree</div>';
+  out += '<div style="background:var(--bg0);border:1px solid var(--line);border-radius:2px;padding:10px 12px;margin-bottom:13px;font-family:var(--mono);font-size:9.5px">';
+
+  chain.forEach((node, i) => {
+    const indent = i * 16;
+    const isLast = i === chain.length - 1;
+    const connector = i === 0
+      ? ''
+      : `<span style="color:var(--muted);margin-right:4px">${'│ '.repeat(i-1)}└─</span>`;
+    const dot = isLast
+      ? '<span style="color:var(--cyan);margin-right:5px">▶</span>'
+      : '<span style="color:var(--muted);margin-right:5px">·</span>';
+    out += `<div style="padding:2px 0;padding-left:${indent}px">${connector}${dot}${nodeLabel(node)}</div>`;
+  });
+
+  out += '</div>';
+  return out;
+}
+
+// ── Live Event Stream (SSE) ───────────────────────────────────────────────────
+
+let _liveEvtSource = null;   // EventSource instance
+let _liveCount = 0;
+let _liveBuffer = [];        // buffer newest events at top, max 200 shown live
+const LIVE_MAX = 200;
+
+function toggleLiveStream() {
+  if (_liveEvtSource) {
+    stopLiveStream();
+  } else {
+    startLiveStream();
+  }
+}
+
+function startLiveStream() {
+  // Connect directly to backend with auth token — SSE can't use custom headers
+  // so we pass the JWT as a query param (backend authMiddleware checks both).
+  const token   = _jwtToken || '';
+  const backendBase = window._backendURL || (window.location.protocol + '//' + window.location.hostname + ':8080');
+  let url = backendBase + '/api/v1/events/stream';
+  const params = [];
+  if (_evtFilter) params.push('event_type=' + encodeURIComponent(_evtFilter));
+  if (window._evtAgentFilter) params.push('agent_id=' + encodeURIComponent(window._evtAgentFilter));
+  if (token) params.push('token=' + encodeURIComponent(token));
+  if (params.length) url += '?' + params.join('&');
+
+  _liveEvtSource = new EventSource(url);
+  _liveCount = 0;
+  _liveBuffer = [];
+
+  _liveEvtSource.onmessage = function(e) {
+    try {
+      const ev = JSON.parse(e.data);
+      _liveCount++;
+      document.getElementById('live-count').textContent = _liveCount + ' received';
+
+      // Prepend to live buffer (newest at top)
+      _liveBuffer.unshift(ev);
+      if (_liveBuffer.length > LIVE_MAX) _liveBuffer = _liveBuffer.slice(0, LIVE_MAX);
+
+      // Re-render events table with live buffer merged at top
+      const merged = [..._liveBuffer, ...(_eventsData || [])];
+      const unique = [];
+      const seen = new Set();
+      for (const x of merged) { if (!seen.has(x.id)) { seen.add(x.id); unique.push(x); } }
+      renderEventsTable(unique.slice(0, LIVE_MAX));
+
+      const countEl = document.getElementById('ev-count');
+      if (countEl) countEl.textContent = unique.length + ' events (live)';
+    } catch(err) { /* non-JSON SSE comment line — ignore */ }
+  };
+
+  _liveEvtSource.onerror = function() {
+    // SSE auto-reconnects on error; only stop if we explicitly closed it.
+    if (!_liveEvtSource || _liveEvtSource.readyState === EventSource.CLOSED) {
+      stopLiveStream();
+    }
+  };
+
+  // Update UI
+  const btn = document.getElementById('live-btn');
+  const bar = document.getElementById('live-bar');
+  if (btn) { btn.style.color = 'var(--green)'; btn.style.borderColor = 'rgba(0,220,100,.4)'; btn.textContent = '◉ LIVE'; }
+  if (bar) bar.style.display = 'flex';
+}
+
+function stopLiveStream() {
+  if (_liveEvtSource) { _liveEvtSource.close(); _liveEvtSource = null; }
+  const btn = document.getElementById('live-btn');
+  const bar = document.getElementById('live-bar');
+  if (btn) { btn.style.color = ''; btn.style.borderColor = ''; btn.textContent = '◉ LIVE'; }
+  if (bar) bar.style.display = 'none';
+}
+
+// Stop live stream when navigating away from events page
+const _origNav = nav;
+nav = function(name) {
+  if (name !== 'events' && _liveEvtSource) stopLiveStream();
+  _origNav(name);
+};
+
+// The SSE auth workaround: backend authMiddleware also accepts ?token= query param.
+// Store current JWT for SSE use.
+let _jwtToken = '';
 </script>
 </body>
 </html>

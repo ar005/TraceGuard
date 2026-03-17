@@ -24,6 +24,7 @@ import (
 	"google.golang.org/grpc/peer"
 
 	"github.com/youredr/edr-backend/internal/detection"
+	"github.com/youredr/edr-backend/internal/sse"
 	"github.com/youredr/edr-backend/internal/models"
 	pb "github.com/youredr/edr-backend/internal/proto"
 	"github.com/youredr/edr-backend/internal/store"
@@ -31,8 +32,9 @@ import (
 
 // Server implements the gRPC EventService.
 type Server struct {
-	store    *store.Store
-	engine   *detection.Engine
+	store     *store.Store
+	engine    *detection.Engine
+	sseBroker *sse.Broker
 	log      zerolog.Logger
 	grpc     *grpc.Server
 	configVer string
@@ -47,10 +49,11 @@ type TLSConfig struct {
 }
 
 // New creates an ingest Server.
-func New(st *store.Store, eng *detection.Engine, log zerolog.Logger, tls TLSConfig) *Server {
+func New(st *store.Store, eng *detection.Engine, sb *sse.Broker, log zerolog.Logger, tls TLSConfig) *Server {
 	s := &Server{
 		store:     st,
 		engine:    eng,
+		sseBroker: sb,
 		log:       log.With().Str("component", "ingest").Logger(),
 		configVer: "1",
 	}
@@ -256,6 +259,10 @@ func (s *Server) processEvent(env *pb.EventEnvelope) {
 			Str("event_id", eventID).
 			Msg("insert event failed")
 		return
+	}
+	// Publish to SSE broker — non-blocking fan-out to connected browser clients.
+	if s.sseBroker != nil {
+		go s.sseBroker.Publish(ev)
 	}
 
 	// Run detection rules against it.
