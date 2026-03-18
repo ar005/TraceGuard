@@ -153,7 +153,12 @@ func main() {
 		logger.Info().Msg("Ollama LLM disabled (set OLLAMA_ENABLED=true to enable)")
 	}
 
-	apiServer := api.New(st, engine, km, um, al, llmClient, sseBroker, logger, cfg.Auth.APIKey)
+	apiServer := api.New(st, engine, km, um, al, llmClient, sseBroker, logger, cfg.Auth.APIKey,
+		api.RateLimitConfig{
+			Enabled:           cfg.RateLimit.Enabled,
+			RequestsPerSecond: cfg.RateLimit.RequestsPerSecond,
+			Burst:             cfg.RateLimit.Burst,
+		})
 	go func() {
 		if err := apiServer.Listen(cfg.Server.HTTPAddr); err != nil {
 			if err.Error() != "http: Server closed" {
@@ -173,16 +178,19 @@ func main() {
 		}
 	}()
 
-	// ── Retention sweep (runs every 6 hours) ────────────────────────────────
+	// ── Retention sweep (runs every 1 hour) ─────────────────────────────────
+	// Always runs — reads retention policy from DB settings (configurable via
+	// the UI at /api/v1/settings/retention). Config file values are just the
+	// initial defaults seeded into the DB.
 	go func() {
-		if cfg.Retention.EventDays == 0 && cfg.Retention.AlertDays == 0 {
-			return // retention disabled
-		}
+		const sweepInterval = 1 * time.Hour
+
 		runSweep := func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
-			// Read retention settings from DB (configurable via UI)
+
 			evtDays, alrtDays := st.GetRetentionDays(ctx)
+
 			if evtDays > 0 {
 				cutoff := time.Now().AddDate(0, 0, -evtDays)
 				if n, err := st.DeleteOldEvents(ctx, cutoff); err != nil {
@@ -200,8 +208,17 @@ func main() {
 				}
 			}
 		}
+
+		// Log policy at startup.
+		evtDays, alrtDays := st.GetRetentionDays(context.Background())
+		logger.Info().
+			Int("event_days", evtDays).
+			Int("alert_days", alrtDays).
+			Dur("interval", sweepInterval).
+			Msg("retention worker started")
+
 		runSweep() // run once at startup
-		ticker := time.NewTicker(6 * time.Hour)
+		ticker := time.NewTicker(sweepInterval)
 		defer ticker.Stop()
 		for range ticker.C {
 			runSweep()

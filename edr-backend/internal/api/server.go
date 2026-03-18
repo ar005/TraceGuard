@@ -33,42 +33,60 @@ import (
 
 // Server is the REST API server.
 type Server struct {
-	store  *store.Store
-	engine *detection.Engine
-	keys   *apikeys.Manager
-	um     *users.Manager
-	al     *audit.Logger
-	llm    *llm.Client
-	sse    *sse.Broker
-	log    zerolog.Logger
-	router *gin.Engine
-	http   *http.Server
-	apiKey string // legacy single-key fallback
+	store    *store.Store
+	engine   *detection.Engine
+	keys     *apikeys.Manager
+	um       *users.Manager
+	al       *audit.Logger
+	llm      *llm.Client
+	sse      *sse.Broker
+	log      zerolog.Logger
+	router   *gin.Engine
+	http     *http.Server
+	apiKey   string // legacy single-key fallback
+	rateLimit RateLimitConfig
 }
 
 // New creates the API server and registers all routes.
 func New(st *store.Store, eng *detection.Engine, km *apikeys.Manager,
 	um *users.Manager, al *audit.Logger,
 	lc *llm.Client, sb *sse.Broker,
-	log zerolog.Logger, apiKey string) *Server {
+	log zerolog.Logger, apiKey string, rlCfg ...RateLimitConfig) *Server {
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(ginLogger(log), gin.Recovery())
 
+	rl := DefaultRateLimitConfig()
+	if len(rlCfg) > 0 {
+		rl = rlCfg[0]
+	}
+
+	// Apply rate limiting middleware globally.
+	r.Use(rateLimitMiddleware(rl))
+
 	s := &Server{
-		store:  st,
-		engine: eng,
-		keys:   km,
-		um:     um,
-		al:     al,
-		llm:    lc,
-		sse:    sb,
-		log:    log.With().Str("component", "api").Logger(),
-		router: r,
-		apiKey: apiKey,
+		store:     st,
+		engine:    eng,
+		keys:      km,
+		um:        um,
+		al:        al,
+		llm:       lc,
+		sse:       sb,
+		log:       log.With().Str("component", "api").Logger(),
+		router:    r,
+		apiKey:    apiKey,
+		rateLimit: rl,
 	}
 	s.registerRoutes()
+
+	if rl.Enabled {
+		log.Info().
+			Float64("rps", rl.RequestsPerSecond).
+			Int("burst", rl.Burst).
+			Msg("API rate limiting enabled")
+	}
+
 	return s
 }
 
@@ -111,6 +129,9 @@ func (s *Server) registerRoutes() {
 		v1.GET("/events/:id",     s.handleGetEvent)
 		v1.POST("/events/inject", s.handleInjectEvent)
 		v1.GET("/events/stream",  s.handleEventStream)
+
+		// Process tree
+		v1.GET("/processes/:pid/tree", s.handleGetProcessTree)
 
 		// Alerts
 		v1.GET("/alerts",             s.handleListAlerts)
@@ -1396,6 +1417,34 @@ func (s *Server) handleDeleteKey(c *gin.Context) {
 	actorID, actorName := currentUser(c)
 	s.al.Log(c.Request.Context(), actorID, actorName, "delete_key", "api_key", id, "", c.ClientIP(), "")
 	c.Status(http.StatusNoContent)
+}
+
+// ─── Process Tree ─────────────────────────────────────────────────────────────
+
+// GET /api/v1/processes/:pid/tree?agent_id=xxx&depth=5
+func (s *Server) handleGetProcessTree(c *gin.Context) {
+	pidStr := c.Param("pid")
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid pid"})
+		return
+	}
+	agentID := c.Query("agent_id")
+	if agentID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "agent_id is required"})
+		return
+	}
+	depth := intQuery(c, "depth", 5)
+	if depth > 20 {
+		depth = 20
+	}
+
+	tree, err := s.store.GetProcessTree(c.Request.Context(), agentID, pid, depth)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"tree": tree, "pid": pid, "agent_id": agentID})
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

@@ -1,6 +1,16 @@
 BINARY    = edr-agent
-VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
-LDFLAGS   = -ldflags "-X github.com/youredr/edr-agent/internal/agent.Version=$(VERSION) -w -s"
+VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+GIT_COMMIT = $(shell git rev-parse HEAD 2>/dev/null || echo "unknown")
+GIT_BRANCH = $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+BUILD_TIME = $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
+VER_PKG    = github.com/youredr/edr-agent/internal/version
+LDFLAGS    = -ldflags "\
+  -X $(VER_PKG).Version=$(VERSION) \
+  -X $(VER_PKG).GitCommit=$(GIT_COMMIT) \
+  -X $(VER_PKG).GitBranch=$(GIT_BRANCH) \
+  -X $(VER_PKG).BuildTime=$(BUILD_TIME) \
+  -X github.com/youredr/edr-agent/internal/agent.Version=$(VERSION) \
+  -w -s"
 BPF_CC    = clang
 ARCH     ?= x86
 

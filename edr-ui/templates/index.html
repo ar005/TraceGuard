@@ -2395,6 +2395,16 @@ function buildEventDrawerHTML(e, p, t, related) {
     ${dr('EVENT ID', `<span class="mono" style="font-size:8px;word-break:break-all;opacity:.6">${esc(e.id||'–')}</span>`)}
   </div>`;
 
+  // ── Full Process Tree button ───────────────────────────────
+  if (pid && e.agent_id) {
+    html += `<div style="margin-bottom:13px">
+      <button class="btn pri" onclick="loadFullProcessTree(${pid}, '${esc(e.agent_id)}')">
+        ⬡ VIEW FULL PROCESS TREE
+      </button>
+    </div>
+    <div id="full-process-tree"></div>`;
+  }
+
   // ── Type-specific detail section ─────────────────────────────
   if (t.startsWith('NET')) {
     html += renderNetworkDetail(p);
@@ -3245,6 +3255,109 @@ function renderProcessTree(p) {
 
   out += '</div>';
   return out;
+}
+
+// ── Full Process Tree (from backend API) ──────────────────────────────────────
+
+async function loadFullProcessTree(pid, agentId) {
+  const container = document.getElementById('full-process-tree');
+  if (!container) return;
+
+  container.innerHTML = `<div style="font-family:var(--mono);font-size:9px;color:var(--muted);padding:10px 0">
+    <span style="opacity:.5">Loading process tree for PID ${pid}...</span>
+  </div>`;
+
+  try {
+    const resp = await fetch(`/api/processes/${pid}/tree?agent_id=${encodeURIComponent(agentId)}&depth=10`, {
+      headers: { 'Content-Type': 'application/json' }
+    });
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      container.innerHTML = `<div style="font-family:var(--mono);font-size:9px;color:var(--red);padding:10px 0">
+        Process tree not available: ${esc(err.error || 'no PROCESS_EXEC events found for this PID')}
+      </div>`;
+      return;
+    }
+
+    const data = await resp.json();
+    const tree = data.tree;
+    if (!tree) {
+      container.innerHTML = `<div style="font-family:var(--mono);font-size:9px;color:var(--muted);padding:10px 0">
+        No process tree data available for PID ${pid}
+      </div>`;
+      return;
+    }
+
+    container.innerHTML = renderFullTree(tree, pid);
+  } catch (e) {
+    container.innerHTML = `<div style="font-family:var(--mono);font-size:9px;color:var(--red);padding:10px 0">
+      Error: ${esc(e.message)}
+    </div>`;
+  }
+}
+
+function renderFullTree(node, highlightPid) {
+  let html = `<div class="slbl" style="color:var(--cyan)">⬡ Full Process Tree  <span style="font-size:8px;color:var(--muted);font-weight:400">(reconstructed from all events)</span></div>`;
+  html += `<div style="background:var(--bg0);border:1px solid var(--line);border-radius:2px;padding:12px 14px;margin-bottom:13px;font-family:var(--mono);font-size:9.5px;overflow-x:auto">`;
+  html += renderTreeNode(node, 0, highlightPid, true);
+  html += '</div>';
+  return html;
+}
+
+function renderTreeNode(node, depth, highlightPid, isLast) {
+  if (!node) return '';
+
+  const isHighlight = node.pid === highlightPid;
+  const children = node.children || [];
+  const hasChildren = children.length > 0;
+
+  // Build indent prefix with tree connectors
+  const comm = esc(node.comm || '?');
+  const pidStr = node.pid || '?';
+  const user = node.username ? esc(node.username) : '';
+  const exe = node.exe_path ? esc(node.exe_path) : '';
+  const cmdline = node.cmdline ? esc(node.cmdline) : '';
+
+  // Colors
+  const nameColor = isHighlight ? 'var(--cyan)' : 'var(--text)';
+  const nameWeight = isHighlight ? '700' : '400';
+  const bgHighlight = isHighlight ? 'background:rgba(0,200,240,.08);border-radius:2px;margin:1px -6px;padding:3px 6px;' : '';
+
+  // Connector
+  let connector = '';
+  if (depth > 0) {
+    connector = `<span style="color:var(--line2)">${isLast ? '└── ' : '├── '}</span>`;
+  }
+
+  // Icon based on process type
+  let icon = '<span style="color:var(--muted);margin-right:3px">●</span>';
+  if (isHighlight) {
+    icon = '<span style="color:var(--cyan);margin-right:3px">▶</span>';
+  } else if (node.comm === 'bash' || node.comm === 'sh' || node.comm === 'zsh') {
+    icon = '<span style="color:var(--green);margin-right:3px">$</span>';
+  } else if (node.comm === 'sshd' || node.comm === 'systemd') {
+    icon = '<span style="color:var(--violet);margin-right:3px">◆</span>';
+  } else if (node.comm === 'nc' || node.comm === 'ncat' || node.comm === 'curl' || node.comm === 'wget') {
+    icon = '<span style="color:var(--orange);margin-right:3px">⬡</span>';
+  } else if (node.comm === 'python3' || node.comm === 'python' || node.comm === 'node' || node.comm === 'ruby' || node.comm === 'perl') {
+    icon = '<span style="color:var(--amber);margin-right:3px">◇</span>';
+  }
+
+  const indent = depth * 20;
+  let html = `<div style="padding:2px 0;padding-left:${indent}px;${bgHighlight}display:flex;align-items:baseline;gap:2px;line-height:1.7">
+    ${connector}${icon}<span style="color:${nameColor};font-weight:${nameWeight}">${comm}</span>
+    <span style="color:var(--muted);font-size:8px">[${pidStr}]</span>
+    ${user ? `<span style="color:var(--dim);font-size:8px">${user}</span>` : ''}
+    ${cmdline && cmdline !== comm ? `<span style="color:var(--muted);font-size:8px;opacity:.6;margin-left:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px" title="${cmdline}">${cmdline}</span>` : ''}
+  </div>`;
+
+  // Render children
+  for (let i = 0; i < children.length; i++) {
+    html += renderTreeNode(children[i], depth + 1, highlightPid, i === children.length - 1);
+  }
+
+  return html;
 }
 
 // ── Live Event Stream (SSE) ───────────────────────────────────────────────────

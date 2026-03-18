@@ -679,7 +679,10 @@ func (m *Monitor) handleV6(r rawNetEventV6) error {
 func (m *Monitor) shouldDrop(srcIP, dstIP string, dstPort uint16, direction uint8) bool {
 	if m.cfg.IgnoreLocalhost {
 		if strings.HasPrefix(dstIP, "127.") || strings.HasPrefix(srcIP, "127.") {
-			return true
+			// Exempt DNS traffic — systemd-resolved listens on 127.0.0.53:53.
+			if dstPort != 53 {
+				return true
+			}
 		}
 	}
 	if m.cfg.IgnorePrivate && utils.IsPrivateIPv4(dstIP) {
@@ -695,7 +698,10 @@ func (m *Monitor) shouldDrop(srcIP, dstIP string, dstPort uint16, direction uint
 
 func (m *Monitor) shouldDropV6(srcIP, dstIP string, dstPort uint16, direction uint8) bool {
 	if m.cfg.IgnoreLocalhost && (dstIP == "::1" || srcIP == "::1") {
-		return true
+		// Exempt DNS traffic — local resolvers may listen on [::1]:53.
+		if dstPort != 53 {
+			return true
+		}
 	}
 	if m.cfg.IgnorePrivate && isPrivateIPv6(dstIP) {
 		for _, p := range m.cfg.WatchedPorts {
@@ -1033,12 +1039,16 @@ func (m *Monitor) parseDNSResponse(pkt []byte) {
 
 	offset := 12 // start of question section
 
-	// Skip question section: read QDCOUNT questions.
+	// Parse question section: read QDCOUNT questions, capturing the first query domain.
+	var queryDomain string
 	qdCount := int(binary.BigEndian.Uint16(pkt[4:]))
 	for i := 0; i < qdCount; i++ {
-		_, n := dnsReadName(pkt, offset)
+		qname, n := dnsReadName(pkt, offset)
 		if n < 0 {
 			return
+		}
+		if i == 0 && qname != "" {
+			queryDomain = qname
 		}
 		offset = n + 4 // skip QTYPE(2) + QCLASS(2)
 		if offset > len(pkt) {
@@ -1046,7 +1056,9 @@ func (m *Monitor) parseDNSResponse(pkt []byte) {
 		}
 	}
 
-	// Parse answer records.
+	// Parse answer records, collecting resolved IPs for the snooped event.
+	var resolvedIPs []string
+	var firstTTL uint32
 	for i := 0; i < anCount; i++ {
 		if offset >= len(pkt) {
 			return
@@ -1076,12 +1088,20 @@ func (m *Monitor) parseDNSResponse(pkt []byte) {
 				ip := fmt.Sprintf("%d.%d.%d.%d", rdata[0], rdata[1], rdata[2], rdata[3])
 				m.dns.addForward(name, ip, ttl)
 				m.logger.Debug().Str("domain", name).Str("ip", ip).Uint32("ttl", ttl).Msg("dns snooper: A")
+				resolvedIPs = append(resolvedIPs, ip)
+				if firstTTL == 0 {
+					firstTTL = ttl
+				}
 			}
 		case 28: // AAAA record (IPv6)
 			if rdLen == 16 {
 				ip := net.IP(rdata).String()
 				m.dns.addForward(name, ip, ttl)
 				m.logger.Debug().Str("domain", name).Str("ip", ip).Uint32("ttl", ttl).Msg("dns snooper: AAAA")
+				resolvedIPs = append(resolvedIPs, ip)
+				if firstTTL == 0 {
+					firstTTL = ttl
+				}
 			}
 		case 5: // CNAME — follow the alias
 			cname, _ := dnsReadName(pkt, offset-rdLen)
@@ -1092,6 +1112,32 @@ func (m *Monitor) parseDNSResponse(pkt []byte) {
 				m.logger.Debug().Str("name", name).Str("cname", cname).Msg("dns snooper: CNAME")
 			}
 		}
+	}
+
+	// Emit a NET_DNS event so the backend sees every snooped DNS resolution.
+	if queryDomain != "" && len(resolvedIPs) > 0 {
+		m.bus.Publish(&types.NetworkEvent{
+			BaseEvent: types.BaseEvent{
+				ID:        utils.NewEventID(),
+				Type:      types.EventNetDNS,
+				Timestamp: time.Now(),
+				AgentID:   m.bus.AgentID(),
+				Hostname:  m.bus.Hostname(),
+				Severity:  types.SeverityInfo,
+				Tags:      []string{"dns", "snooped", "forward-lookup"},
+			},
+			DstPort:        53,
+			Protocol:       types.ProtoUDP,
+			Direction:      types.DirOutbound,
+			DNSQuery:       queryDomain,
+			ResolvedDomain: queryDomain,
+			ResolvedIPs:    resolvedIPs,
+		})
+		m.logger.Info().
+			Str("domain", queryDomain).
+			Strs("ips", resolvedIPs).
+			Uint32("ttl", firstTTL).
+			Msg("dns snooper: emitted NET_DNS event")
 	}
 }
 

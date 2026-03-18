@@ -106,10 +106,11 @@ func loadBPFObjects(obj *bpfObjects, opts *ebpf.CollectionOptions) error {
 
 // Config controls the file monitor. Fields map to YAML keys under monitors.file.
 type Config struct {
-	WatchPaths   []string
-	HashOnWrite  bool
-	HashWorkers  int
-	DedupeWindow time.Duration
+	WatchPaths       []string
+	HashOnWrite      bool
+	HashWorkers      int
+	DedupeWindow     time.Duration
+	CaptureAllWrites bool // When true, capture file writes from any path (requires eBPF)
 }
 
 func defaultConfig() Config {
@@ -214,6 +215,7 @@ func (m *Monitor) Start(ctx context.Context) error {
 	m.log.Info().
 		Strs("paths", m.cfg.WatchPaths).
 		Bool("hash_on_write", m.cfg.HashOnWrite).
+		Bool("capture_all_writes", m.cfg.CaptureAllWrites).
 		Msg("file monitor started (eBPF)")
 
 	m.wg.Add(1)
@@ -310,7 +312,10 @@ func (m *Monitor) handleRaw(raw []byte) error {
 
 	fullPath := m.resolveFullPath(r.PID, dentry, r.Inode)
 	if !m.isWatched(fullPath) {
-		return nil
+		// When capture_all_writes is enabled, let write events through regardless of path.
+		if !m.cfg.CaptureAllWrites || r.EventType != ebpfFileWrite {
+			return nil
+		}
 	}
 
 	// Deduplicate rapid repeated writes.
@@ -552,6 +557,10 @@ func (m *Monitor) logEvent(ev *types.FileEvent) {
 // ─── Inotify fallback ─────────────────────────────────────────────────────────
 
 func (m *Monitor) startInotify(ctx context.Context) error {
+	if m.cfg.CaptureAllWrites {
+		m.log.Warn().Msg("capture_all_writes requires eBPF; inotify fallback only covers watch_paths")
+	}
+
 	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC | unix.IN_NONBLOCK)
 	if err != nil {
 		return fmt.Errorf("inotify_init: %w", err)

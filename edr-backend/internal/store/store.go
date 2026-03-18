@@ -621,3 +621,180 @@ func (s *Store) GetRetentionDays(ctx context.Context) (int, int) {
 	if alrt == 0 { alrt = 90 }
 	return evt, alrt
 }
+
+// ─── Process Tree ──────────────────────────────────────────────────────────────
+
+// ProcessNode represents a node in a reconstructed process tree.
+type ProcessNode struct {
+	PID       uint32          `json:"pid"`
+	PPID      uint32          `json:"ppid"`
+	Comm      string          `json:"comm"`
+	ExePath   string          `json:"exe_path"`
+	Cmdline   string          `json:"cmdline"`
+	UID       uint32          `json:"uid"`
+	Username  string          `json:"username"`
+	Timestamp time.Time       `json:"timestamp"`
+	EventID   string          `json:"event_id"`
+	EventType string          `json:"event_type"`
+	Children  []*ProcessNode  `json:"children,omitempty"`
+}
+
+// processInfoFromEvent extracts process info from an event's JSONB payload.
+func processInfoFromEvent(e *models.Event) ProcessNode {
+	node := ProcessNode{
+		Timestamp: e.Timestamp,
+		EventID:   e.ID,
+		EventType: e.EventType,
+	}
+
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(e.Payload, &payload); err != nil {
+		return node
+	}
+
+	procJSON, ok := payload["process"]
+	if !ok {
+		return node
+	}
+
+	var proc struct {
+		PID      uint32 `json:"pid"`
+		PPID     uint32 `json:"ppid"`
+		Comm     string `json:"comm"`
+		ExePath  string `json:"exe_path"`
+		Cmdline  string `json:"cmdline"`
+		UID      uint32 `json:"uid"`
+		Username string `json:"username"`
+	}
+	if err := json.Unmarshal(procJSON, &proc); err != nil {
+		return node
+	}
+
+	node.PID = proc.PID
+	node.PPID = proc.PPID
+	node.Comm = proc.Comm
+	node.ExePath = proc.ExePath
+	node.Cmdline = proc.Cmdline
+	node.UID = proc.UID
+	node.Username = proc.Username
+	return node
+}
+
+// GetProcessTree returns a tree rooted at the given PID.
+// It walks up the ancestor chain (up to depth levels) and down to find children.
+func (s *Store) GetProcessTree(ctx context.Context, agentID string, pid int, depth int) (*ProcessNode, error) {
+	// Find the target process.
+	var target models.Event
+	err := s.db.GetContext(ctx, &target, `
+		SELECT * FROM events
+		WHERE agent_id = $1
+		  AND event_type = 'PROCESS_EXEC'
+		  AND (payload->'process'->>'pid')::int = $2
+		ORDER BY timestamp DESC LIMIT 1`, agentID, pid)
+	if err != nil {
+		return nil, fmt.Errorf("process pid=%d not found: %w", pid, err)
+	}
+
+	root := processInfoFromEvent(&target)
+
+	// Walk down: find children (processes whose PPID = this PID).
+	s.findChildren(ctx, agentID, &root, depth)
+
+	// Walk up: find ancestors and re-root the tree.
+	ancestors, _ := s.GetProcessAncestors(ctx, agentID, pid, depth)
+	if len(ancestors) > 0 {
+		// Build the ancestor chain top-down: grandparent -> parent -> root.
+		// ancestors[0] is parent, ancestors[1] is grandparent, etc.
+		// Reverse to build top-down.
+		top := &ProcessNode{}
+		*top = ancestors[len(ancestors)-1]
+		current := top
+		for i := len(ancestors) - 2; i >= 0; i-- {
+			child := &ProcessNode{}
+			*child = ancestors[i]
+			current.Children = append(current.Children, child)
+			current = child
+		}
+		// Attach the original root (with its children) to the bottom ancestor.
+		current.Children = append(current.Children, &root)
+		return top, nil
+	}
+
+	return &root, nil
+}
+
+// findChildren recursively finds child processes.
+func (s *Store) findChildren(ctx context.Context, agentID string, node *ProcessNode, depth int) {
+	if depth <= 0 {
+		return
+	}
+
+	var children []models.Event
+	err := s.db.SelectContext(ctx, &children, `
+		SELECT * FROM events
+		WHERE agent_id = $1
+		  AND event_type = 'PROCESS_EXEC'
+		  AND (payload->'process'->>'ppid')::int = $2
+		ORDER BY timestamp DESC LIMIT 100`, agentID, node.PID)
+	if err != nil || len(children) == 0 {
+		return
+	}
+
+	// Deduplicate by PID (keep most recent).
+	seen := make(map[uint32]bool)
+	for i := range children {
+		child := processInfoFromEvent(&children[i])
+		if seen[child.PID] || child.PID == 0 {
+			continue
+		}
+		seen[child.PID] = true
+		s.findChildren(ctx, agentID, &child, depth-1)
+		node.Children = append(node.Children, &child)
+	}
+}
+
+// GetProcessAncestors returns the ancestor chain (parent, grandparent, ...) up to maxDepth.
+func (s *Store) GetProcessAncestors(ctx context.Context, agentID string, pid int, maxDepth int) ([]ProcessNode, error) {
+	var ancestors []ProcessNode
+	currentPID := pid
+
+	for i := 0; i < maxDepth; i++ {
+		// Find this process to get its PPID.
+		var ev models.Event
+		err := s.db.GetContext(ctx, &ev, `
+			SELECT * FROM events
+			WHERE agent_id = $1
+			  AND event_type = 'PROCESS_EXEC'
+			  AND (payload->'process'->>'pid')::int = $2
+			ORDER BY timestamp DESC LIMIT 1`, agentID, currentPID)
+		if err != nil {
+			break
+		}
+
+		node := processInfoFromEvent(&ev)
+		ppid := int(node.PPID)
+
+		// Stop if we reach init (PID 1) or self-parent.
+		if ppid == 0 || ppid == currentPID {
+			break
+		}
+
+		// Find the parent process event.
+		var parentEv models.Event
+		err = s.db.GetContext(ctx, &parentEv, `
+			SELECT * FROM events
+			WHERE agent_id = $1
+			  AND event_type = 'PROCESS_EXEC'
+			  AND (payload->'process'->>'pid')::int = $2
+			ORDER BY timestamp DESC LIMIT 1`, agentID, ppid)
+		if err != nil {
+			break
+		}
+
+		parent := processInfoFromEvent(&parentEv)
+		ancestors = append(ancestors, parent)
+		currentPID = ppid
+	}
+
+	return ancestors, nil
+}

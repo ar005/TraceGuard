@@ -24,6 +24,13 @@ log:
 auth:
   api_key: ""
 
+# Rate limiting: per-IP token bucket.
+# Protects against DoS and brute-force. Set enabled: false to disable.
+rate_limit:
+  enabled: true
+  requests_per_second: 20   # sustained rate per IP
+  burst: 40                  # max burst size per IP
+
 # Retention: auto-delete old data to prevent disk fill.
 # Set to 0 to disable. Alerts are only deleted when CLOSED/RESOLVED.
 retention:

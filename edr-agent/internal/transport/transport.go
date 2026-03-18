@@ -24,6 +24,7 @@ import (
 	"google.golang.org/grpc/keepalive"
 
 	"github.com/youredr/edr-agent/internal/events"
+	"github.com/youredr/edr-agent/internal/version"
 )
 
 // ─── JSON codec ───────────────────────────────────────────────────────────────
@@ -159,7 +160,7 @@ func (t *GRPCTransport) Send(event events.Event) {
 		Timestamp: time.Now().UnixNano(),
 		Payload:   payload,
 		OS:        "linux",
-		AgentVer:  "0.1.0",
+		AgentVer:  version.Short(),
 	})
 	if err != nil {
 		return
@@ -211,7 +212,7 @@ func (t *GRPCTransport) connect(ctx context.Context) error {
 		AgentID:  t.cfg.AgentID,
 		Hostname: t.cfg.Hostname,
 		OS:       "linux",
-		AgentVer: t.cfg.AgentID, // version field
+		AgentVer: version.Short(),
 		Tags:     t.cfg.Tags,
 		Env:      t.cfg.Env,
 		Notes:    t.cfg.Notes,

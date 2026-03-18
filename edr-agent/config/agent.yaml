@@ -52,6 +52,7 @@ monitors:
   file:
     enabled: true
     hash_on_write: true
+    capture_all_writes: false   # capture file writes from any path (requires eBPF, high volume)
     watch_paths:
       - /etc
       - /usr/bin

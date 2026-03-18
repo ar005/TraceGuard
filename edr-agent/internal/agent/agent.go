@@ -27,6 +27,7 @@ import (
 	"github.com/youredr/edr-agent/internal/monitor/registry"
 	"github.com/youredr/edr-agent/internal/selfprotect"
 	"github.com/youredr/edr-agent/internal/transport"
+	"github.com/youredr/edr-agent/internal/version"
 	"github.com/youredr/edr-agent/pkg/types"
 )
 
@@ -61,10 +62,15 @@ func New(cfg *config.Config) (*Agent, error) {
 
 	log := logger.New(cfg.Log)
 
+	buildInfo := version.Get()
 	log.Info().
 		Str("agent_id", agentID).
 		Str("hostname", hostname).
-		Str("version", Version).
+		Str("version", buildInfo.Version).
+		Str("commit", buildInfo.GitCommit).
+		Str("branch", buildInfo.GitBranch).
+		Str("built", buildInfo.BuildTime).
+		Str("go", buildInfo.GoVersion).
 		Msg("EDR agent initializing")
 
 	// Event bus.
@@ -113,8 +119,9 @@ func New(cfg *config.Config) (*Agent, error) {
 	}
 	if cfg.Monitors.File.Enabled {
 		a.fileMonitor = file.New(file.Config{
-			WatchPaths:  cfg.Monitors.File.WatchPaths,
-			HashOnWrite: cfg.Monitors.File.HashOnWrite,
+			WatchPaths:       cfg.Monitors.File.WatchPaths,
+			HashOnWrite:      cfg.Monitors.File.HashOnWrite,
+			CaptureAllWrites: cfg.Monitors.File.CaptureAllWrites,
 		}, bus, log)
 	}
 	if cfg.Monitors.Registry.Enabled {
@@ -190,7 +197,8 @@ func (a *Agent) Start(ctx context.Context) error {
 		}
 	}
 
-	// Publish agent start event.
+	// Publish agent start event with full build info.
+	vi := version.Get()
 	a.bus.Publish(&agentLifecycleEvent{
 		BaseEvent: types.BaseEvent{
 			ID:        uuid.New().String(),
@@ -200,7 +208,11 @@ func (a *Agent) Start(ctx context.Context) error {
 			Hostname:  a.hostname,
 			Severity:  types.SeverityInfo,
 		},
-		Version: Version,
+		Version:   vi.Version,
+		GitCommit: vi.GitCommit,
+		GitBranch: vi.GitBranch,
+		BuildTime: vi.BuildTime,
+		GoVersion: vi.GoVersion,
 	})
 
 	// Heartbeat ticker.
@@ -314,6 +326,10 @@ var Version = "dev"
 type agentLifecycleEvent struct {
 	types.BaseEvent
 	Version         string `json:"version,omitempty"`
+	GitCommit       string `json:"git_commit,omitempty"`
+	GitBranch       string `json:"git_branch,omitempty"`
+	BuildTime       string `json:"build_time,omitempty"`
+	GoVersion       string `json:"go_version,omitempty"`
 	EventsPublished uint64 `json:"events_published,omitempty"`
 	EventsDropped   uint64 `json:"events_dropped,omitempty"`
 }

@@ -14,6 +14,7 @@ type Config struct {
 	Log       LogConfig       `mapstructure:"log"`
 	Auth      AuthConfig      `mapstructure:"auth"`
 	Retention RetentionConfig `mapstructure:"retention"`
+	RateLimit RateLimitConfig `mapstructure:"rate_limit"`
 }
 
 type ServerConfig struct {
@@ -63,6 +64,12 @@ type RetentionConfig struct {
 	AlertDays int `mapstructure:"alert_days"` // 0 = disabled (only CLOSED)
 }
 
+type RateLimitConfig struct {
+	Enabled           bool    `mapstructure:"enabled"`
+	RequestsPerSecond float64 `mapstructure:"requests_per_second"`
+	Burst             int     `mapstructure:"burst"`
+}
+
 func Load(path string) (*Config, error) {
 	v := viper.New()
 
@@ -78,6 +85,9 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("log.format", "json")
 	v.SetDefault("retention.event_days", 90)
 	v.SetDefault("retention.alert_days", 0)   // keep CLOSED alerts by default
+	v.SetDefault("rate_limit.enabled", true)
+	v.SetDefault("rate_limit.requests_per_second", 20)
+	v.SetDefault("rate_limit.burst", 40)
 
 	// Allow env overrides with EDR_ prefix, replacing _ with . for nesting
 	v.SetEnvPrefix("EDR")

@@ -1,0 +1,156 @@
+// internal/api/ratelimit.go
+// Per-IP rate limiting middleware using a token bucket algorithm.
+// Each client IP gets its own limiter; stale entries are pruned periodically.
+
+package api
+
+import (
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"golang.org/x/time/rate"
+)
+
+// RateLimitConfig controls rate limiting behaviour.
+type RateLimitConfig struct {
+	// Enabled turns rate limiting on/off.
+	Enabled bool
+
+	// RequestsPerSecond is the sustained rate (token refill rate).
+	// Default: 20 requests/second per IP.
+	RequestsPerSecond float64
+
+	// Burst is the maximum number of requests allowed in a single burst.
+	// Default: 40.
+	Burst int
+
+	// CleanupInterval controls how often stale limiter entries are purged.
+	// Default: 5 minutes.
+	CleanupInterval time.Duration
+
+	// MaxAge is how long an idle limiter lives before being cleaned up.
+	// Default: 10 minutes.
+	MaxAge time.Duration
+}
+
+// DefaultRateLimitConfig returns production defaults.
+func DefaultRateLimitConfig() RateLimitConfig {
+	return RateLimitConfig{
+		Enabled:           true,
+		RequestsPerSecond: 20,
+		Burst:             40,
+		CleanupInterval:   5 * time.Minute,
+		MaxAge:            10 * time.Minute,
+	}
+}
+
+// ipLimiter tracks a per-IP rate limiter and last-seen time.
+type ipLimiter struct {
+	limiter  *rate.Limiter
+	lastSeen time.Time
+}
+
+// rateLimiterStore manages per-IP limiters with periodic cleanup.
+type rateLimiterStore struct {
+	mu       sync.RWMutex
+	limiters map[string]*ipLimiter
+	rate     rate.Limit
+	burst    int
+}
+
+func newRateLimiterStore(rps float64, burst int, cleanupInterval, maxAge time.Duration) *rateLimiterStore {
+	s := &rateLimiterStore{
+		limiters: make(map[string]*ipLimiter),
+		rate:     rate.Limit(rps),
+		burst:    burst,
+	}
+
+	// Background cleanup of stale entries.
+	go func() {
+		ticker := time.NewTicker(cleanupInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			s.cleanup(maxAge)
+		}
+	}()
+
+	return s
+}
+
+// getLimiter returns the rate limiter for an IP, creating one if needed.
+func (s *rateLimiterStore) getLimiter(ip string) *rate.Limiter {
+	s.mu.RLock()
+	entry, ok := s.limiters[ip]
+	s.mu.RUnlock()
+
+	if ok {
+		s.mu.Lock()
+		entry.lastSeen = time.Now()
+		s.mu.Unlock()
+		return entry.limiter
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Double-check after acquiring write lock.
+	if entry, ok := s.limiters[ip]; ok {
+		entry.lastSeen = time.Now()
+		return entry.limiter
+	}
+
+	limiter := rate.NewLimiter(s.rate, s.burst)
+	s.limiters[ip] = &ipLimiter{limiter: limiter, lastSeen: time.Now()}
+	return limiter
+}
+
+// cleanup removes entries that haven't been seen for maxAge.
+func (s *rateLimiterStore) cleanup(maxAge time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cutoff := time.Now().Add(-maxAge)
+	for ip, entry := range s.limiters {
+		if entry.lastSeen.Before(cutoff) {
+			delete(s.limiters, ip)
+		}
+	}
+}
+
+// rateLimitMiddleware returns Gin middleware that enforces per-IP rate limits.
+func rateLimitMiddleware(cfg RateLimitConfig) gin.HandlerFunc {
+	if !cfg.Enabled {
+		return func(c *gin.Context) { c.Next() }
+	}
+
+	if cfg.RequestsPerSecond <= 0 {
+		cfg.RequestsPerSecond = 20
+	}
+	if cfg.Burst <= 0 {
+		cfg.Burst = int(cfg.RequestsPerSecond * 2)
+	}
+	if cfg.CleanupInterval <= 0 {
+		cfg.CleanupInterval = 5 * time.Minute
+	}
+	if cfg.MaxAge <= 0 {
+		cfg.MaxAge = 10 * time.Minute
+	}
+
+	store := newRateLimiterStore(cfg.RequestsPerSecond, cfg.Burst, cfg.CleanupInterval, cfg.MaxAge)
+
+	return func(c *gin.Context) {
+		ip := c.ClientIP()
+		limiter := store.getLimiter(ip)
+
+		if !limiter.Allow() {
+			c.Header("Retry-After", "1")
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+				"error": "rate limit exceeded — try again shortly",
+			})
+			return
+		}
+
+		c.Next()
+	}
+}

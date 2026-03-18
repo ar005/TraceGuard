@@ -254,6 +254,10 @@ def rule_backtest(rid):
 @login_required
 def inject(): return proxy("/api/v1/events/inject", "POST", request.get_json())
 
+@app.route("/api/processes/<int:pid>/tree")
+@login_required
+def process_tree(pid): return proxy(f"/api/v1/processes/{pid}/tree")
+
 @app.route("/api/suppressions", methods=["GET"])
 @login_required
 def suppressions(): return proxy("/api/v1/suppressions")

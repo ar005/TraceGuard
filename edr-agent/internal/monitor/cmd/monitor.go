@@ -143,15 +143,16 @@ func (e *CmdEvent) EventID() string   { return e.ID }
 
 // Monitor watches real-time command and bash/zsh history activity.
 type Monitor struct {
-	cfg      Config
-	bus      events.Bus
-	log      zerolog.Logger
-	agentID  string
-	hostname string
-	mu       sync.Mutex
-	seenPIDs map[uint32]bool   // PIDs emitted (real-time)
-	lastHash map[string]string // history file → last line hash (dedup)
-	tailing  map[string]bool   // history files currently being tailed
+	cfg         Config
+	bus         events.Bus
+	log         zerolog.Logger
+	agentID     string
+	hostname    string
+	mu          sync.Mutex
+	seenPIDs    map[uint32]bool   // PIDs emitted (real-time)
+	lastHash    map[string]string // history file → last line hash (dedup)
+	tailing     map[string]bool   // history files currently being tailed
+	unsubExec   func()            // unsubscribe from PROCESS_EXEC events
 }
 
 func New(cfg Config, bus events.Bus, log zerolog.Logger, agentID, hostname string) *Monitor {
@@ -180,6 +181,10 @@ func (m *Monitor) Start(ctx context.Context) error {
 	// Real-time /proc watcher at 500ms — catches most processes < 2s
 	go m.procLoop(ctx)
 
+	// eBPF-backed process exec subscription — catches short-lived processes
+	// that finish before the next /proc poll cycle.
+	go m.subscribeExecEvents(ctx)
+
 	// One goroutine per history file
 	for _, f := range histFiles {
 		m.mu.Lock()
@@ -195,7 +200,102 @@ func (m *Monitor) Start(ctx context.Context) error {
 }
 
 func (m *Monitor) Stop() {
+	if m.unsubExec != nil {
+		m.unsubExec()
+	}
 	m.log.Info().Msg("command monitor stopped")
+}
+
+// ─── eBPF-backed exec subscription ───────────────────────────────────────────
+// Subscribes to PROCESS_EXEC events from the process monitor's eBPF tracepoint.
+// This catches every execve — including short-lived processes that finish before
+// the 500ms /proc poll cycle. The /proc poller is kept as a fallback; seenPIDs
+// prevents duplicates between the two sources.
+
+func (m *Monitor) subscribeExecEvents(ctx context.Context) {
+	m.unsubExec = m.bus.Subscribe(string(types.EventProcessExec), func(event events.Event) {
+		execEv, ok := event.(*types.ProcessExecEvent)
+		if !ok {
+			return
+		}
+
+		pid := execEv.Process.PID
+		parentComm := execEv.ParentProcess.Comm
+		shellName := parentComm
+
+		// Check if parent is a shell (same logic as scanProc).
+		if !isShell(parentComm) {
+			// Check grandparent via the ancestry chain populated by the process monitor.
+			if len(execEv.Ancestry) > 0 {
+				gpComm := execEv.Ancestry[0].Comm
+				if !isShell(gpComm) {
+					return
+				}
+				shellName = gpComm
+			} else {
+				return
+			}
+		}
+
+		cmdline := execEv.Process.Cmdline
+		if cmdline == "" {
+			return
+		}
+
+		// Mark as seen so the /proc poller doesn't double-emit.
+		m.mu.Lock()
+		if m.seenPIDs[pid] {
+			m.mu.Unlock()
+			return
+		}
+		m.seenPIDs[pid] = true
+		m.mu.Unlock()
+
+		sev, tags, detection := analyse(cmdline)
+		if !m.cfg.EmitAll && sev == types.SeverityInfo {
+			return
+		}
+
+		username := execEv.Process.Username
+		if username == "" {
+			username = uidUsername(execEv.Process.UID)
+		}
+
+		evt := &CmdEvent{
+			BaseEvent: types.BaseEvent{
+				ID:        uuid.New().String(),
+				Type:      EventCmdExec,
+				Timestamp: execEv.Timestamp,
+				AgentID:   m.agentID,
+				Hostname:  m.hostname,
+				Severity:  sev,
+				Tags:      tags,
+				Process:   execEv.Process,
+			},
+			PID:       pid,
+			PPID:      execEv.Process.PPID,
+			Username:  username,
+			Cmdline:   cmdline,
+			ShellName: shellName,
+			Source:    "ebpf",
+			Detection: detection,
+		}
+
+		m.log.Info().
+			Str("event_id", evt.ID).
+			Str("severity", sev.String()).
+			Uint32("pid", pid).
+			Str("user", username).
+			Str("shell", shellName).
+			Strs("tags", tags).
+			Str("cmd", trunc(cmdline, 200)).
+			Msg("CMD_EXEC (ebpf)")
+
+		m.bus.Publish(evt)
+	})
+
+	// Block until context is cancelled so the goroutine stays alive.
+	<-ctx.Done()
 }
 
 // ─── Real-time proc watcher ───────────────────────────────────────────────────

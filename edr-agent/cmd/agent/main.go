@@ -14,6 +14,7 @@ import (
 	"github.com/youredr/edr-agent/internal/agent"
 	"github.com/youredr/edr-agent/internal/config"
 	"github.com/youredr/edr-agent/internal/selfprotect"
+	"github.com/youredr/edr-agent/internal/version"
 )
 
 var (
@@ -26,7 +27,8 @@ func main() {
 	flag.Parse()
 
 	if *flagVersion {
-		fmt.Println("edr-agent", agent.Version)
+		info := version.Get()
+		fmt.Printf("edr-agent %s\n", info.String())
 		os.Exit(0)
 	}
 

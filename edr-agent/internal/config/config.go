@@ -59,9 +59,10 @@ type NetworkMonitorConfig struct {
 }
 
 type FileMonitorConfig struct {
-	Enabled    bool     `mapstructure:"enabled"`
-	WatchPaths []string `mapstructure:"watch_paths"`
-	HashOnWrite bool    `mapstructure:"hash_on_write"`
+	Enabled          bool     `mapstructure:"enabled"`
+	WatchPaths       []string `mapstructure:"watch_paths"`
+	HashOnWrite      bool     `mapstructure:"hash_on_write"`
+	CaptureAllWrites bool     `mapstructure:"capture_all_writes"`
 }
 
 type RegistryMonitorConfig struct {
