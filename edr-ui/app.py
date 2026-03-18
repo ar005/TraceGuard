@@ -203,6 +203,17 @@ def settings_retention():
     body = request.get_json() if request.method == "POST" else None
     return proxy("/api/v1/settings/retention", request.method, body)
 
+@app.route("/api/settings/llm", methods=["GET", "POST"])
+@login_required
+def settings_llm():
+    body = request.get_json() if request.method == "POST" else None
+    return proxy("/api/v1/settings/llm", request.method, body)
+
+@app.route("/api/settings/llm/test", methods=["POST"])
+@login_required
+def settings_llm_test():
+    return proxy("/api/v1/settings/llm/test", "POST", request.get_json())
+
 @app.route("/api/events")
 @login_required
 def events(): return proxy("/api/v1/events")

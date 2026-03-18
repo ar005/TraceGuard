@@ -883,6 +883,61 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
       <div id="ret-stats" style="font-family:var(--mono);font-size:10px;color:var(--dim)">Loading…</div>
     </div>
   </div>
+
+  <!-- AI / LLM Configuration -->
+  <div style="max-width:560px;margin-top:32px">
+    <div style="font-family:var(--mono);font-size:9px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;margin-bottom:16px;padding-bottom:8px;border-bottom:1px solid var(--line)">AI PROVIDER CONFIGURATION</div>
+    <p style="font-size:11px;color:var(--dim);margin-bottom:20px;line-height:1.6">
+      Configure an AI provider for alert explanations. Supports Ollama (local), OpenAI, Anthropic (Claude), and Google Gemini.
+    </p>
+
+    <div style="margin-bottom:16px">
+      <label style="font-family:var(--mono);font-size:9px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;display:block;margin-bottom:6px">ENABLED</label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="llm-enabled" style="accent-color:var(--cyan)">
+        <span style="font-family:var(--mono);font-size:10px;color:var(--body)">Enable AI-powered alert explanations</span>
+      </label>
+    </div>
+
+    <div style="margin-bottom:16px">
+      <label style="font-family:var(--mono);font-size:9px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;display:block;margin-bottom:6px">PROVIDER</label>
+      <select id="llm-provider" onchange="llmProviderChanged()" style="width:100%;padding:7px 10px;background:var(--bg0);border:1px solid var(--line2);color:var(--text);font-family:var(--mono);font-size:10px;border-radius:2px">
+        <option value="ollama">Ollama (Local)</option>
+        <option value="openai">OpenAI (ChatGPT)</option>
+        <option value="anthropic">Anthropic (Claude)</option>
+        <option value="gemini">Google Gemini</option>
+      </select>
+    </div>
+
+    <div style="margin-bottom:16px">
+      <label style="font-family:var(--mono);font-size:9px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;display:block;margin-bottom:6px">MODEL</label>
+      <input type="text" id="llm-model" placeholder="e.g. llama3.2, gpt-4o, claude-sonnet-4-20250514"
+        style="width:100%;padding:7px 10px;background:var(--bg0);border:1px solid var(--line2);color:var(--text);font-family:var(--mono);font-size:10px;border-radius:2px">
+      <div id="llm-model-hint" style="font-family:var(--mono);font-size:8px;color:var(--muted);margin-top:4px"></div>
+    </div>
+
+    <div style="margin-bottom:16px">
+      <label style="font-family:var(--mono);font-size:9px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;display:block;margin-bottom:6px">API URL</label>
+      <input type="text" id="llm-url" placeholder="e.g. http://localhost:11434"
+        style="width:100%;padding:7px 10px;background:var(--bg0);border:1px solid var(--line2);color:var(--text);font-family:var(--mono);font-size:10px;border-radius:2px">
+      <div id="llm-url-hint" style="font-family:var(--mono);font-size:8px;color:var(--muted);margin-top:4px"></div>
+    </div>
+
+    <div style="margin-bottom:20px" id="llm-key-row">
+      <label style="font-family:var(--mono);font-size:9px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;display:block;margin-bottom:6px">API KEY</label>
+      <input type="password" id="llm-apikey" placeholder="sk-... or leave empty for Ollama"
+        style="width:100%;padding:7px 10px;background:var(--bg0);border:1px solid var(--line2);color:var(--text);font-family:var(--mono);font-size:10px;border-radius:2px">
+      <div style="font-family:var(--mono);font-size:8px;color:var(--muted);margin-top:4px">Not required for Ollama. Stored encrypted in database.</div>
+    </div>
+
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
+      <button class="btn suc" onclick="saveLLMSettings()">✓ SAVE AI SETTINGS</button>
+      <button class="btn pri" onclick="testLLMConnection()">⚡ TEST CONNECTION</button>
+      <span id="llm-status" style="font-family:var(--mono);font-size:9px;display:none"></span>
+    </div>
+
+    <div id="llm-test-result" style="display:none;margin-top:12px;padding:10px 12px;border-radius:2px;font-family:var(--mono);font-size:9px;line-height:1.6;max-height:200px;overflow-y:auto"></div>
+  </div>
 </section>
 
 </main>
@@ -1051,7 +1106,7 @@ function nav(name){
   if(name==='agents')  loadAgents();
   if(name==='rules')   loadRules();
   if(name==='suppress') loadSuppressions();
-  if(name==='settings') loadRetention();
+  if(name==='settings') { loadRetention(); loadLLMSettings(); }
   if(name==='builder'){updatePreview();renderFieldRef();}
 }
 
@@ -3092,7 +3147,7 @@ async function explainAlert(alertId) {
   btn.textContent = '⏳ Asking AI…';
   btn.disabled = true;
   out.style.display = 'block';
-  out.textContent = 'Waiting for Ollama…';
+  out.textContent = 'Waiting for AI response…';
   try {
     const d = await apiMethod('/api/alerts/' + alertId + '/explain', 'POST', {});
     out.innerHTML = '<div style="font-family:var(--mono);font-size:8px;color:var(--muted);margin-bottom:6px;letter-spacing:1px">AI EXPLANATION · ' + (d.model||'') + '</div>'
@@ -3102,7 +3157,7 @@ async function explainAlert(alertId) {
   } catch(e) {
     out.innerHTML = '<span style="color:var(--red)">'
       + (e.message.includes('503') || e.message.includes('unavailable')
-         ? 'Ollama not enabled. Set OLLAMA_ENABLED=true and OLLAMA_URL in backend environment.'
+         ? 'AI not enabled. Configure a provider in Settings → AI Provider Configuration.'
          : 'Error: ' + esc(e.message))
       + '</span>';
     btn.textContent = '🤖 EXPLAIN WITH AI';
@@ -3177,6 +3232,94 @@ async function saveRetention() {
   } catch(e) { toast('Save failed: ' + e.message, false); }
 }
 
+// ── LLM / AI settings ─────────────────────────────────────────────────────
+
+const LLM_DEFAULTS = {
+  ollama:    { model: 'llama3.2',    url: 'http://localhost:11434', needsKey: false },
+  openai:    { model: 'gpt-4o',      url: 'https://api.openai.com/v1', needsKey: true },
+  anthropic: { model: 'claude-sonnet-4-20250514', url: 'https://api.anthropic.com', needsKey: true },
+  gemini:    { model: 'gemini-2.0-flash', url: 'https://generativelanguage.googleapis.com', needsKey: true },
+};
+
+function llmProviderChanged() {
+  const provider = document.getElementById('llm-provider').value;
+  const defaults = LLM_DEFAULTS[provider] || LLM_DEFAULTS.ollama;
+  const modelEl = document.getElementById('llm-model');
+  const urlEl = document.getElementById('llm-url');
+  const keyRow = document.getElementById('llm-key-row');
+  const modelHint = document.getElementById('llm-model-hint');
+  const urlHint = document.getElementById('llm-url-hint');
+
+  if (!modelEl.value || Object.values(LLM_DEFAULTS).some(d => d.model === modelEl.value)) {
+    modelEl.value = defaults.model;
+  }
+  if (!urlEl.value || Object.values(LLM_DEFAULTS).some(d => d.url === urlEl.value)) {
+    urlEl.value = defaults.url;
+  }
+
+  modelHint.textContent = 'Default: ' + defaults.model;
+  urlHint.textContent = 'Default: ' + defaults.url;
+  keyRow.style.opacity = defaults.needsKey ? '1' : '0.5';
+}
+
+async function loadLLMSettings() {
+  try {
+    const cfg = await api('/api/settings/llm');
+    if (cfg.provider) document.getElementById('llm-provider').value = cfg.provider;
+    if (cfg.model) document.getElementById('llm-model').value = cfg.model;
+    if (cfg.base_url) document.getElementById('llm-url').value = cfg.base_url;
+    document.getElementById('llm-enabled').checked = cfg.enabled || false;
+    if (cfg.api_key) document.getElementById('llm-apikey').value = cfg.api_key;
+    llmProviderChanged();
+  } catch(e) {
+    // No settings yet — use defaults
+    llmProviderChanged();
+  }
+}
+
+async function saveLLMSettings() {
+  const status = document.getElementById('llm-status');
+  try {
+    await apiMethod('/api/settings/llm', 'POST', {
+      provider: document.getElementById('llm-provider').value,
+      model:    document.getElementById('llm-model').value,
+      base_url: document.getElementById('llm-url').value,
+      api_key:  document.getElementById('llm-apikey').value,
+      enabled:  document.getElementById('llm-enabled').checked,
+    });
+    status.textContent = '✓ Saved';
+    status.style.color = 'var(--green)';
+    status.style.display = 'inline';
+    setTimeout(() => status.style.display = 'none', 3000);
+  } catch(e) {
+    status.textContent = '✗ ' + e.message;
+    status.style.color = 'var(--red)';
+    status.style.display = 'inline';
+  }
+}
+
+async function testLLMConnection() {
+  const result = document.getElementById('llm-test-result');
+  const status = document.getElementById('llm-status');
+  result.style.display = 'block';
+  result.style.background = 'var(--bg0)';
+  result.style.border = '1px solid var(--line)';
+  result.style.color = 'var(--muted)';
+  result.textContent = '⏳ Testing connection...';
+  status.style.display = 'none';
+
+  try {
+    const d = await apiMethod('/api/settings/llm/test', 'POST', {});
+    result.style.border = '1px solid rgba(48,232,144,.3)';
+    result.innerHTML = '<div style="color:var(--green);margin-bottom:6px">✓ Connection successful</div>'
+      + '<div style="font-size:8px;color:var(--muted);margin-bottom:6px">Provider: ' + esc(d.provider||'') + ' · Model: ' + esc(d.model||'') + '</div>'
+      + '<div style="color:var(--body);white-space:pre-wrap">' + esc(d.response||'') + '</div>';
+  } catch(e) {
+    result.style.border = '1px solid rgba(240,58,58,.3)';
+    result.innerHTML = '<div style="color:var(--red)">✗ Connection failed</div>'
+      + '<div style="color:var(--dim);margin-top:4px">' + esc(e.message) + '</div>';
+  }
+}
 
 // ── Dashboard time range picker ───────────────────────────────────────────────
 window._dashRange = '1h';

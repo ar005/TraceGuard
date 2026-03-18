@@ -145,12 +145,24 @@ func main() {
 	}()
 
 	// ── REST API Server ───────────────────────────────────────────────────────
-	// LLM client (Ollama) — disabled unless OLLAMA_ENABLED=true
+	// LLM client — reads env vars for backward compat, then overrides from DB
 	llmClient := llm.New(logger)
+
+	// Load LLM settings from database (overrides env vars if configured via UI)
+	if provider := st.GetSetting(context.Background(), "llm_provider", ""); provider != "" {
+		llmClient.Configure(llm.Config{
+			Provider: provider,
+			Model:    st.GetSetting(context.Background(), "llm_model", ""),
+			BaseURL:  st.GetSetting(context.Background(), "llm_base_url", ""),
+			APIKey:   st.GetSetting(context.Background(), "llm_api_key", ""),
+			Enabled:  st.GetSetting(context.Background(), "llm_enabled", "false") == "true",
+		})
+	}
+
 	if llmClient.Enabled() {
-		logger.Info().Str("model", os.Getenv("OLLAMA_MODEL")).Msg("Ollama LLM enabled")
+		logger.Info().Str("provider", llmClient.ProviderName()).Str("model", llmClient.ModelName()).Msg("AI provider enabled")
 	} else {
-		logger.Info().Msg("Ollama LLM disabled (set OLLAMA_ENABLED=true to enable)")
+		logger.Info().Msg("AI not configured (configure via Settings page or OLLAMA_ENABLED env var)")
 	}
 
 	apiServer := api.New(st, engine, km, um, al, llmClient, sseBroker, logger, cfg.Auth.APIKey,

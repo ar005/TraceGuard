@@ -6,7 +6,6 @@ package api
 
 import (
 	"context"
-	"os"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -159,6 +158,11 @@ func (s *Server) registerRoutes() {
 		// Settings / Retention
 		v1.GET("/settings/retention",   s.handleGetRetention)
 		v1.POST("/settings/retention",  s.handleSetRetention)
+
+		// LLM / AI settings
+		v1.GET("/settings/llm",        s.handleGetLLMSettings)
+		v1.POST("/settings/llm",       s.handleSetLLMSettings)
+		v1.POST("/settings/llm/test",  s.handleTestLLM)
 
 		// Migration
 		mig := v1.Group("/migrate")
@@ -1132,7 +1136,7 @@ func backTestMatchAll(payload map[string]interface{}, conds []models.RuleConditi
 func (s *Server) handleExplainAlert(c *gin.Context) {
 	if s.llm == nil || !s.llm.Enabled() {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"error": "LLM not enabled — set OLLAMA_ENABLED=true and OLLAMA_URL in environment",
+			"error": "AI not enabled — configure an AI provider in Settings",
 		})
 		return
 	}
@@ -1155,7 +1159,8 @@ func (s *Server) handleExplainAlert(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"alert_id":    alert.ID,
 		"explanation": explanation,
-		"model":       os.Getenv("OLLAMA_MODEL"),
+		"model":       s.llm.ModelName(),
+		"provider":    s.llm.ProviderName(),
 	})
 }
 
@@ -1445,6 +1450,99 @@ func (s *Server) handleGetProcessTree(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"tree": tree, "pid": pid, "agent_id": agentID})
+}
+
+// ─── LLM / AI Settings ────────────────────────────────────────────────────────
+
+// GET /api/v1/settings/llm
+func (s *Server) handleGetLLMSettings(c *gin.Context) {
+	cfg := s.llm.GetConfig()
+	c.JSON(http.StatusOK, cfg)
+}
+
+// POST /api/v1/settings/llm
+func (s *Server) handleSetLLMSettings(c *gin.Context) {
+	var body struct {
+		Provider string `json:"provider" binding:"required"` // ollama, openai, anthropic, gemini
+		Model    string `json:"model"`
+		BaseURL  string `json:"base_url"`
+		APIKey   string `json:"api_key"`
+		Enabled  bool   `json:"enabled"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Validate provider name
+	validProviders := map[string]bool{"ollama": true, "openai": true, "anthropic": true, "gemini": true}
+	if !validProviders[body.Provider] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid provider, must be: ollama, openai, anthropic, gemini"})
+		return
+	}
+
+	// Save each setting to DB
+	ctx := c.Request.Context()
+	s.store.SetSetting(ctx, "llm_provider", body.Provider)
+	s.store.SetSetting(ctx, "llm_model", body.Model)
+	s.store.SetSetting(ctx, "llm_base_url", body.BaseURL)
+	if body.APIKey != "" && body.APIKey != "••••" {
+		s.store.SetSetting(ctx, "llm_api_key", body.APIKey)
+	}
+	if body.Enabled {
+		s.store.SetSetting(ctx, "llm_enabled", "true")
+	} else {
+		s.store.SetSetting(ctx, "llm_enabled", "false")
+	}
+
+	// Reconfigure the LLM client with new settings
+	s.llm.Configure(llm.Config{
+		Provider: body.Provider,
+		Model:    body.Model,
+		BaseURL:  body.BaseURL,
+		APIKey:   body.APIKey,
+		Enabled:  body.Enabled,
+	})
+
+	// If API key wasn't sent (masked), reload from DB
+	if body.APIKey == "" || body.APIKey == "••••" {
+		apiKey := s.store.GetSetting(ctx, "llm_api_key", "")
+		s.llm.Configure(llm.Config{
+			Provider: body.Provider,
+			Model:    body.Model,
+			BaseURL:  body.BaseURL,
+			APIKey:   apiKey,
+			Enabled:  body.Enabled,
+		})
+	}
+
+	// Audit log
+	actorID, actorName := currentUser(c)
+	s.al.Log(ctx, actorID, actorName, "update_llm_settings", "settings", "", "",
+		c.ClientIP(), fmt.Sprintf("provider=%s model=%s", body.Provider, body.Model))
+
+	c.JSON(http.StatusOK, gin.H{"ok": true, "provider": body.Provider, "model": body.Model})
+}
+
+// POST /api/v1/settings/llm/test
+func (s *Server) handleTestLLM(c *gin.Context) {
+	// TestConnection bypasses the Enabled flag so users can verify
+	// connectivity before enabling the provider.
+	explanation, err := s.llm.TestConnection(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"ok":    false,
+			"error": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"ok":       true,
+		"provider": s.llm.ProviderName(),
+		"model":    s.llm.ModelName(),
+		"response": explanation,
+	})
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
