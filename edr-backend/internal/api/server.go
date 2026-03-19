@@ -21,6 +21,7 @@ import (
 
 	"github.com/youredr/edr-backend/internal/apikeys"
 	"github.com/youredr/edr-backend/internal/llm"
+	"github.com/youredr/edr-backend/internal/liveresponse"
 	"github.com/youredr/edr-backend/internal/sse"
 	"github.com/youredr/edr-backend/internal/audit"
 	"github.com/youredr/edr-backend/internal/detection"
@@ -38,6 +39,7 @@ type Server struct {
 	um       *users.Manager
 	al       *audit.Logger
 	llm      *llm.Client
+	lr       *liveresponse.Manager
 	sse      *sse.Broker
 	log      zerolog.Logger
 	router   *gin.Engine
@@ -49,7 +51,7 @@ type Server struct {
 // New creates the API server and registers all routes.
 func New(st *store.Store, eng *detection.Engine, km *apikeys.Manager,
 	um *users.Manager, al *audit.Logger,
-	lc *llm.Client, sb *sse.Broker,
+	lc *llm.Client, lr *liveresponse.Manager, sb *sse.Broker,
 	log zerolog.Logger, apiKey string, rlCfg ...RateLimitConfig) *Server {
 
 	gin.SetMode(gin.ReleaseMode)
@@ -71,6 +73,7 @@ func New(st *store.Store, eng *detection.Engine, km *apikeys.Manager,
 		um:        um,
 		al:        al,
 		llm:       lc,
+		lr:        lr,
 		sse:       sb,
 		log:       log.With().Str("component", "api").Logger(),
 		router:    r,
@@ -140,6 +143,16 @@ func (s *Server) registerRoutes() {
 		v1.POST("/alerts/:id/explain",  s.handleExplainAlert)
 		v1.PATCH("/alerts/:id",        s.handleUpdateAlert)
 
+		// Live Response
+		v1.GET("/liveresponse/agents",          s.handleLRAgents)
+		v1.POST("/liveresponse/command",        s.handleLRCommand)
+
+		// Incidents
+		v1.GET("/incidents",             s.handleListIncidents)
+		v1.GET("/incidents/:id",         s.handleGetIncident)
+		v1.PATCH("/incidents/:id",       s.handleUpdateIncident)
+		v1.GET("/incidents/:id/alerts",  s.handleGetIncidentAlerts)
+
 		// Rules
 		v1.GET("/rules",              s.handleListRules)
 		v1.GET("/rules/:id",          s.handleGetRule)
@@ -154,6 +167,14 @@ func (s *Server) registerRoutes() {
 		v1.POST("/suppressions",       s.handleCreateSuppression)
 		v1.PUT("/suppressions/:id",    s.handleUpdateSuppression)
 		v1.DELETE("/suppressions/:id", s.handleDeleteSuppression)
+
+		// Package inventory & vulnerabilities
+		v1.GET("/agents/:id/packages",        s.handleListAgentPackages)
+		v1.GET("/agents/:id/vulnerabilities", s.handleListAgentVulns)
+		v1.GET("/vulnerabilities",            s.handleListVulnerabilities)
+
+		// Threat Hunting
+		v1.POST("/hunt", s.handleHunt)
 
 		// Settings / Retention
 		v1.GET("/settings/retention",   s.handleGetRetention)
@@ -780,6 +801,28 @@ func (s *Server) handleGetEvent(c *gin.Context) {
 	c.JSON(http.StatusOK, ev)
 }
 
+// ─── Threat Hunting ───────────────────────────────────────────────────────────
+
+func (s *Server) handleHunt(c *gin.Context) {
+	var body struct {
+		Query string `json:"query" binding:"required"`
+		Limit int    `json:"limit"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if body.Limit <= 0 || body.Limit > 1000 {
+		body.Limit = 100
+	}
+	events, total, err := s.store.HuntQuery(c.Request.Context(), body.Query, body.Limit)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"events": events, "total": total, "query": body.Query})
+}
+
 // ─── Alerts ───────────────────────────────────────────────────────────────────
 
 func (s *Server) handleListAlerts(c *gin.Context) {
@@ -1162,6 +1205,91 @@ func (s *Server) handleExplainAlert(c *gin.Context) {
 		"model":       s.llm.ModelName(),
 		"provider":    s.llm.ProviderName(),
 	})
+}
+
+// ─── Live Response ────────────────────────────────────────────────────────────
+
+func (s *Server) handleLRAgents(c *gin.Context) {
+	agents := s.lr.ConnectedAgents()
+	c.JSON(http.StatusOK, gin.H{"agents": agents, "total": len(agents)})
+}
+
+func (s *Server) handleLRCommand(c *gin.Context) {
+	var body struct {
+		AgentID string   `json:"agent_id" binding:"required"`
+		Action  string   `json:"action" binding:"required"`
+		Args    []string `json:"args"`
+		Timeout int      `json:"timeout"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if !s.lr.IsConnected(body.AgentID) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "agent not connected for live response"})
+		return
+	}
+	result, err := s.lr.SendCommand(c.Request.Context(), body.AgentID, body.Action, body.Args, body.Timeout)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+// ─── Incidents ────────────────────────────────────────────────────────────────
+
+func (s *Server) handleListIncidents(c *gin.Context) {
+	sev, _ := strconv.Atoi(c.Query("min_severity"))
+	incidents, err := s.store.QueryIncidents(c.Request.Context(), store.QueryIncidentsParams{
+		Status:   c.Query("status"),
+		Severity: int16(sev),
+		AgentID:  c.Query("agent_id"),
+		Limit:    intQuery(c, "limit", 50),
+		Offset:   intQuery(c, "offset", 0),
+	})
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"incidents": incidents, "total": len(incidents)})
+}
+
+func (s *Server) handleGetIncident(c *gin.Context) {
+	inc, err := s.store.GetIncident(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, inc)
+}
+
+func (s *Server) handleUpdateIncident(c *gin.Context) {
+	var body struct {
+		Status   string `json:"status"`
+		Assignee string `json:"assignee"`
+		Notes    string `json:"notes"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := s.store.UpdateIncident(c.Request.Context(),
+		c.Param("id"), body.Status, body.Assignee, body.Notes,
+	); err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (s *Server) handleGetIncidentAlerts(c *gin.Context) {
+	alerts, err := s.store.GetIncidentAlerts(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"alerts": alerts, "total": len(alerts)})
 }
 
 // ─── Rules ────────────────────────────────────────────────────────────────────
@@ -1581,4 +1709,60 @@ func ginLogger(log zerolog.Logger) gin.HandlerFunc {
 			Str("ip",      c.ClientIP()).
 			Msg("http")
 	}
+}
+
+// ─── Package Inventory & Vulnerability Handlers ───────────────────────────────
+
+// GET /api/v1/agents/:id/packages
+func (s *Server) handleListAgentPackages(c *gin.Context) {
+	agentID := c.Param("id")
+	limit := intQuery(c, "limit", 500)
+	offset := intQuery(c, "offset", 0)
+
+	pkgs, err := s.store.ListAgentPackages(c.Request.Context(), agentID, limit, offset)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"packages": pkgs, "total": len(pkgs)})
+}
+
+// GET /api/v1/agents/:id/vulnerabilities
+func (s *Server) handleListAgentVulns(c *gin.Context) {
+	agentID := c.Param("id")
+	limit := intQuery(c, "limit", 50)
+	offset := intQuery(c, "offset", 0)
+
+	vulns, err := s.store.QueryVulnerabilities(c.Request.Context(), agentID, limit, offset)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+
+	stats, err := s.store.GetVulnStats(c.Request.Context(), agentID)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"vulnerabilities": vulns,
+		"total":           len(vulns),
+		"stats":           stats,
+	})
+}
+
+// GET /api/v1/vulnerabilities
+func (s *Server) handleListVulnerabilities(c *gin.Context) {
+	agentID := c.Query("agent_id")
+	severity := c.Query("severity")
+	limit := intQuery(c, "limit", 50)
+	offset := intQuery(c, "offset", 0)
+
+	vulns, err := s.store.QueryVulnerabilitiesFiltered(c.Request.Context(), agentID, severity, limit, offset)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"vulnerabilities": vulns, "total": len(vulns)})
 }

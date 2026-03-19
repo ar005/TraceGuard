@@ -26,6 +26,7 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/rs/zerolog"
 
+	"github.com/youredr/edr-agent/internal/container"
 	"github.com/youredr/edr-agent/internal/events"
 	"github.com/youredr/edr-agent/pkg/types"
 	"github.com/youredr/edr-agent/pkg/utils"
@@ -610,8 +611,14 @@ func (m *Monitor) buildProcessContext(
 	// Username from UID (simple lookup).
 	ctx.Username = utils.UIDToUsername(uid)
 
-	// Container detection: check for .dockerenv or cgroup namespace.
-	ctx.ContainerID = detectContainerID(pid)
+	// Container / Kubernetes detection from cgroup paths.
+	if cinfo := container.Detect(pid); cinfo != nil {
+		ctx.ContainerID = cinfo.ContainerID
+		ctx.Runtime = cinfo.Runtime
+		ctx.ImageName = cinfo.ImageName
+		ctx.PodName = cinfo.PodName
+		ctx.Namespace = cinfo.Namespace
+	}
 
 	return ctx
 }
@@ -682,7 +689,13 @@ func (m *Monitor) buildProcessContextFromProc(pid uint32) types.ProcessContext {
 		}
 	}
 	ctx.Username = utils.UIDToUsername(ctx.UID)
-	ctx.ContainerID = detectContainerID(pid)
+	if cinfo := container.Detect(pid); cinfo != nil {
+		ctx.ContainerID = cinfo.ContainerID
+		ctx.Runtime = cinfo.Runtime
+		ctx.ImageName = cinfo.ImageName
+		ctx.PodName = cinfo.PodName
+		ctx.Namespace = cinfo.Namespace
+	}
 	return ctx
 }
 
@@ -899,39 +912,6 @@ func detectInterpreter(proc types.ProcessContext) (string, string) {
 		}
 	}
 	return name, ""
-}
-
-// detectContainerID tries to find a container ID from the process's cgroup.
-func detectContainerID(pid uint32) string {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		// Look for docker/k8s container IDs (64-char hex) in cgroup paths.
-		parts := strings.Split(line, "/")
-		for _, part := range parts {
-			if len(part) == 64 && isHex(part) {
-				return part[:12] // first 12 chars like docker ps
-			}
-		}
-		// k8s pod format: pod<uuid>
-		for _, part := range parts {
-			if strings.HasPrefix(part, "pod") && len(part) > 10 {
-				return part
-			}
-		}
-	}
-	return ""
-}
-
-func isHex(s string) bool {
-	for _, c := range s {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
-			return false
-		}
-	}
-	return true
 }
 
 func ptraceRequestName(req uint32) string {

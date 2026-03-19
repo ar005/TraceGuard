@@ -17,14 +17,17 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/youredr/edr-agent/internal/buffer"
+	"github.com/youredr/edr-agent/internal/containment"
 	"github.com/youredr/edr-agent/internal/config"
 	"github.com/youredr/edr-agent/internal/events"
 	"github.com/youredr/edr-agent/internal/logger"
 	"github.com/youredr/edr-agent/internal/monitor/file"
 	"github.com/youredr/edr-agent/internal/monitor/network"
 	"github.com/youredr/edr-agent/internal/monitor/process"
+	"github.com/youredr/edr-agent/internal/monitor/auth"
 	"github.com/youredr/edr-agent/internal/monitor/cmd"
 	"github.com/youredr/edr-agent/internal/monitor/registry"
+	"github.com/youredr/edr-agent/internal/monitor/vuln"
 	"github.com/youredr/edr-agent/internal/selfprotect"
 	"github.com/youredr/edr-agent/internal/transport"
 	"github.com/youredr/edr-agent/internal/version"
@@ -48,6 +51,8 @@ type Agent struct {
 	fileMonitor     *file.Monitor
 	registryMonitor *registry.Monitor
 	cmdMonitor      *cmd.Monitor
+	authMonitor     *auth.Monitor
+	vulnMonitor     *vuln.Monitor
 }
 
 // New creates a new Agent from configuration.
@@ -100,6 +105,10 @@ func New(cfg *config.Config) (*Agent, error) {
 		Notes:      cfg.Agent.Notes,
 	}, log)
 
+	// Network containment controller.
+	contain := containment.New(cfg.Agent.BackendURL, log)
+	trans.SetContainment(contain)
+
 	a := &Agent{
 		cfg:       cfg,
 		log:       log,
@@ -131,6 +140,12 @@ func New(cfg *config.Config) (*Agent, error) {
 	// Command + history monitor.
 	a.cmdMonitor = cmd.New(cmd.DefaultConfig(), bus, log, agentID, hostname)
 
+	// Auth/login monitor.
+	a.authMonitor = auth.New(auth.Config{Enabled: true}, bus, log)
+
+	// Package inventory / vulnerability monitor.
+	a.vulnMonitor = vuln.New(vuln.DefaultConfig(), bus, log)
+
 	// Self-protection.
 	a.protect = selfprotect.New(selfprotect.Config{
 		AgentBinPath: cfg.SelfProtect.BinPath,
@@ -157,6 +172,9 @@ func (a *Agent) Start(ctx context.Context) error {
 	if err := a.transport.Start(ctx); err != nil {
 		a.log.Warn().Err(err).Msg("transport start failed; running in offline mode")
 	}
+
+	// Start live response client (background goroutine).
+	go a.transport.StartLiveResponse(ctx)
 
 	// Start self-protection first (so it can protect the other monitors).
 	if err := a.protect.Start(ctx); err != nil {
@@ -194,6 +212,22 @@ func (a *Agent) Start(ctx context.Context) error {
 			a.log.Warn().Err(err).Msg("cmd monitor start failed")
 		} else {
 			a.log.Info().Msg("command & history monitor running")
+		}
+	}
+
+	if a.authMonitor != nil {
+		if err := a.authMonitor.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("auth monitor start failed")
+		} else {
+			a.log.Info().Msg("auth/login monitor running")
+		}
+	}
+
+	if a.vulnMonitor != nil {
+		if err := a.vulnMonitor.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("vuln monitor start failed")
+		} else {
+			a.log.Info().Msg("package inventory / vuln monitor running")
 		}
 	}
 
@@ -254,6 +288,12 @@ func (a *Agent) shutdown() error {
 	time.Sleep(500 * time.Millisecond)
 
 	// Stop monitors in reverse order.
+	if a.vulnMonitor != nil {
+		a.vulnMonitor.Stop()
+	}
+	if a.authMonitor != nil {
+		a.authMonitor.Stop()
+	}
 	if a.cmdMonitor != nil {
 		a.cmdMonitor.Stop()
 	}

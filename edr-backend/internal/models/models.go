@@ -59,6 +59,7 @@ type Alert struct {
 	Assignee    string         `db:"assignee"    json:"assignee"`
 	Notes       string         `db:"notes"       json:"notes"`
 	HitCount    int64          `db:"hit_count"   json:"hit_count"`
+	IncidentID  string         `db:"incident_id" json:"incident_id"`
 }
 
 // Rule represents a detection rule.
@@ -95,6 +96,59 @@ type SuppressionRule struct {
 	Author      string          `db:"author"      json:"author"`
 	HitCount    int64           `db:"hit_count"   json:"hit_count"`
 	LastHitAt   *time.Time      `db:"last_hit_at" json:"last_hit_at,omitempty"`
+}
+
+// Incident groups related alerts into a single investigation unit.
+type Incident struct {
+	ID          string         `db:"id"          json:"id"`
+	Title       string         `db:"title"       json:"title"`
+	Description string         `db:"description" json:"description"`
+	Severity    int16          `db:"severity"    json:"severity"`
+	Status      string         `db:"status"      json:"status"`     // OPEN, INVESTIGATING, CLOSED
+	AlertIDs    pq.StringArray `db:"alert_ids"   json:"alert_ids"`
+	AgentIDs    pq.StringArray `db:"agent_ids"   json:"agent_ids"`
+	Hostnames   pq.StringArray `db:"hostnames"   json:"hostnames"`
+	MitreIDs    pq.StringArray `db:"mitre_ids"   json:"mitre_ids"`
+	AlertCount  int            `db:"alert_count" json:"alert_count"`
+	FirstSeen   time.Time      `db:"first_seen"  json:"first_seen"`
+	LastSeen    time.Time      `db:"last_seen"   json:"last_seen"`
+	Assignee    string         `db:"assignee"    json:"assignee"`
+	Notes       string         `db:"notes"       json:"notes"`
+	CreatedAt   time.Time      `db:"created_at"  json:"created_at"`
+	UpdatedAt   time.Time      `db:"updated_at"  json:"updated_at"`
+}
+
+// AgentPackage represents an installed package on an endpoint.
+type AgentPackage struct {
+	ID          int64     `db:"id" json:"id"`
+	AgentID     string    `db:"agent_id" json:"agent_id"`
+	Name        string    `db:"name" json:"name"`
+	Version     string    `db:"version" json:"version"`
+	Arch        string    `db:"arch" json:"arch"`
+	CollectedAt time.Time `db:"collected_at" json:"collected_at"`
+}
+
+// Vulnerability represents a detected CVE for an installed package.
+type Vulnerability struct {
+	ID             int64     `db:"id" json:"id"`
+	AgentID        string    `db:"agent_id" json:"agent_id"`
+	PackageName    string    `db:"package_name" json:"package_name"`
+	PackageVersion string    `db:"package_version" json:"package_version"`
+	CveID          string    `db:"cve_id" json:"cve_id"`
+	Severity       string    `db:"severity" json:"severity"`
+	Description    string    `db:"description" json:"description"`
+	FixedVersion   string    `db:"fixed_version" json:"fixed_version"`
+	DetectedAt     time.Time `db:"detected_at" json:"detected_at"`
+}
+
+// VulnStats holds vulnerability counts by severity for an agent.
+type VulnStats struct {
+	Critical int64 `json:"critical"`
+	High     int64 `json:"high"`
+	Medium   int64 `json:"medium"`
+	Low      int64 `json:"low"`
+	Unknown  int64 `json:"unknown"`
+	Total    int64 `json:"total"`
 }
 
 // BacktestResult is returned by the rule backtest endpoint.

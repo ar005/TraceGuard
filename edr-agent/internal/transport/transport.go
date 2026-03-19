@@ -115,6 +115,13 @@ func (c *Config) applyDefaults() {
 
 // ─── Transport ────────────────────────────────────────────────────────────────
 
+// ContainmentController is implemented by the containment.Manager.
+type ContainmentController interface {
+	Isolate() error
+	Release() error
+	IsContained() bool
+}
+
 type GRPCTransport struct {
 	cfg    Config
 	log    zerolog.Logger
@@ -124,6 +131,7 @@ type GRPCTransport struct {
 	mu     sync.RWMutex
 	conn   *grpc.ClientConn
 	connected bool
+	containment ContainmentController
 }
 
 func New(cfg Config, log zerolog.Logger) *GRPCTransport {
@@ -134,6 +142,11 @@ func New(cfg Config, log zerolog.Logger) *GRPCTransport {
 		sendCh: make(chan []byte, 8192),
 		stopCh: make(chan struct{}),
 	}
+}
+
+// SetContainment sets the containment controller for live response isolation commands.
+func (t *GRPCTransport) SetContainment(c ContainmentController) {
+	t.containment = c
 }
 
 func (t *GRPCTransport) Start(ctx context.Context) error {

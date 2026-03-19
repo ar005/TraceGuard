@@ -102,6 +102,7 @@ body::after{content:'';position:fixed;inset:0;background:radial-gradient(ellipse
     {% endif %}
 
     <form method="POST" action="/setup">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="field">
         <label>Admin Username</label>
         <input type="text" name="username" value="{{ request.form.get('username','admin') }}"

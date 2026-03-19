@@ -77,6 +77,7 @@ body::after{content:'';position:fixed;inset:0;background:radial-gradient(ellipse
     {% endif %}
 
     <form method="POST" action="/login">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="field">
         <label>Username</label>
         <input type="text" name="username" autocomplete="username" placeholder="admin" autofocus>

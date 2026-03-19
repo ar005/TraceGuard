@@ -55,11 +55,19 @@ const (
 	EventCmdExec    EventType = "CMD_EXEC"
 	EventCmdHistory EventType = "CMD_HISTORY"
 
+	// Authentication
+	EventLoginSuccess EventType = "LOGIN_SUCCESS"
+	EventLoginFailed  EventType = "LOGIN_FAILED"
+	EventSudoExec     EventType = "SUDO_EXEC"
+
 	// Agent lifecycle
 	EventAgentStart     EventType = "AGENT_START"
 	EventAgentStop      EventType = "AGENT_STOP"
 	EventAgentTamper    EventType = "AGENT_TAMPER"
 	EventAgentHeartbeat EventType = "AGENT_HEARTBEAT"
+
+	// Vulnerability / package inventory
+	EventPkgInventory EventType = "PKG_INVENTORY"
 )
 
 // ─── ProcessContext ───────────────────────────────────────────────────────────
@@ -81,7 +89,10 @@ type ProcessContext struct {
 	Env         []string `json:"env,omitempty"` // captured only when suspicious
 	StartTime   time.Time `json:"start_time"`
 	ContainerID string   `json:"container_id,omitempty"` // if inside a container
-	Namespace   string   `json:"namespace,omitempty"`    // PID namespace
+	Runtime     string   `json:"runtime,omitempty"`      // docker, containerd, podman, cri-o
+	ImageName   string   `json:"image_name,omitempty"`   // container image name
+	PodName     string   `json:"pod_name,omitempty"`     // Kubernetes pod name
+	Namespace   string   `json:"namespace,omitempty"`    // Kubernetes namespace
 }
 
 // ─── Base Event ───────────────────────────────────────────────────────────────
@@ -237,6 +248,19 @@ type RegistryEvent struct {
 	Category   string `json:"category"` // e.g. "auth", "cron", "sudoers", "ssh", "ld"
 }
 
+// AuthEvent represents a login, authentication failure, or sudo execution.
+type AuthEvent struct {
+	BaseEvent
+	Username  string `json:"username"`
+	SourceIP  string `json:"source_ip,omitempty"` // remote IP for SSH logins
+	Service   string `json:"service"`             // sshd, login, sudo, su, gdm
+	TTY       string `json:"tty,omitempty"`
+	Method    string `json:"method,omitempty"`     // password, publickey, keyboard-interactive
+	TargetUser string `json:"target_user,omitempty"` // for sudo: the target user
+	Command   string `json:"command,omitempty"`     // for sudo: the command run
+	RawLog    string `json:"raw_log,omitempty"`     // original log line
+}
+
 // ─── Alert ────────────────────────────────────────────────────────────────────
 
 type AlertStatus string
@@ -272,3 +296,20 @@ type Alert struct {
 
 func (e *BaseEvent) EventType() string { return string(e.Type) }
 func (e *BaseEvent) EventID() string   { return e.ID }
+
+// ─── Package Inventory Events ─────────────────────────────────────────────
+
+// PackageInfo describes a single installed package.
+type PackageInfo struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Arch    string `json:"arch"`
+}
+
+// PkgInventoryEvent carries a full package inventory snapshot from the endpoint.
+type PkgInventoryEvent struct {
+	BaseEvent
+	Packages  []PackageInfo `json:"packages"`
+	OS        string        `json:"os"`
+	OSVersion string        `json:"os_version"`
+}

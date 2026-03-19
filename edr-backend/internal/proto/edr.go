@@ -70,6 +70,27 @@ type RegisterResponse struct {
 	ConfigVersion string `json:"config_version"`
 }
 
+// ─── Live Response message types ─────────────────────────────────────────────
+
+// LiveCommand is sent from backend to agent.
+type LiveCommand struct {
+	CommandID string   `json:"command_id"` // UUID for tracking
+	Action    string   `json:"action"`     // exec, kill, ls, cat, upload, download, netstat, ps
+	Args      []string `json:"args"`       // command arguments
+	Timeout   int      `json:"timeout"`    // seconds (0 = default 30s)
+}
+
+// LiveResult is sent from agent back to backend.
+type LiveResult struct {
+	CommandID string `json:"command_id"`
+	AgentID   string `json:"agent_id"`
+	Status    string `json:"status"`  // running, completed, error, timeout
+	ExitCode  int    `json:"exit_code"`
+	Stdout    string `json:"stdout"`
+	Stderr    string `json:"stderr"`
+	Error     string `json:"error,omitempty"`
+}
+
 // ─── Service interfaces ───────────────────────────────────────────────────────
 
 // EventServiceServer is the server-side interface (implement this).
@@ -77,6 +98,14 @@ type EventServiceServer interface {
 	Register(context.Context, *RegisterRequest) (*RegisterResponse, error)
 	StreamEvents(EventService_StreamEventsServer) error
 	Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error)
+	LiveResponse(EventService_LiveResponseServer) error
+}
+
+// EventService_LiveResponseServer is the server-side bidi stream interface.
+type EventService_LiveResponseServer interface {
+	Send(*LiveCommand) error
+	Recv() (*LiveResult, error)
+	grpc.ServerStream
 }
 
 // EventService_StreamEventsServer is the server-side streaming interface.
@@ -102,9 +131,10 @@ type EventService_StreamEventsClient interface {
 
 // ─── Service descriptor (for gRPC registration) ───────────────────────────────
 
-const EventService_Register_FullMethodName     = "/edr.v1.EventService/Register"
-const EventService_StreamEvents_FullMethodName = "/edr.v1.EventService/StreamEvents"
-const EventService_Heartbeat_FullMethodName    = "/edr.v1.EventService/Heartbeat"
+const EventService_Register_FullMethodName      = "/edr.v1.EventService/Register"
+const EventService_StreamEvents_FullMethodName  = "/edr.v1.EventService/StreamEvents"
+const EventService_Heartbeat_FullMethodName     = "/edr.v1.EventService/Heartbeat"
+const EventService_LiveResponse_FullMethodName  = "/edr.v1.EventService/LiveResponse"
 
 // ServiceDesc is the gRPC service descriptor for EventService.
 var EventService_ServiceDesc = grpc.ServiceDesc{
@@ -124,6 +154,12 @@ var EventService_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "StreamEvents",
 			Handler:       _EventService_StreamEvents_Handler,
+			ClientStreams:  true,
+		},
+		{
+			StreamName:    "LiveResponse",
+			Handler:       _EventService_LiveResponse_Handler,
+			ServerStreams:  true,
 			ClientStreams:  true,
 		},
 	},
@@ -178,6 +214,26 @@ func (x *eventServiceStreamEventsServer) SendAndClose(m *StreamResponse) error {
 
 func (x *eventServiceStreamEventsServer) Recv() (*EventEnvelope, error) {
 	m := new(EventEnvelope)
+	if err := x.ServerStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func _EventService_LiveResponse_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(EventServiceServer).LiveResponse(&eventServiceLiveResponseServer{stream})
+}
+
+type eventServiceLiveResponseServer struct {
+	grpc.ServerStream
+}
+
+func (x *eventServiceLiveResponseServer) Send(m *LiveCommand) error {
+	return x.ServerStream.SendMsg(m)
+}
+
+func (x *eventServiceLiveResponseServer) Recv() (*LiveResult, error) {
+	m := new(LiveResult)
 	if err := x.ServerStream.RecvMsg(m); err != nil {
 		return nil, err
 	}

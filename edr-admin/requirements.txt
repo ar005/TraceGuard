@@ -1,3 +1,4 @@
 flask>=2.3
+flask-wtf>=1.2
 requests>=2.28
 psycopg2-binary>=2.9

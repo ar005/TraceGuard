@@ -24,6 +24,7 @@ import (
 	"google.golang.org/grpc/peer"
 
 	"github.com/youredr/edr-backend/internal/detection"
+	"github.com/youredr/edr-backend/internal/liveresponse"
 	"github.com/youredr/edr-backend/internal/sse"
 	"github.com/youredr/edr-backend/internal/models"
 	pb "github.com/youredr/edr-backend/internal/proto"
@@ -35,6 +36,7 @@ type Server struct {
 	store     *store.Store
 	engine    *detection.Engine
 	sseBroker *sse.Broker
+	lr        *liveresponse.Manager
 	log      zerolog.Logger
 	grpc     *grpc.Server
 	configVer string
@@ -49,11 +51,12 @@ type TLSConfig struct {
 }
 
 // New creates an ingest Server.
-func New(st *store.Store, eng *detection.Engine, sb *sse.Broker, log zerolog.Logger, tls TLSConfig) *Server {
+func New(st *store.Store, eng *detection.Engine, sb *sse.Broker, lr *liveresponse.Manager, log zerolog.Logger, tls TLSConfig) *Server {
 	s := &Server{
 		store:     st,
 		engine:    eng,
 		sseBroker: sb,
+		lr:        lr,
 		log:       log.With().Str("component", "ingest").Logger(),
 		configVer: "1",
 	}
@@ -317,4 +320,75 @@ func loadServerTLS(certFile, keyFile, caFile string, log zerolog.Logger) (creden
 		log.Info().Str("ca", caFile).Msg("mutual TLS: client cert required")
 	}
 	return credentials.NewTLS(tlsCfg), nil
+}
+
+// LiveResponse implements the bidirectional live response stream.
+// The agent connects, registers, then listens for commands and sends results.
+func (s *Server) LiveResponse(stream pb.EventService_LiveResponseServer) error {
+	// First message from agent must be a result with status="register" containing agent_id.
+	initMsg, err := stream.Recv()
+	if err != nil {
+		return fmt.Errorf("live response init recv: %w", err)
+	}
+	agentID := initMsg.AgentID
+	if agentID == "" {
+		return fmt.Errorf("live response: agent_id required in initial message")
+	}
+
+	s.log.Info().Str("agent_id", agentID).Msg("live response session started")
+
+	cmdCh := s.lr.RegisterAgent(agentID)
+	defer s.lr.UnregisterAgent(agentID)
+
+	// Read results from agent in background.
+	errCh := make(chan error, 1)
+	go func() {
+		for {
+			result, err := stream.Recv()
+			if err != nil {
+				errCh <- err
+				return
+			}
+			s.lr.DeliverResult(agentID, liveresponse.Result{
+				CommandID: result.CommandID,
+				AgentID:   result.AgentID,
+				Status:    result.Status,
+				ExitCode:  result.ExitCode,
+				Stdout:    result.Stdout,
+				Stderr:    result.Stderr,
+				Error:     result.Error,
+			})
+		}
+	}()
+
+	// Send commands to agent from the session channel.
+	for {
+		select {
+		case cmd, ok := <-cmdCh:
+			if !ok {
+				return nil // session closed
+			}
+			if err := stream.Send(&pb.LiveCommand{
+				CommandID: cmd.ID,
+				Action:    cmd.Action,
+				Args:      cmd.Args,
+				Timeout:   cmd.Timeout,
+			}); err != nil {
+				return fmt.Errorf("send command: %w", err)
+			}
+		case err := <-errCh:
+			if err == io.EOF {
+				s.log.Info().Str("agent_id", agentID).Msg("live response stream closed by agent")
+				return nil
+			}
+			return err
+		case <-stream.Context().Done():
+			return stream.Context().Err()
+		}
+	}
+}
+
+// LRManager returns the live response manager for use by the REST API.
+func (s *Server) LRManager() *liveresponse.Manager {
+	return s.lr
 }

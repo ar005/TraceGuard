@@ -7,11 +7,13 @@ import (
 	"context"
 	"crypto/rand"
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
@@ -24,6 +26,7 @@ import (
 	"github.com/youredr/edr-backend/internal/db"
 	"github.com/youredr/edr-backend/internal/detection"
 	"github.com/youredr/edr-backend/internal/ingest"
+	"github.com/youredr/edr-backend/internal/liveresponse"
 	"github.com/youredr/edr-backend/internal/models"
 	"github.com/youredr/edr-backend/internal/store"
 	"github.com/youredr/edr-backend/internal/users"
@@ -115,24 +118,77 @@ func main() {
 		// SSE broker — fans live events to connected browser clients.
 	sseBroker := sse.New(logger)
 
+	// Incident correlation window — alerts on the same agent within this
+	// window are grouped into a single incident.
+	const incidentWindow = 30 * time.Minute
+
 	engine := detection.New(st, logger, func(ctx context.Context, alert *models.Alert) {
 		if err := st.InsertAlert(ctx, alert); err != nil {
 			logger.Error().Err(err).Str("rule", alert.RuleID).Msg("persist alert failed")
+			return
+		}
+		logger.Warn().
+			Str("alert_id",  alert.ID).
+			Str("rule",      alert.RuleName).
+			Str("hostname",  alert.Hostname).
+			Int("severity",  int(alert.Severity)).
+			Msg("ALERT FIRED")
+
+		// ── Incident correlation ─────────────────────────────────────────
+		existing, err := st.FindOpenIncident(ctx, alert.AgentID, incidentWindow)
+		if err != nil {
+			logger.Warn().Err(err).Msg("incident lookup failed — creating new incident")
+		}
+		if existing != nil {
+			// Append alert to existing incident.
+			if err := st.AddAlertToIncident(ctx, existing.ID, alert); err != nil {
+				logger.Error().Err(err).Str("incident", existing.ID).Msg("add alert to incident failed")
+			} else {
+				_ = st.SetAlertIncident(ctx, alert.ID, existing.ID)
+				logger.Info().
+					Str("incident", existing.ID).
+					Str("alert", alert.ID).
+					Int("alert_count", existing.AlertCount+1).
+					Msg("alert correlated into existing incident")
+			}
 		} else {
-			logger.Warn().
-				Str("alert_id",  alert.ID).
-				Str("rule",      alert.RuleName).
-				Str("hostname",  alert.Hostname).
-				Int("severity",  int(alert.Severity)).
-				Msg("ALERT FIRED")
+			// Create a new incident for this alert.
+			incID := "inc-" + uuid.New().String()
+			inc := &models.Incident{
+				ID:          incID,
+				Title:       fmt.Sprintf("Incident on %s", alert.Hostname),
+				Description: fmt.Sprintf("Auto-correlated incident starting with: %s", alert.Title),
+				Severity:    alert.Severity,
+				Status:      "OPEN",
+				AlertIDs:    []string{alert.ID},
+				AgentIDs:    []string{alert.AgentID},
+				Hostnames:   []string{alert.Hostname},
+				MitreIDs:    alert.MitreIDs,
+				AlertCount:  1,
+				FirstSeen:   time.Now(),
+				LastSeen:    time.Now(),
+			}
+			if err := st.InsertIncident(ctx, inc); err != nil {
+				logger.Error().Err(err).Msg("create incident failed")
+			} else {
+				_ = st.SetAlertIncident(ctx, alert.ID, incID)
+				logger.Info().
+					Str("incident", incID).
+					Str("alert", alert.ID).
+					Str("hostname", alert.Hostname).
+					Msg("new incident created")
+			}
 		}
 	})
 	if err := engine.Reload(context.Background()); err != nil {
 		logger.Fatal().Err(err).Msg("load detection rules")
 	}
 
+	// ── Live Response Manager ─────────────────────────────────────────────────
+	lrManager := liveresponse.NewManager(logger)
+
 	// ── gRPC Ingest Server ────────────────────────────────────────────────────
-	grpcServer := ingest.New(st, engine, sseBroker, logger, ingest.TLSConfig{
+	grpcServer := ingest.New(st, engine, sseBroker, lrManager, logger, ingest.TLSConfig{
 		Enabled:  cfg.Server.TLS.Enabled,
 		CertFile: cfg.Server.TLS.CertFile,
 		KeyFile:  cfg.Server.TLS.KeyFile,
@@ -165,7 +221,7 @@ func main() {
 		logger.Info().Msg("AI not configured (configure via Settings page or OLLAMA_ENABLED env var)")
 	}
 
-	apiServer := api.New(st, engine, km, um, al, llmClient, sseBroker, logger, cfg.Auth.APIKey,
+	apiServer := api.New(st, engine, km, um, al, llmClient, lrManager, sseBroker, logger, cfg.Auth.APIKey,
 		api.RateLimitConfig{
 			Enabled:           cfg.RateLimit.Enabled,
 			RequestsPerSecond: cfg.RateLimit.RequestsPerSecond,

@@ -393,6 +393,107 @@ var migrations = []struct {
 		CREATE INDEX IF NOT EXISTS sup_rules_enabled_idx ON suppression_rules(enabled);
 		`,
 	},
+	{
+		name: "create_incidents",
+		sql: `
+		CREATE TABLE IF NOT EXISTS incidents (
+			id          TEXT PRIMARY KEY,
+			title       TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			severity    SMALLINT NOT NULL DEFAULT 2,
+			status      TEXT NOT NULL DEFAULT 'OPEN',
+			alert_ids   TEXT[] NOT NULL DEFAULT '{}',
+			agent_ids   TEXT[] NOT NULL DEFAULT '{}',
+			hostnames   TEXT[] NOT NULL DEFAULT '{}',
+			mitre_ids   TEXT[] NOT NULL DEFAULT '{}',
+			alert_count INT NOT NULL DEFAULT 0,
+			first_seen  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			last_seen   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			assignee    TEXT NOT NULL DEFAULT '',
+			notes       TEXT NOT NULL DEFAULT '',
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+		CREATE INDEX IF NOT EXISTS incidents_status_idx     ON incidents(status);
+		CREATE INDEX IF NOT EXISTS incidents_severity_idx   ON incidents(severity DESC);
+		CREATE INDEX IF NOT EXISTS incidents_last_seen_idx  ON incidents(last_seen DESC);
+
+		ALTER TABLE alerts ADD COLUMN IF NOT EXISTS incident_id TEXT NOT NULL DEFAULT '';
+		CREATE INDEX IF NOT EXISTS alerts_incident_id_idx ON alerts(incident_id);
+		`,
+	},
+	{
+		name: "seed_auth_detection_rules",
+		sql: `
+		INSERT INTO rules (id, name, description, severity, event_types, conditions, mitre_ids, author,
+		                   rule_type, threshold_count, threshold_window_s, group_by)
+		VALUES
+		(
+			'rule-thresh-login-brute',
+			'Login Brute Force (threshold)',
+			'10+ failed login attempts on the same host in 120 seconds — possible brute force attack.',
+			3,
+			ARRAY['LOGIN_FAILED'],
+			'[]',
+			ARRAY['T1110.001'],
+			'system',
+			'threshold', 10, 120, 'agent_id'
+		),
+		(
+			'rule-ssh-brute-source',
+			'SSH Brute Force from Single IP (threshold)',
+			'5+ failed SSH logins from the same source IP in 60 seconds.',
+			3,
+			ARRAY['LOGIN_FAILED'],
+			'[{"field":"service","op":"eq","value":"sshd"}]',
+			ARRAY['T1110.001'],
+			'system',
+			'threshold', 5, 60, 'source_ip'
+		),
+		(
+			'rule-sudo-root-shell',
+			'Sudo to Root Shell',
+			'User executed a root shell via sudo — verify this was authorized.',
+			2,
+			ARRAY['SUDO_EXEC'],
+			'[{"field":"target_user","op":"eq","value":"root"},{"field":"command","op":"regex","value":"(bash|sh|zsh|dash|fish)$"}]',
+			ARRAY['T1548.003'],
+			'system',
+			'match', 0, 0, ''
+		)
+		ON CONFLICT (id) DO NOTHING;
+		`,
+	},
+	{
+		name: "create_agent_packages_and_vulnerabilities",
+		sql: `
+		CREATE TABLE IF NOT EXISTS agent_packages (
+			id BIGSERIAL PRIMARY KEY,
+			agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+			name TEXT NOT NULL,
+			version TEXT NOT NULL,
+			arch TEXT NOT NULL DEFAULT '',
+			collected_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+		CREATE INDEX IF NOT EXISTS agent_packages_agent_idx ON agent_packages(agent_id);
+		CREATE INDEX IF NOT EXISTS agent_packages_name_idx ON agent_packages(name);
+
+		CREATE TABLE IF NOT EXISTS vulnerabilities (
+			id BIGSERIAL PRIMARY KEY,
+			agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+			package_name TEXT NOT NULL,
+			package_version TEXT NOT NULL,
+			cve_id TEXT NOT NULL,
+			severity TEXT NOT NULL DEFAULT 'UNKNOWN',
+			description TEXT NOT NULL DEFAULT '',
+			fixed_version TEXT NOT NULL DEFAULT '',
+			detected_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+		CREATE INDEX IF NOT EXISTS vulns_agent_idx ON vulnerabilities(agent_id);
+		CREATE INDEX IF NOT EXISTS vulns_cve_idx ON vulnerabilities(cve_id);
+		CREATE INDEX IF NOT EXISTS vulns_severity_idx ON vulnerabilities(severity);
+		`,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.

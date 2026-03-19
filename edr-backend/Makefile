@@ -53,12 +53,12 @@ gen-certs:
 	@# 1. CA key + cert (10-year)
 	openssl genrsa -out deploy/certs/ca.key 4096
 	openssl req -new -x509 -days 3650 -key deploy/certs/ca.key \
-		-subj "/CN=EDR-CA/O=OEDR" \
+		-subj "/CN=EDR-CA/O=TraceGuard" \
 		-out deploy/certs/ca.crt
 	@# 2. Server key + CSR
 	openssl genrsa -out deploy/certs/server.key 2048
 	openssl req -new -key deploy/certs/server.key \
-		-subj "/CN=edr-backend/O=OEDR" \
+		-subj "/CN=edr-backend/O=TraceGuard" \
 		-out deploy/certs/server.csr
 	@# 3. Sign server cert with CA; include localhost + 127.0.0.1 as SANs
 	@echo "subjectAltName=DNS:localhost,DNS:edr-backend,IP:127.0.0.1" > /tmp/edr-san.ext

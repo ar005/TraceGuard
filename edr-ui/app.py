@@ -6,10 +6,12 @@ Open: http://localhost:5000
 import os, requests, secrets
 from flask import (Flask, render_template, jsonify, request,
                    Response, session, redirect, url_for)
+from flask_wtf.csrf import CSRFProtect
 from functools import wraps
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("EDR_SECRET") or secrets.token_hex(32)
+csrf = CSRFProtect(app)
 
 BACKEND = os.environ.get("EDR_BACKEND", "http://localhost:8080")
 
@@ -269,6 +271,28 @@ def inject(): return proxy("/api/v1/events/inject", "POST", request.get_json())
 @login_required
 def process_tree(pid): return proxy(f"/api/v1/processes/{pid}/tree")
 
+@app.route("/api/liveresponse/agents")
+@login_required
+def lr_agents(): return proxy("/api/v1/liveresponse/agents")
+
+@app.route("/api/liveresponse/command", methods=["POST"])
+@login_required
+def lr_command(): return proxy("/api/v1/liveresponse/command", "POST", request.get_json())
+
+@app.route("/api/incidents", methods=["GET"])
+@login_required
+def incidents(): return proxy("/api/v1/incidents")
+
+@app.route("/api/incidents/<iid>", methods=["GET", "PATCH"])
+@login_required
+def incident(iid):
+    return proxy(f"/api/v1/incidents/{iid}", request.method,
+                 request.get_json() if request.method == "PATCH" else None)
+
+@app.route("/api/incidents/<iid>/alerts")
+@login_required
+def incident_alerts(iid): return proxy(f"/api/v1/incidents/{iid}/alerts")
+
 @app.route("/api/suppressions", methods=["GET"])
 @login_required
 def suppressions(): return proxy("/api/v1/suppressions")
@@ -283,6 +307,22 @@ def create_suppression():
 def suppression(sid):
     body = request.get_json() if request.method == "PUT" else None
     return proxy(f"/api/v1/suppressions/{sid}", request.method, body)
+
+@app.route("/api/hunt", methods=["POST"])
+@login_required
+def hunt(): return proxy("/api/v1/hunt", "POST", request.get_json())
+
+@app.route("/api/agents/<aid>/packages")
+@login_required
+def agent_packages(aid): return proxy(f"/api/v1/agents/{aid}/packages")
+
+@app.route("/api/agents/<aid>/vulnerabilities")
+@login_required
+def agent_vulns(aid): return proxy(f"/api/v1/agents/{aid}/vulnerabilities")
+
+@app.route("/api/vulnerabilities")
+@login_required
+def vulnerabilities(): return proxy("/api/v1/vulnerabilities")
 
 if __name__ == "__main__":
     port = int(os.environ.get("EDR_UI_PORT", 5000))

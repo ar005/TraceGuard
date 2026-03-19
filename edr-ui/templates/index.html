@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>TraceGuard — Open EDR</title>
 <meta id="TraceGuard-meta" data-token="{{ token }}" data-backend="{{ backend }}">
+<meta name="csrf-token" content="{{ csrf_token() }}">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root{
@@ -300,6 +301,22 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
       <svg viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M8 5v3l2 2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
       Rule Builder
     </div>
+    <div class="nav-tab" id="tb-incidents" onclick="nav('incidents')">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 3h12v10H2z"/><path d="M5 6h6M5 9h4"/></svg>
+      Incidents <span class="tc" id="tc-inc">0</span>
+    </div>
+    <div class="nav-tab" id="tb-hunt" onclick="nav('hunt')">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/><path d="M5 7h4"/></svg>
+      Hunt
+    </div>
+    <div class="nav-tab" id="tb-vuln" onclick="nav('vuln')">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M8 1L2 4v4c0 4 3 6.5 6 7.5 3-1 6-3.5 6-7.5V4L8 1z"/><path d="M6 8l2 2 3-4"/></svg>
+      Vulns
+    </div>
+    <div class="nav-tab" id="tb-liveresponse" onclick="nav('liveresponse')">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1" y="2" width="14" height="12" rx="1.5"/><path d="M4 6l3 2.5-3 2.5M9 11h4"/></svg>
+      Live
+    </div>
     <div class="nav-tab" id="tb-settings" onclick="nav('settings')">
       <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 10.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z"/><path d="M13.5 8a5.5 5.5 0 01-.08.9l1.34 1.04-1 1.73-1.6-.64a5.5 5.5 0 01-1.56.9l-.24 1.7h-2l-.24-1.7a5.5 5.5 0 01-1.56-.9l-1.6.64-1-1.73L4.58 8.9A5.5 5.5 0 014.5 8a5.5 5.5 0 01.08-.9L3.24 6.06l1-1.73 1.6.64a5.5 5.5 0 011.56-.9L7.64 2.3h2l.24 1.7a5.5 5.5 0 011.56.9l1.6-.64 1 1.73L12.42 7.1c.05.3.08.6.08.9z" stroke="currentColor" stroke-width="1.1" fill="none"/></svg>
       Settings
@@ -316,6 +333,7 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
       <span>{{ username }}</span>
     </div>
     <form method="POST" action="/logout" style="margin:0">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit" class="btn-logout">Sign Out</button>
     </form>
   </div>
@@ -940,6 +958,84 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
   </div>
 </section>
 
+<!-- ── INCIDENTS ── -->
+<section id="pg-incidents" class="page">
+  <div class="ph"><div><h1><span class="sl">//</span> INCIDENTS</h1><p>Correlated alert groups</p></div></div>
+  <div class="card">
+    <div class="tbl-wrap">
+      <table><thead><tr><th>ID</th><th>Title</th><th>Severity</th><th>Status</th><th>Alerts</th><th>Hosts</th><th>MITRE</th><th>First Seen</th><th>Last Seen</th><th>Assignee</th></tr></thead>
+      <tbody id="inc-tbody"></tbody></table>
+    </div>
+  </div>
+</section>
+
+<!-- ── HUNT ── -->
+<section id="pg-hunt" class="page">
+  <div class="ph"><div><h1><span class="sl">//</span> THREAT HUNT</h1><p>Query raw events with SQL-like syntax</p></div></div>
+  <div class="card" style="margin-bottom:16px;padding:16px">
+    <div style="font-family:var(--mono);font-size:8px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:8px">QUERY</div>
+    <textarea id="hunt-input" style="width:100%;height:60px;background:var(--bg2);border:1px solid var(--line2);border-radius:2px;padding:10px;font-family:var(--mono);font-size:11px;color:var(--text);resize:vertical;outline:none" placeholder="event_type = 'PROCESS_EXEC' AND payload->>'exe_path' LIKE '%bash%'"></textarea>
+    <div style="display:flex;gap:8px;margin-top:10px;align-items:center">
+      <button class="btn-sm" style="border-color:var(--cyan2);color:var(--cyan);background:rgba(0,200,240,.08);padding:6px 14px;cursor:pointer;font-family:var(--mono);font-size:9px;letter-spacing:1.5px;text-transform:uppercase;border-radius:2px" onclick="runHunt()">Run Query</button>
+      <span id="hunt-status" style="font-family:var(--mono);font-size:9px;color:var(--muted)"></span>
+    </div>
+  </div>
+  <div class="card">
+    <div class="tbl-wrap">
+      <table><thead><tr><th>Time</th><th>Type</th><th>Hostname</th><th>Agent</th><th>Severity</th></tr></thead>
+      <tbody id="hunt-tbody"></tbody></table>
+    </div>
+  </div>
+</section>
+
+<!-- ── VULNERABILITIES ── -->
+<section id="pg-vuln" class="page">
+  <div class="ph"><div><h1><span class="sl">//</span> VULNERABILITIES</h1><p>CVEs detected on endpoints</p></div></div>
+  <div id="vuln-stats" style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:16px"></div>
+  <div class="card">
+    <div class="tbl-wrap">
+      <table><thead><tr><th>CVE</th><th>Package</th><th>Version</th><th>Severity</th><th>Agent</th><th>Fixed In</th><th>Detected</th></tr></thead>
+      <tbody id="vuln-tbody"></tbody></table>
+    </div>
+  </div>
+</section>
+
+<!-- ── LIVE RESPONSE ── -->
+<section id="pg-liveresponse" class="page">
+  <div class="ph"><div><h1><span class="sl">//</span> LIVE RESPONSE</h1><p>Remote investigation shell</p></div></div>
+  <div style="display:flex;gap:12px;margin-bottom:16px;align-items:center">
+    <select id="lr-agent" style="background:var(--bg2);border:1px solid var(--line2);border-radius:2px;padding:7px 10px;font-family:var(--mono);font-size:11px;color:var(--text);outline:none;min-width:250px">
+      <option value="">Select agent...</option>
+    </select>
+    <button class="btn-sm" style="border-color:var(--cyan2);color:var(--cyan);cursor:pointer;font-family:var(--mono);font-size:8px;padding:6px 10px;border-radius:2px" onclick="loadLRAgents()">Refresh</button>
+    <span id="lr-status" style="font-family:var(--mono);font-size:9px;color:var(--muted)"></span>
+  </div>
+  <div class="card" style="padding:16px">
+    <div style="display:flex;gap:8px">
+      <select id="lr-action" style="background:var(--bg2);border:1px solid var(--line2);border-radius:2px;padding:7px 10px;font-family:var(--mono);font-size:11px;color:var(--text);outline:none;width:120px">
+        <option value="ps">ps</option>
+        <option value="ls">ls</option>
+        <option value="cat">cat</option>
+        <option value="netstat">netstat</option>
+        <option value="who">who</option>
+        <option value="uname">uname</option>
+        <option value="uptime">uptime</option>
+        <option value="df">df</option>
+        <option value="id">id</option>
+        <option value="exec">exec</option>
+        <option value="find">find</option>
+        <option value="sha256sum">sha256sum</option>
+        <option value="kill">kill</option>
+        <option value="isolate">ISOLATE</option>
+        <option value="release">RELEASE</option>
+      </select>
+      <input id="lr-args" style="flex:1;background:var(--bg2);border:1px solid var(--line2);border-radius:2px;padding:7px 10px;font-family:var(--mono);font-size:11px;color:var(--text);outline:none" placeholder="arguments (e.g. /etc/passwd for cat, -9 1234 for kill)">
+      <button class="btn-sm" style="border-color:var(--cyan2);color:var(--cyan);background:rgba(0,200,240,.08);padding:6px 14px;cursor:pointer;font-family:var(--mono);font-size:9px;letter-spacing:1.5px;text-transform:uppercase;border-radius:2px" onclick="runLR()">Execute</button>
+    </div>
+  </div>
+  <pre id="lr-output" style="margin-top:12px;background:var(--bg1);border:1px solid var(--line);border-radius:2px;padding:14px;font-family:var(--mono);font-size:10px;color:var(--text);max-height:500px;overflow:auto;white-space:pre-wrap;display:none"></pre>
+</section>
+
 </main>
 
 <!-- DRAWER -->
@@ -1003,6 +1099,7 @@ function cmdSevTag(sev, tags){
 }
 
 // ─── api ─────────────────────────────────────────────
+const CSRF_TOKEN=document.querySelector('meta[name="csrf-token"]').content;
 async function api(path){
   const r=await fetch(path);
   if(r.status===401){
@@ -1015,7 +1112,7 @@ async function api(path){
   return r.json();
 }
 async function apiMethod(path,method,body){
-  const r=await fetch(path,{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const r=await fetch(path,{method,headers:{'Content-Type':'application/json','X-CSRFToken':CSRF_TOKEN},body:JSON.stringify(body)});
   if(r.status===401){
     setTimeout(()=>{ window.location.href='/login?error=expired'; }, 100);
     throw new Error('session-expired');
@@ -1108,6 +1205,10 @@ function nav(name){
   if(name==='suppress') loadSuppressions();
   if(name==='settings') { loadRetention(); loadLLMSettings(); }
   if(name==='builder'){updatePreview();renderFieldRef();}
+  if(name==='incidents') loadIncidents();
+  if(name==='hunt') {}
+  if(name==='vuln') loadVulns();
+  if(name==='liveresponse') loadLRAgents();
 }
 
 // ─── status ──────────────────────────────────────────
@@ -1518,7 +1619,7 @@ async function editRule(id,ev){
 }
 
 async function reloadEngine(){
-  try{await fetch('/api/rules/reload',{method:'POST'});toast('Detection engine reloaded');}
+  try{await fetch('/api/rules/reload',{method:'POST',headers:{'X-CSRFToken':CSRF_TOKEN}});toast('Detection engine reloaded');}
   catch(e){toast('Failed: '+e.message,false);}
 }
 
@@ -1862,7 +1963,7 @@ async function saveRule(){
       await apiMethod('/api/rules','POST',p);
       toast('Rule created successfully');
     }
-    await fetch('/api/rules/reload',{method:'POST'});
+    await fetch('/api/rules/reload',{method:'POST',headers:{'X-CSRFToken':CSRF_TOKEN}});
     resetBuilder();
     nav('rules');
   }catch(e){toast('Save failed: '+e.message,false);}
@@ -2841,7 +2942,7 @@ setInterval(refresh,30000);
 (function startTokenRefresh() {
   async function doRefresh() {
     try {
-      const r = await fetch('/api/auth/refresh', {method:'POST'});
+      const r = await fetch('/api/auth/refresh', {method:'POST',headers:{'X-CSRFToken':CSRF_TOKEN}});
       if (!r.ok) { window.location.href = '/login'; }
     } catch(e) { console.warn('Token refresh error:', e); }
   }
@@ -2905,7 +3006,7 @@ async function toggleSup(id, enable, btn) {
 async function deleteSuppression(id) {
   if (!confirm('Delete this suppression rule permanently?')) return;
   try {
-    await fetch(`/api/suppressions/${id}`, {method:'DELETE'});
+    await fetch(`/api/suppressions/${id}`, {method:'DELETE',headers:{'X-CSRFToken':CSRF_TOKEN}});
     toast('Suppression deleted');
     loadSuppressions();
   } catch(e) { toast('Delete failed: '+e.message, false); }
@@ -3588,6 +3689,142 @@ nav = function(name) {
 // The SSE auth workaround: backend authMiddleware also accepts ?token= query param.
 // Store current JWT for SSE use.
 let _jwtToken = '';
+
+// ─── INCIDENTS ──────────────────────────────────────────────────────────────
+async function loadIncidents(){
+  try{
+    const data=await api('/api/incidents');
+    const list=data.incidents||[];
+    $('tc-inc').textContent=list.length;
+    const tbody=$('inc-tbody');
+    if(!list.length){tbody.innerHTML='<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:30px">No incidents</td></tr>';return;}
+    tbody.innerHTML=list.map(i=>{
+      const sev=['INFO','LOW','MEDIUM','HIGH','CRITICAL'][i.severity]||'?';
+      const scl=['dim','dim','amber','red','red'][i.severity]||'dim';
+      return `<tr>
+        <td style="color:var(--cyan);font-size:9px">${i.id.slice(0,12)}</td>
+        <td style="color:var(--text)">${esc(i.title)}</td>
+        <td><span class="sev-${scl}">${sev}</span></td>
+        <td>${i.status}</td>
+        <td>${i.alert_count}</td>
+        <td>${(i.hostnames||[]).join(', ')}</td>
+        <td style="font-size:9px;color:var(--muted)">${(i.mitre_ids||[]).join(', ')}</td>
+        <td>${ts(i.first_seen)}</td>
+        <td>${ts(i.last_seen)}</td>
+        <td style="color:var(--muted)">${i.assignee||'—'}</td>
+      </tr>`;
+    }).join('');
+  }catch(e){console.error('loadIncidents',e);}
+}
+
+// ─── THREAT HUNT ────────────────────────────────────────────────────────────
+async function runHunt(){
+  const q=$('hunt-input').value.trim();
+  if(!q){$('hunt-status').textContent='Enter a query';return;}
+  $('hunt-status').textContent='Running...';
+  $('hunt-status').style.color='var(--cyan)';
+  try{
+    const data=await apiMethod('/api/hunt','POST',{query:q,limit:200});
+    const evts=data.events||[];
+    $('hunt-status').textContent=`${data.total} result${data.total!==1?'s':''} (showing ${evts.length})`;
+    $('hunt-status').style.color='var(--green)';
+    const tbody=$('hunt-tbody');
+    if(!evts.length){tbody.innerHTML='<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:30px">No results</td></tr>';return;}
+    tbody.innerHTML=evts.map(e=>{
+      const sev=['INFO','LOW','MED','HIGH','CRIT'][e.severity]||'?';
+      return `<tr>
+        <td>${ts(e.timestamp)}</td>
+        <td><span class="et">${e.event_type}</span></td>
+        <td>${esc(e.hostname)}</td>
+        <td style="font-size:9px;color:var(--muted)">${e.agent_id.slice(0,8)}</td>
+        <td>${sev}</td>
+      </tr>`;
+    }).join('');
+  }catch(e){
+    $('hunt-status').textContent='Error: '+e.message;
+    $('hunt-status').style.color='var(--red)';
+  }
+}
+
+// ─── VULNERABILITIES ────────────────────────────────────────────────────────
+async function loadVulns(){
+  try{
+    const data=await api('/api/vulnerabilities');
+    const list=data.vulnerabilities||[];
+    const tbody=$('vuln-tbody');
+    if(!list.length){
+      tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:30px">No vulnerabilities detected</td></tr>';
+      $('vuln-stats').innerHTML='';
+      return;
+    }
+    // Stats
+    const counts={CRITICAL:0,HIGH:0,MEDIUM:0,LOW:0,UNKNOWN:0};
+    list.forEach(v=>{counts[v.severity]=(counts[v.severity]||0)+1;});
+    $('vuln-stats').innerHTML=Object.entries(counts).map(([k,v])=>{
+      const col=k==='CRITICAL'?'var(--red)':k==='HIGH'?'var(--orange)':k==='MEDIUM'?'var(--amber)':k==='LOW'?'var(--cyan)':'var(--muted)';
+      return `<div style="background:var(--bg1);border:1px solid var(--line);border-radius:3px;padding:12px 14px">
+        <div style="font-family:var(--mono);font-size:22px;font-weight:600;color:${col}">${v}</div>
+        <div style="font-family:var(--mono);font-size:8px;letter-spacing:1.5px;color:var(--muted);text-transform:uppercase;margin-top:4px">${k}</div>
+      </div>`;
+    }).join('');
+    tbody.innerHTML=list.map(v=>{
+      const col=v.severity==='CRITICAL'?'red':v.severity==='HIGH'?'orange':v.severity==='MEDIUM'?'amber':'dim';
+      return `<tr>
+        <td style="color:var(--cyan)">${esc(v.cve_id)}</td>
+        <td style="color:var(--text)">${esc(v.package_name)}</td>
+        <td>${esc(v.package_version)}</td>
+        <td><span class="sev-${col}">${v.severity}</span></td>
+        <td style="font-size:9px;color:var(--muted)">${v.agent_id.slice(0,8)}</td>
+        <td>${v.fixed_version||'—'}</td>
+        <td>${ts(v.detected_at)}</td>
+      </tr>`;
+    }).join('');
+  }catch(e){console.error('loadVulns',e);}
+}
+
+// ─── LIVE RESPONSE ──────────────────────────────────────────────────────────
+async function loadLRAgents(){
+  try{
+    const data=await api('/api/liveresponse/agents');
+    const agents=data.agents||[];
+    const sel=$('lr-agent');
+    const cur=sel.value;
+    sel.innerHTML='<option value="">Select agent...</option>'+
+      agents.map(a=>`<option value="${a}">${a}</option>`).join('');
+    if(cur&&agents.includes(cur))sel.value=cur;
+    $('lr-status').textContent=agents.length?agents.length+' agent(s) connected':'No agents connected';
+    $('lr-status').style.color=agents.length?'var(--green)':'var(--muted)';
+  }catch(e){
+    $('lr-status').textContent='Failed to load agents';
+    $('lr-status').style.color='var(--red)';
+  }
+}
+
+async function runLR(){
+  const agentId=$('lr-agent').value;
+  if(!agentId){toast('Select an agent first',false);return;}
+  const action=$('lr-action').value;
+  const argsStr=$('lr-args').value.trim();
+  const args=argsStr?argsStr.split(/\s+/):[];
+  const out=$('lr-output');
+  out.style.display='block';
+  out.textContent='Executing '+action+'...';
+  out.style.color='var(--muted)';
+  try{
+    const data=await apiMethod('/api/liveresponse/command','POST',{agent_id:agentId,action:action,args:args,timeout:30});
+    let text='';
+    if(data.stdout)text+=data.stdout;
+    if(data.stderr)text+=(text?'\n':'')+data.stderr;
+    if(data.error)text+=(text?'\n':'')+'\x1b[31mError: '+data.error+'\x1b[0m';
+    if(!text)text='(no output)';
+    out.textContent=text;
+    out.style.color=data.status==='completed'?'var(--text)':data.status==='error'?'var(--red)':'var(--amber)';
+    if(data.exit_code&&data.exit_code!==0)out.textContent+='\n\nExit code: '+data.exit_code;
+  }catch(e){
+    out.textContent='Error: '+e.message;
+    out.style.color='var(--red)';
+  }
+}
 </script>
 </body>
 </html>

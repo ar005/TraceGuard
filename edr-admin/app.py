@@ -22,10 +22,12 @@ Environment variables (all optional):
 import os, sys, argparse, requests, secrets
 from flask import (Flask, render_template, jsonify, request,
                    session, redirect, url_for)
+from flask_wtf.csrf import CSRFProtect
 from functools import wraps
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("TraceGuard_ADMIN_SECRET") or secrets.token_hex(32)
+csrf = CSRFProtect(app)
 BACKEND = os.environ.get("EDR_BACKEND", "http://localhost:8080")
 
 # ── DB config (for --force-setup only) ───────────────────────────────────────

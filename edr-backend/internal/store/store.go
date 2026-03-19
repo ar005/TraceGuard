@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -590,6 +591,75 @@ func (s *Store) UpdateAgentTags(ctx context.Context, id, env, notes string, tags
 		id, pq.Array(tags), env, notes)
 	return err
 }
+// ─── Threat Hunting ───────────────────────────────────────────────────────────
+
+// HuntQuery executes a safe, sanitized query against the events table.
+// It supports a simple query language:
+//
+//	event_type = 'PROCESS_EXEC' AND hostname = 'web01' AND payload->>'exe_path' LIKE '%bash%'
+//
+// The query is inserted into a fixed WHERE clause template:
+//
+//	SELECT * FROM events WHERE (<user_query>) ORDER BY timestamp DESC LIMIT $1
+//
+// Security: Only allows SELECT-like predicates. Rejects any DDL/DML keywords.
+func (s *Store) HuntQuery(ctx context.Context, query string, limit int) ([]models.Event, int, error) {
+	if query == "" {
+		return nil, 0, fmt.Errorf("empty query")
+	}
+
+	// Reject semicolons.
+	if strings.Contains(query, ";") {
+		return nil, 0, fmt.Errorf("invalid query: semicolons are not allowed")
+	}
+
+	// Reject dangerous SQL keywords (case-insensitive).
+	upper := strings.ToUpper(query)
+	blocked := []string{
+		"DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "TRUNCATE",
+		"CREATE", "GRANT", "EXEC", "UNION",
+	}
+	for _, kw := range blocked {
+		// Use word-boundary matching: check that the keyword is surrounded by
+		// non-alphanumeric characters (or is at the start/end of the string).
+		idx := 0
+		for idx <= len(upper)-len(kw) {
+			pos := strings.Index(upper[idx:], kw)
+			if pos < 0 {
+				break
+			}
+			absPos := idx + pos
+			before := absPos == 0 || !isAlphaNum(upper[absPos-1])
+			after := absPos+len(kw) >= len(upper) || !isAlphaNum(upper[absPos+len(kw)])
+			if before && after {
+				return nil, 0, fmt.Errorf("invalid query: forbidden keyword %q", kw)
+			}
+			idx = absPos + len(kw)
+		}
+	}
+
+	// Build the SQL.
+	dataSQL := fmt.Sprintf(`SELECT * FROM events WHERE (%s) ORDER BY timestamp DESC LIMIT $1`, query)
+	countSQL := fmt.Sprintf(`SELECT COUNT(*) FROM events WHERE (%s)`, query)
+
+	var events []models.Event
+	if err := s.db.SelectContext(ctx, &events, dataSQL, limit); err != nil {
+		return nil, 0, fmt.Errorf("hunt query failed: %w", err)
+	}
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, countSQL).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("hunt count failed: %w", err)
+	}
+
+	return events, total, nil
+}
+
+// isAlphaNum returns true if b is A-Z, a-z, 0-9, or underscore.
+func isAlphaNum(b byte) bool {
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_'
+}
+
 // ─── Settings ─────────────────────────────────────────────────────────────────
 
 // GetSetting returns a setting value by key, or the default if not found.
@@ -797,4 +867,279 @@ func (s *Store) GetProcessAncestors(ctx context.Context, agentID string, pid int
 	}
 
 	return ancestors, nil
+}
+
+// ─── Incidents ────────────────────────────────────────────────────────────────
+
+// InsertIncident creates a new incident.
+func (s *Store) InsertIncident(ctx context.Context, inc *models.Incident) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO incidents
+		  (id, title, description, severity, status, alert_ids, agent_ids, hostnames, mitre_ids,
+		   alert_count, first_seen, last_seen, assignee, notes, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW(),NOW())`,
+		inc.ID, inc.Title, inc.Description, inc.Severity, inc.Status,
+		pq.Array(inc.AlertIDs), pq.Array(inc.AgentIDs), pq.Array(inc.Hostnames), pq.Array(inc.MitreIDs),
+		inc.AlertCount, inc.FirstSeen, inc.LastSeen, inc.Assignee, inc.Notes)
+	return err
+}
+
+// QueryIncidentsParams defines filter/pagination for incident queries.
+type QueryIncidentsParams struct {
+	Status   string
+	Severity int16
+	AgentID  string
+	Limit    int
+	Offset   int
+}
+
+// QueryIncidents returns incidents matching the given filters.
+func (s *Store) QueryIncidents(ctx context.Context, p QueryIncidentsParams) ([]models.Incident, error) {
+	if p.Limit == 0 {
+		p.Limit = 50
+	}
+	query := `SELECT * FROM incidents WHERE 1=1`
+	args := []interface{}{}
+	n := 0
+	if p.Status != "" {
+		n++
+		query += fmt.Sprintf(` AND status=$%d`, n)
+		args = append(args, p.Status)
+	}
+	if p.Severity > 0 {
+		n++
+		query += fmt.Sprintf(` AND severity >= $%d`, n)
+		args = append(args, p.Severity)
+	}
+	if p.AgentID != "" {
+		n++
+		query += fmt.Sprintf(` AND $%d = ANY(agent_ids)`, n)
+		args = append(args, p.AgentID)
+	}
+	query += ` ORDER BY last_seen DESC`
+	n++
+	query += fmt.Sprintf(` LIMIT $%d`, n)
+	args = append(args, p.Limit)
+	n++
+	query += fmt.Sprintf(` OFFSET $%d`, n)
+	args = append(args, p.Offset)
+
+	var incidents []models.Incident
+	err := s.db.SelectContext(ctx, &incidents, query, args...)
+	return incidents, err
+}
+
+// GetIncident returns a single incident by ID.
+func (s *Store) GetIncident(ctx context.Context, id string) (*models.Incident, error) {
+	var inc models.Incident
+	err := s.db.GetContext(ctx, &inc, `SELECT * FROM incidents WHERE id=$1`, id)
+	return &inc, err
+}
+
+// UpdateIncident updates mutable incident fields.
+func (s *Store) UpdateIncident(ctx context.Context, id, status, assignee, notes string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE incidents SET status=$2, assignee=$3, notes=$4, updated_at=NOW()
+		WHERE id=$1`, id, status, assignee, notes)
+	return err
+}
+
+// FindOpenIncident finds an existing OPEN/INVESTIGATING incident for the given
+// agent_id that was last seen within the correlation window.
+func (s *Store) FindOpenIncident(ctx context.Context, agentID string, window time.Duration) (*models.Incident, error) {
+	var inc models.Incident
+	cutoff := time.Now().Add(-window)
+	err := s.db.GetContext(ctx, &inc, `
+		SELECT * FROM incidents
+		WHERE $1 = ANY(agent_ids)
+		  AND status IN ('OPEN','INVESTIGATING')
+		  AND last_seen >= $2
+		ORDER BY last_seen DESC LIMIT 1`, agentID, cutoff)
+	if err != nil {
+		if err.Error() == "sql: no rows in result set" {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &inc, nil
+}
+
+// AddAlertToIncident appends an alert to an existing incident, updating
+// aggregated fields (severity, hostnames, mitre_ids, counts).
+func (s *Store) AddAlertToIncident(ctx context.Context, incidentID string, alert *models.Alert) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE incidents SET
+			alert_ids   = array_append(alert_ids, $2),
+			agent_ids   = CASE WHEN $3 = ANY(agent_ids) THEN agent_ids ELSE array_append(agent_ids, $3) END,
+			hostnames   = CASE WHEN $4 = ANY(hostnames) THEN hostnames ELSE array_append(hostnames, $4) END,
+			mitre_ids   = (SELECT ARRAY(SELECT DISTINCT unnest(mitre_ids || $5::text[]))),
+			alert_count = alert_count + 1,
+			severity    = GREATEST(severity, $6),
+			last_seen   = NOW(),
+			updated_at  = NOW()
+		WHERE id = $1`,
+		incidentID, alert.ID, alert.AgentID, alert.Hostname,
+		pq.Array(alert.MitreIDs), alert.Severity)
+	return err
+}
+
+// SetAlertIncident links an alert to an incident.
+func (s *Store) SetAlertIncident(ctx context.Context, alertID, incidentID string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE alerts SET incident_id=$2 WHERE id=$1`, alertID, incidentID)
+	return err
+}
+
+// GetIncidentAlerts returns all alerts belonging to an incident.
+func (s *Store) GetIncidentAlerts(ctx context.Context, incidentID string) ([]models.Alert, error) {
+	var alerts []models.Alert
+	err := s.db.SelectContext(ctx, &alerts, `
+		SELECT * FROM alerts WHERE incident_id=$1 ORDER BY first_seen DESC`, incidentID)
+	return alerts, err
+}
+
+// ─── Agent Packages ───────────────────────────────────────────────────────────
+
+// UpsertAgentPackages replaces all packages for an agent within a transaction.
+func (s *Store) UpsertAgentPackages(ctx context.Context, agentID string, packages []models.AgentPackage) error {
+	tx, err := s.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Delete existing packages for this agent.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_packages WHERE agent_id=$1`, agentID); err != nil {
+		return err
+	}
+
+	// Batch insert new packages.
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO agent_packages (agent_id, name, version, arch, collected_at)
+		VALUES ($1, $2, $3, $4, NOW())`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, p := range packages {
+		if _, err := stmt.ExecContext(ctx, agentID, p.Name, p.Version, p.Arch); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// ListAgentPackages returns packages for a specific agent.
+func (s *Store) ListAgentPackages(ctx context.Context, agentID string, limit, offset int) ([]models.AgentPackage, error) {
+	if limit == 0 {
+		limit = 500
+	}
+	var pkgs []models.AgentPackage
+	err := s.db.SelectContext(ctx, &pkgs, `
+		SELECT * FROM agent_packages WHERE agent_id=$1
+		ORDER BY name ASC LIMIT $2 OFFSET $3`, agentID, limit, offset)
+	return pkgs, err
+}
+
+// ─── Vulnerabilities ──────────────────────────────────────────────────────────
+
+// InsertVulnerability inserts a single vulnerability record.
+func (s *Store) InsertVulnerability(ctx context.Context, v *models.Vulnerability) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO vulnerabilities (agent_id, package_name, package_version, cve_id, severity, description, fixed_version, detected_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+		v.AgentID, v.PackageName, v.PackageVersion, v.CveID, v.Severity, v.Description, v.FixedVersion)
+	return err
+}
+
+// QueryVulnerabilities returns vulnerabilities for an agent with pagination.
+func (s *Store) QueryVulnerabilities(ctx context.Context, agentID string, limit, offset int) ([]models.Vulnerability, error) {
+	if limit == 0 {
+		limit = 50
+	}
+	query := `SELECT * FROM vulnerabilities WHERE 1=1`
+	args := []interface{}{}
+	argN := 1
+
+	if agentID != "" {
+		query += fmt.Sprintf(` AND agent_id = $%d`, argN)
+		args = append(args, agentID)
+		argN++
+	}
+
+	query += fmt.Sprintf(` ORDER BY detected_at DESC LIMIT $%d OFFSET $%d`, argN, argN+1)
+	args = append(args, limit, offset)
+
+	var vulns []models.Vulnerability
+	err := s.db.SelectContext(ctx, &vulns, query, args...)
+	return vulns, err
+}
+
+// QueryVulnerabilitiesFiltered returns vulnerabilities with optional agent_id and severity filters.
+func (s *Store) QueryVulnerabilitiesFiltered(ctx context.Context, agentID, severity string, limit, offset int) ([]models.Vulnerability, error) {
+	if limit == 0 {
+		limit = 50
+	}
+	query := `SELECT * FROM vulnerabilities WHERE 1=1`
+	args := []interface{}{}
+	argN := 1
+
+	if agentID != "" {
+		query += fmt.Sprintf(` AND agent_id = $%d`, argN)
+		args = append(args, agentID)
+		argN++
+	}
+	if severity != "" {
+		query += fmt.Sprintf(` AND severity = $%d`, argN)
+		args = append(args, severity)
+		argN++
+	}
+
+	query += fmt.Sprintf(` ORDER BY detected_at DESC LIMIT $%d OFFSET $%d`, argN, argN+1)
+	args = append(args, limit, offset)
+
+	var vulns []models.Vulnerability
+	err := s.db.SelectContext(ctx, &vulns, query, args...)
+	return vulns, err
+}
+
+// GetVulnStats returns vulnerability counts by severity for an agent.
+func (s *Store) GetVulnStats(ctx context.Context, agentID string) (*models.VulnStats, error) {
+	query := `SELECT severity, COUNT(*) FROM vulnerabilities`
+	args := []interface{}{}
+	if agentID != "" {
+		query += ` WHERE agent_id = $1`
+		args = append(args, agentID)
+	}
+	query += ` GROUP BY severity`
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	stats := &models.VulnStats{}
+	for rows.Next() {
+		var sev string
+		var count int64
+		if err := rows.Scan(&sev, &count); err != nil {
+			return nil, err
+		}
+		stats.Total += count
+		switch sev {
+		case "CRITICAL":
+			stats.Critical = count
+		case "HIGH":
+			stats.High = count
+		case "MEDIUM":
+			stats.Medium = count
+		case "LOW":
+			stats.Low = count
+		default:
+			stats.Unknown += count
+		}
+	}
+	return stats, rows.Err()
 }
