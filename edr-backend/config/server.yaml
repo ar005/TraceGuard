@@ -31,6 +31,14 @@ rate_limit:
   requests_per_second: 20   # sustained rate per IP
   burst: 40                  # max burst size per IP
 
+# IOC Feeds: automatically download threat intelligence from public feeds.
+# Feeds: Abuse.ch Feodo Tracker (C2 IPs), URLhaus (malicious domains),
+#         MalwareBazaar (malware hashes), Emerging Threats (compromised IPs).
+# IOCs are matched in real-time against incoming events (IPs, domains, hashes).
+ioc_feed:
+  enabled: true
+  sync_interval: "6h"   # how often to refresh feeds (minimum 1m)
+
 # Retention: auto-delete old data to prevent disk fill.
 # Set to 0 to disable. Alerts are only deleted when CLOSED/RESOLVED.
 retention:

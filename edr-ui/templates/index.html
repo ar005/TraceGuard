@@ -317,6 +317,10 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1" y="2" width="14" height="12" rx="1.5"/><path d="M4 6l3 2.5-3 2.5M9 11h4"/></svg>
       Live
     </div>
+    <div class="nav-tab" id="tb-iocs" onclick="nav('iocs')">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M8 1v14M1 8h14"/><circle cx="8" cy="8" r="6"/><circle cx="8" cy="4" r="1.2" fill="currentColor"/><circle cx="8" cy="12" r="1.2" fill="currentColor"/><circle cx="4" cy="8" r="1.2" fill="currentColor"/><circle cx="12" cy="8" r="1.2" fill="currentColor"/></svg>
+      IOCs
+    </div>
     <div class="nav-tab" id="tb-settings" onclick="nav('settings')">
       <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 10.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z"/><path d="M13.5 8a5.5 5.5 0 01-.08.9l1.34 1.04-1 1.73-1.6-.64a5.5 5.5 0 01-1.56.9l-.24 1.7h-2l-.24-1.7a5.5 5.5 0 01-1.56-.9l-1.6.64-1-1.73L4.58 8.9A5.5 5.5 0 014.5 8a5.5 5.5 0 01.08-.9L3.24 6.06l1-1.73 1.6.64a5.5 5.5 0 011.56-.9L7.64 2.3h2l.24 1.7a5.5 5.5 0 011.56.9l1.6-.64 1 1.73L12.42 7.1c.05.3.08.6.08.9z" stroke="currentColor" stroke-width="1.1" fill="none"/></svg>
       Settings
@@ -853,6 +857,139 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
 
 
 <!-- ── SETTINGS PAGE ── -->
+<!-- ── IOC MANAGEMENT ── -->
+<section id="pg-iocs" class="page">
+  <div class="ph">
+    <div><h1><span class="sl">//</span> IOC MANAGEMENT</h1><p>Indicators of compromise — threat intelligence library</p></div>
+    <div class="ph-r">
+      <button class="btn pri" onclick="openIOCForm()">+ ADD IOC</button>
+      <button class="btn" onclick="loadIOCPage()">↻ REFRESH</button>
+    </div>
+  </div>
+
+  <!-- ── Stats cards ── -->
+  <div class="stats" id="ioc-stats" style="grid-template-columns:repeat(5,1fr)">
+    <div class="stat s-cy"><div class="stat-lbl">TOTAL IOCs</div><div class="stat-val" id="ioc-st-total">–</div></div>
+    <div class="stat s-re"><div class="stat-lbl">IPs</div><div class="stat-val" id="ioc-st-ips">–</div></div>
+    <div class="stat s-or"><div class="stat-lbl">DOMAINS</div><div class="stat-val" id="ioc-st-domains">–</div></div>
+    <div class="stat s-gr"><div class="stat-lbl">HASHES</div><div class="stat-val" id="ioc-st-hashes">–</div></div>
+    <div class="stat"><div class="stat-lbl">TOTAL HITS</div><div class="stat-val" id="ioc-st-hits" style="color:var(--violet)">–</div></div>
+  </div>
+
+  <!-- ── Feed Sources ── -->
+  <div class="card" style="margin-bottom:13px">
+    <div class="ch">
+      <span class="ct">THREAT INTEL FEEDS</span>
+      <div style="display:flex;gap:6px;align-items:center">
+        <div class="pills" style="margin-right:8px">
+          <button class="pill on" onclick="setIOCPeriod('all',this)">ALL</button>
+          <button class="pill" onclick="setIOCPeriod('month',this)">30D</button>
+          <button class="pill" onclick="setIOCPeriod('week',this)">7D</button>
+          <button class="pill" onclick="setIOCPeriod('day',this)">24H</button>
+        </div>
+        <button class="btn suc" onclick="syncAllFeeds()">⚡ SYNC ALL NOW</button>
+      </div>
+    </div>
+    <div style="padding:0">
+      <table><thead><tr>
+        <th>SOURCE</th><th>IPs</th><th>DOMAINS</th><th>HASHES</th><th>TOTAL</th><th>HITS</th><th>LAST UPDATED</th><th></th>
+      </tr></thead>
+      <tbody id="ioc-feed-tbody"><tr><td colspan="8" style="text-align:center;color:var(--muted);padding:24px">Loading…</td></tr></tbody></table>
+    </div>
+  </div>
+
+  <!-- ── Sync results (hidden until sync triggered) ── -->
+  <div class="card" id="ioc-sync-result" style="display:none;margin-bottom:13px">
+    <div class="ch"><span class="ct">SYNC RESULTS</span><button class="btn" onclick="$('ioc-sync-result').style.display='none'">✕</button></div>
+    <div style="padding:0">
+      <table><thead><tr><th>FEED</th><th>TYPE</th><th>PARSED</th><th>UPSERTED</th><th>DURATION</th><th>STATUS</th></tr></thead>
+      <tbody id="ioc-sync-tbody"></tbody></table>
+    </div>
+  </div>
+
+  <!-- ── Add IOC form (hidden) ── -->
+  <div class="card" id="ioc-form" style="display:none;margin-bottom:13px">
+    <div class="ch"><span class="ct" id="ioc-form-title">ADD INDICATOR</span><button class="btn" onclick="$('ioc-form').style.display='none'">✕ CANCEL</button></div>
+    <div style="padding:14px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+      <div>
+        <label style="font-family:var(--mono);font-size:8.5px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;display:block;margin-bottom:4px">TYPE *</label>
+        <select id="ioc-f-type" style="width:100%;padding:7px 10px;background:var(--bg0);border:1px solid var(--line2);color:var(--text);font-family:var(--mono);font-size:10px;border-radius:2px">
+          <option value="ip">IP Address</option>
+          <option value="domain">Domain</option>
+          <option value="hash_sha256">SHA256 Hash</option>
+          <option value="hash_md5">MD5 Hash</option>
+        </select>
+      </div>
+      <div style="grid-column:span 2">
+        <label style="font-family:var(--mono);font-size:8.5px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;display:block;margin-bottom:4px">VALUE *</label>
+        <input id="ioc-f-value" placeholder="e.g. 192.168.1.1, evil.com, sha256..." style="width:100%;padding:7px 10px;background:var(--bg0);border:1px solid var(--line2);color:var(--text);font-family:var(--mono);font-size:10px;border-radius:2px">
+      </div>
+      <div>
+        <label style="font-family:var(--mono);font-size:8.5px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;display:block;margin-bottom:4px">SEVERITY</label>
+        <select id="ioc-f-sev" style="width:100%;padding:7px 10px;background:var(--bg0);border:1px solid var(--line2);color:var(--text);font-family:var(--mono);font-size:10px;border-radius:2px">
+          <option value="1">LOW</option>
+          <option value="2">MEDIUM</option>
+          <option value="3" selected>HIGH</option>
+          <option value="4">CRITICAL</option>
+        </select>
+      </div>
+      <div>
+        <label style="font-family:var(--mono);font-size:8.5px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;display:block;margin-bottom:4px">SOURCE</label>
+        <input id="ioc-f-source" value="manual" style="width:100%;padding:7px 10px;background:var(--bg0);border:1px solid var(--line2);color:var(--text);font-family:var(--mono);font-size:10px;border-radius:2px">
+      </div>
+      <div>
+        <label style="font-family:var(--mono);font-size:8.5px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;display:block;margin-bottom:4px">TAGS (comma-sep)</label>
+        <input id="ioc-f-tags" placeholder="e.g. c2, botnet" style="width:100%;padding:7px 10px;background:var(--bg0);border:1px solid var(--line2);color:var(--text);font-family:var(--mono);font-size:10px;border-radius:2px">
+      </div>
+      <div style="grid-column:span 3">
+        <label style="font-family:var(--mono);font-size:8.5px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;display:block;margin-bottom:4px">DESCRIPTION</label>
+        <input id="ioc-f-desc" placeholder="Why is this indicator malicious?" style="width:100%;padding:7px 10px;background:var(--bg0);border:1px solid var(--line2);color:var(--text);font-family:var(--mono);font-size:10px;border-radius:2px">
+      </div>
+      <div style="grid-column:span 3;display:flex;gap:8px;margin-top:4px">
+        <button class="btn suc" onclick="saveIOC()">✓ SAVE IOC</button>
+        <button class="btn" onclick="$('ioc-form').style.display='none'">CANCEL</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Bulk import ── -->
+  <div class="card" id="ioc-bulk" style="display:none;margin-bottom:13px">
+    <div class="ch"><span class="ct">BULK IMPORT</span><button class="btn" onclick="$('ioc-bulk').style.display='none'">✕ CANCEL</button></div>
+    <div style="padding:14px">
+      <p style="font-size:11px;color:var(--dim);margin-bottom:12px;line-height:1.6">Paste one indicator per line. Auto-detects IPs, domains, and SHA256/MD5 hashes.</p>
+      <textarea id="ioc-bulk-text" rows="8" placeholder="192.168.1.1&#10;evil.com&#10;a1b2c3d4e5f6..." style="width:100%;padding:10px;background:var(--bg0);border:1px solid var(--line2);color:var(--text);font-family:var(--mono);font-size:10px;border-radius:2px;resize:vertical"></textarea>
+      <div style="display:flex;gap:8px;margin-top:10px;align-items:center">
+        <button class="btn suc" onclick="bulkImportIOCs()">⬆ IMPORT</button>
+        <button class="btn" onclick="$('ioc-bulk').style.display='none'">CANCEL</button>
+        <span id="ioc-bulk-status" style="font-family:var(--mono);font-size:9px;color:var(--muted)"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── IOC table ── -->
+  <div class="card">
+    <div class="ch">
+      <span class="ct">ALL INDICATORS</span>
+      <div style="display:flex;gap:6px;align-items:center">
+        <select id="ioc-type-filter" onchange="loadIOCTable()" style="padding:4px 8px;background:var(--bg0);border:1px solid var(--line2);color:var(--text);font-family:var(--mono);font-size:9px;border-radius:2px">
+          <option value="">ALL TYPES</option>
+          <option value="ip">IP</option>
+          <option value="domain">DOMAIN</option>
+          <option value="hash_sha256">SHA256</option>
+          <option value="hash_md5">MD5</option>
+        </select>
+        <button class="btn pri" onclick="$('ioc-bulk').style.display='block'">⬆ BULK IMPORT</button>
+      </div>
+    </div>
+    <div style="padding:0">
+      <table><thead><tr>
+        <th>TYPE</th><th>VALUE</th><th>SEVERITY</th><th>SOURCE</th><th>HITS</th><th>CREATED</th><th></th>
+      </tr></thead>
+      <tbody id="ioc-tbody"><tr><td colspan="7" style="text-align:center;color:var(--muted);padding:24px">Loading…</td></tr></tbody></table>
+    </div>
+  </div>
+</section>
+
 <section id="pg-settings" class="page">
   <div class="ph">
     <span class="pt">SETTINGS</span>
@@ -1203,6 +1340,7 @@ function nav(name){
   if(name==='agents')  loadAgents();
   if(name==='rules')   loadRules();
   if(name==='suppress') loadSuppressions();
+  if(name==='iocs') loadIOCPage();
   if(name==='settings') { loadRetention(); loadLLMSettings(); }
   if(name==='builder'){updatePreview();renderFieldRef();}
   if(name==='incidents') loadIncidents();
@@ -3823,6 +3961,200 @@ async function runLR(){
   }catch(e){
     out.textContent='Error: '+e.message;
     out.style.color='var(--red)';
+  }
+}
+
+// ─── IOC Management ──────────────────────────────────
+let _iocPeriod='all';
+
+function setIOCPeriod(p,el){
+  _iocPeriod=p;
+  el.closest('.pills').querySelectorAll('.pill').forEach(b=>b.classList.remove('on'));
+  el.classList.add('on');
+  loadIOCSources();
+}
+
+async function loadIOCPage(){
+  loadIOCStats();
+  loadIOCSources();
+  loadIOCTable();
+  loadIOCFeeds();
+}
+
+async function loadIOCStats(){
+  try{
+    const d=await api('/api/iocs/stats');
+    $('ioc-st-total').textContent=d.total_iocs||0;
+    $('ioc-st-ips').textContent=d.ip_count||0;
+    $('ioc-st-domains').textContent=d.domain_count||0;
+    $('ioc-st-hashes').textContent=d.hash_count||0;
+    $('ioc-st-hits').textContent=d.total_hits||0;
+  }catch(e){}
+}
+
+async function loadIOCSources(){
+  const tb=$('ioc-feed-tbody');
+  try{
+    const d=await api('/api/iocs/sources?period='+_iocPeriod);
+    const srcs=d.sources||[];
+    tb.innerHTML=srcs.length
+      ? srcs.map(s=>`<tr>
+          <td style="font-family:var(--mono);font-weight:600;color:var(--cyan)">${esc(s.source)}</td>
+          <td>${s.ip_count}</td>
+          <td>${s.domain_count}</td>
+          <td>${s.hash_count}</td>
+          <td style="font-weight:600;color:var(--text)">${s.total}</td>
+          <td>${s.total_hits>0?'<span style="color:var(--red);font-weight:600">'+s.total_hits+'</span>':'0'}</td>
+          <td style="font-family:var(--mono);font-size:9px;color:var(--dim)">${ago(s.last_updated)}</td>
+          <td style="text-align:right">
+            <button class="btn" onclick="syncOneFeed('${esc(s.source)}')">⚡ SYNC</button>
+            <button class="btn dng" onclick="deleteSource('${esc(s.source)}')">✕</button>
+          </td>
+        </tr>`).join('')
+      : '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:24px">NO IOC SOURCES — click SYNC ALL NOW to pull from threat feeds</td></tr>';
+  }catch(e){
+    tb.innerHTML=`<tr><td colspan="8" style="text-align:center;color:var(--red);padding:24px">ERROR: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function loadIOCFeeds(){
+  try{
+    const d=await api('/api/iocs/feeds');
+    // feeds info available for reference if needed
+  }catch(e){}
+}
+
+async function loadIOCTable(){
+  const tb=$('ioc-tbody');
+  tb.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:24px">Loading…</td></tr>';
+  try{
+    let url='/api/iocs?limit=200';
+    const tf=$('ioc-type-filter').value;
+    if(tf) url+='&type='+tf;
+    const d=await api(url);
+    const iocs=d.iocs||[];
+    tb.innerHTML=iocs.length
+      ? iocs.map(i=>`<tr>
+          <td><span style="font-family:var(--mono);font-size:8.5px;padding:2px 6px;border:1px solid var(--line2);border-radius:2px;color:var(--cyan)">${esc(i.type)}</span></td>
+          <td style="font-family:var(--mono);font-size:10px;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(i.value)}">${esc(i.value)}</td>
+          <td>${sev(i.severity)}</td>
+          <td style="font-family:var(--mono);font-size:9px;color:var(--dim)">${esc(i.source||'–')}</td>
+          <td>${i.hit_count>0?'<span style="color:var(--red);font-weight:600">'+i.hit_count+'</span>':'0'}</td>
+          <td style="font-family:var(--mono);font-size:9px;color:var(--dim)">${ago(i.created_at)}</td>
+          <td style="text-align:right"><button class="btn dng" onclick="deleteIOC('${esc(i.id)}')">DEL</button></td>
+        </tr>`).join('')
+      : '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:24px">NO IOCs — add manually or sync from feeds</td></tr>';
+  }catch(e){
+    tb.innerHTML=`<tr><td colspan="7" style="text-align:center;color:var(--red);padding:24px">ERROR: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function openIOCForm(){
+  $('ioc-form-title').textContent='ADD INDICATOR';
+  $('ioc-f-type').value='ip';
+  $('ioc-f-value').value='';
+  $('ioc-f-sev').value='3';
+  $('ioc-f-source').value='manual';
+  $('ioc-f-tags').value='';
+  $('ioc-f-desc').value='';
+  $('ioc-form').style.display='block';
+}
+
+async function saveIOC(){
+  const type=$('ioc-f-type').value;
+  const value=$('ioc-f-value').value.trim();
+  if(!value){toast('Value is required',false);return;}
+  const tags=$('ioc-f-tags').value.split(',').map(t=>t.trim()).filter(Boolean);
+  try{
+    await apiMethod('/api/iocs','POST',{
+      type, value,
+      severity:parseInt($('ioc-f-sev').value),
+      source:$('ioc-f-source').value||'manual',
+      description:$('ioc-f-desc').value,
+      tags
+    });
+    toast('IOC saved');
+    $('ioc-form').style.display='none';
+    loadIOCPage();
+  }catch(e){toast('Save failed: '+e.message,false);}
+}
+
+async function deleteIOC(id){
+  if(!confirm('Delete this IOC?'))return;
+  try{
+    await apiMethod('/api/iocs/'+id,'DELETE');
+    toast('IOC deleted');
+    loadIOCPage();
+  }catch(e){toast('Delete failed: '+e.message,false);}
+}
+
+async function deleteSource(src){
+  if(!confirm('Delete ALL IOCs from source "'+src+'"?'))return;
+  try{
+    const d=await apiMethod('/api/iocs/source/'+encodeURIComponent(src),'DELETE');
+    toast('Deleted '+(d.deleted||0)+' IOCs from '+src);
+    loadIOCPage();
+  }catch(e){toast('Delete failed: '+e.message,false);}
+}
+
+async function syncAllFeeds(){
+  const tb=$('ioc-sync-tbody');
+  $('ioc-sync-result').style.display='block';
+  tb.innerHTML='<tr><td colspan="6" style="text-align:center;color:var(--amber);padding:16px">⏳ Syncing feeds… this may take a few seconds</td></tr>';
+  try{
+    const d=await apiMethod('/api/iocs/feeds/sync','POST',{});
+    const results=d.results||[];
+    tb.innerHTML=results.map(r=>`<tr>
+      <td style="font-family:var(--mono);font-weight:600;color:var(--cyan)">${esc(r.name)}</td>
+      <td style="font-family:var(--mono);font-size:9px;color:var(--dim)">${esc(r.type)}</td>
+      <td>${r.parsed}</td>
+      <td style="font-weight:600;color:var(--text)">${r.upserted}</td>
+      <td style="font-family:var(--mono);font-size:9px;color:var(--dim)">${esc(r.duration)}</td>
+      <td>${r.error?'<span style="color:var(--red)">✕ '+esc(r.error)+'</span>':'<span style="color:var(--green)">✓ OK</span>'}</td>
+    </tr>`).join('');
+    toast('Feed sync complete');
+    loadIOCPage();
+  }catch(e){
+    tb.innerHTML=`<tr><td colspan="6" style="text-align:center;color:var(--red);padding:16px">SYNC FAILED: ${esc(e.message)}</td></tr>`;
+    toast('Sync failed: '+e.message,false);
+  }
+}
+
+async function syncOneFeed(name){
+  try{
+    toast('Syncing '+name+'…');
+    const d=await apiMethod('/api/iocs/feeds/sync','POST',{feed:name});
+    const r=(d.results||[])[0];
+    if(r&&r.error) toast('Sync failed: '+r.error,false);
+    else toast(name+': '+(r?r.upserted:0)+' IOCs synced');
+    loadIOCPage();
+  }catch(e){toast('Sync failed: '+e.message,false);}
+}
+
+async function bulkImportIOCs(){
+  const raw=$('ioc-bulk-text').value.trim();
+  if(!raw){toast('Paste indicators first',false);return;}
+  const lines=raw.split('\n').map(l=>l.trim()).filter(l=>l&&!l.startsWith('#'));
+  const iocs=[];
+  for(const line of lines){
+    const v=line.toLowerCase();
+    let type='domain';
+    if(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(v)) type='ip';
+    else if(/^[a-f0-9]{64}$/.test(v)) type='hash_sha256';
+    else if(/^[a-f0-9]{32}$/.test(v)) type='hash_md5';
+    iocs.push({type,value:v,source:'manual-bulk',severity:3});
+  }
+  $('ioc-bulk-status').textContent='Importing '+iocs.length+' IOCs…';
+  try{
+    const d=await apiMethod('/api/iocs/bulk','POST',{iocs});
+    toast('Imported '+(d.imported||0)+' IOCs');
+    $('ioc-bulk').style.display='none';
+    $('ioc-bulk-text').value='';
+    $('ioc-bulk-status').textContent='';
+    loadIOCPage();
+  }catch(e){
+    $('ioc-bulk-status').textContent='Error: '+e.message;
+    toast('Import failed: '+e.message,false);
   }
 }
 </script>

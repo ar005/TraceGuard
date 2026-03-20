@@ -151,6 +151,45 @@ type VulnStats struct {
 	Total    int64 `json:"total"`
 }
 
+// IOC represents an Indicator of Compromise for threat intelligence matching.
+type IOC struct {
+	ID          string     `db:"id"          json:"id"`
+	Type        string     `db:"type"        json:"type"`        // "ip", "domain", "hash_sha256", "hash_md5"
+	Value       string     `db:"value"       json:"value"`       // the indicator value (normalized lowercase)
+	Source      string     `db:"source"      json:"source"`      // feed name or "manual"
+	Severity    int16      `db:"severity"    json:"severity"`    // 0-4 matching alert severity scale
+	Description string     `db:"description" json:"description"`
+	Tags        pq.StringArray `db:"tags"    json:"tags"`
+	Enabled     bool       `db:"enabled"     json:"enabled"`
+	ExpiresAt   *time.Time `db:"expires_at"  json:"expires_at,omitempty"`
+	CreatedAt   time.Time  `db:"created_at"  json:"created_at"`
+	HitCount    int64      `db:"hit_count"   json:"hit_count"`
+	LastHitAt   *time.Time `db:"last_hit_at" json:"last_hit_at,omitempty"`
+}
+
+// IOCStats holds IOC counts by type.
+type IOCStats struct {
+	TotalIOCs    int64 `db:"total_iocs"    json:"total_iocs"`
+	IPCount      int64 `db:"ip_count"      json:"ip_count"`
+	DomainCount  int64 `db:"domain_count"  json:"domain_count"`
+	HashCount    int64 `db:"hash_count"    json:"hash_count"`
+	EnabledCount int64 `db:"enabled_count" json:"enabled_count"`
+	TotalHits    int64 `db:"total_hits"    json:"total_hits"`
+}
+
+// IOCSourceStats holds per-source IOC statistics.
+type IOCSourceStats struct {
+	Source       string    `db:"source"        json:"source"`
+	Total        int64     `db:"total"         json:"total"`
+	IPCount      int64     `db:"ip_count"      json:"ip_count"`
+	DomainCount  int64     `db:"domain_count"  json:"domain_count"`
+	HashCount    int64     `db:"hash_count"    json:"hash_count"`
+	EnabledCount int64     `db:"enabled_count" json:"enabled_count"`
+	TotalHits    int64     `db:"total_hits"    json:"total_hits"`
+	FirstSeen    time.Time `db:"first_seen"    json:"first_seen"`
+	LastUpdated  time.Time `db:"last_updated"  json:"last_updated"`
+}
+
 // BacktestResult is returned by the rule backtest endpoint.
 type BacktestResult struct {
 	RuleID       string  `json:"rule_id"`

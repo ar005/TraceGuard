@@ -115,7 +115,7 @@ def index():
 
 # ── proxy helper ──────────────────────────────────────────────────────────────
 
-def proxy(path, method="GET", body=None):
+def proxy(path, method="GET", body=None, timeout=10):
     """Forward a request to the backend and stream the response back.
     Uses the persistent connection pool. Skips double JSON parse by
     streaming the raw response body directly."""
@@ -128,7 +128,7 @@ def proxy(path, method="GET", body=None):
             method, url,
             json=body,
             headers=_headers(),
-            timeout=10,
+            timeout=timeout,
             stream=True,          # don't buffer entire response in memory
         )
         if r.status_code == 401:
@@ -197,7 +197,7 @@ def agent(aid):
 
 @app.route("/api/alerts/<aid>/explain", methods=["POST"])
 @login_required
-def alert_explain(aid): return proxy(f"/api/v1/alerts/{aid}/explain", "POST")
+def alert_explain(aid): return proxy(f"/api/v1/alerts/{aid}/explain", "POST", timeout=120)
 
 @app.route("/api/settings/retention", methods=["GET", "POST"])
 @login_required
@@ -214,7 +214,7 @@ def settings_llm():
 @app.route("/api/settings/llm/test", methods=["POST"])
 @login_required
 def settings_llm_test():
-    return proxy("/api/v1/settings/llm/test", "POST", request.get_json())
+    return proxy("/api/v1/settings/llm/test", "POST", request.get_json(), timeout=60)
 
 @app.route("/api/events")
 @login_required
@@ -323,6 +323,47 @@ def agent_vulns(aid): return proxy(f"/api/v1/agents/{aid}/vulnerabilities")
 @app.route("/api/vulnerabilities")
 @login_required
 def vulnerabilities(): return proxy("/api/v1/vulnerabilities")
+
+# IOC / Threat Intelligence proxies
+@app.route("/api/iocs")
+@login_required
+def list_iocs(): return proxy("/api/v1/iocs")
+
+@app.route("/api/iocs/stats")
+@login_required
+def ioc_stats(): return proxy("/api/v1/iocs/stats")
+
+@app.route("/api/iocs/<ioc_id>")
+@login_required
+def get_ioc(ioc_id): return proxy(f"/api/v1/iocs/{ioc_id}")
+
+@app.route("/api/iocs", methods=["POST"])
+@login_required
+def create_ioc(): return proxy("/api/v1/iocs", "POST", request.get_json())
+
+@app.route("/api/iocs/bulk", methods=["POST"])
+@login_required
+def bulk_import_iocs(): return proxy("/api/v1/iocs/bulk", "POST", request.get_json())
+
+@app.route("/api/iocs/<ioc_id>", methods=["DELETE"])
+@login_required
+def delete_ioc(ioc_id): return proxy(f"/api/v1/iocs/{ioc_id}", "DELETE")
+
+@app.route("/api/iocs/feeds")
+@login_required
+def list_feeds(): return proxy("/api/v1/iocs/feeds")
+
+@app.route("/api/iocs/feeds/sync", methods=["POST"])
+@login_required
+def sync_feeds(): return proxy("/api/v1/iocs/feeds/sync", "POST", request.get_json(), timeout=120)
+
+@app.route("/api/iocs/sources")
+@login_required
+def ioc_sources(): return proxy("/api/v1/iocs/sources")
+
+@app.route("/api/iocs/source/<source>", methods=["DELETE"])
+@login_required
+def delete_iocs_by_source(source): return proxy(f"/api/v1/iocs/source/{source}", "DELETE")
 
 if __name__ == "__main__":
     port = int(os.environ.get("EDR_UI_PORT", 5000))

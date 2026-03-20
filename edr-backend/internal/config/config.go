@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
 )
@@ -15,6 +16,7 @@ type Config struct {
 	Auth      AuthConfig      `mapstructure:"auth"`
 	Retention RetentionConfig `mapstructure:"retention"`
 	RateLimit RateLimitConfig `mapstructure:"rate_limit"`
+	IOCFeed   IOCFeedConfig   `mapstructure:"ioc_feed"`
 }
 
 type ServerConfig struct {
@@ -70,6 +72,11 @@ type RateLimitConfig struct {
 	Burst             int     `mapstructure:"burst"`
 }
 
+type IOCFeedConfig struct {
+	Enabled      bool          `mapstructure:"enabled"`
+	SyncInterval time.Duration `mapstructure:"sync_interval"`
+}
+
 func Load(path string) (*Config, error) {
 	v := viper.New()
 
@@ -88,6 +95,8 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("rate_limit.enabled", true)
 	v.SetDefault("rate_limit.requests_per_second", 20)
 	v.SetDefault("rate_limit.burst", 40)
+	v.SetDefault("ioc_feed.enabled", true)
+	v.SetDefault("ioc_feed.sync_interval", 6*time.Hour)
 
 	// Allow env overrides with EDR_ prefix, replacing _ with . for nesting
 	v.SetEnvPrefix("EDR")

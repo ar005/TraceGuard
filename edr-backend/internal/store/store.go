@@ -1143,3 +1143,187 @@ func (s *Store) GetVulnStats(ctx context.Context, agentID string) (*models.VulnS
 	}
 	return stats, rows.Err()
 }
+
+// ─── IOCs (Indicators of Compromise) ──────────────────────────────────────────
+
+func (s *Store) InsertIOC(ctx context.Context, ioc *models.IOC) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO iocs (id, type, value, source, severity, description, tags, enabled, expires_at, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		ON CONFLICT (type, value) DO UPDATE SET
+			source      = EXCLUDED.source,
+			severity    = EXCLUDED.severity,
+			description = EXCLUDED.description,
+			tags        = EXCLUDED.tags,
+			enabled     = EXCLUDED.enabled,
+			expires_at  = EXCLUDED.expires_at
+	`, ioc.ID, ioc.Type, ioc.Value, ioc.Source, ioc.Severity, ioc.Description,
+		pq.Array(coalesceStringSlice(ioc.Tags)), ioc.Enabled, ioc.ExpiresAt, ioc.CreatedAt)
+	return err
+}
+
+func (s *Store) InsertIOCBatch(ctx context.Context, iocs []models.IOC) (int, error) {
+	tx, err := s.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO iocs (id, type, value, source, severity, description, tags, enabled, expires_at, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		ON CONFLICT (type, value) DO UPDATE SET
+			source      = EXCLUDED.source,
+			severity    = EXCLUDED.severity,
+			description = EXCLUDED.description,
+			tags        = EXCLUDED.tags,
+			enabled     = EXCLUDED.enabled,
+			expires_at  = EXCLUDED.expires_at
+	`)
+	if err != nil {
+		return 0, err
+	}
+	defer stmt.Close()
+
+	count := 0
+	for _, ioc := range iocs {
+		_, err := stmt.ExecContext(ctx,
+			ioc.ID, ioc.Type, ioc.Value, ioc.Source, ioc.Severity, ioc.Description,
+			pq.Array(coalesceStringSlice(ioc.Tags)), ioc.Enabled, ioc.ExpiresAt, ioc.CreatedAt)
+		if err != nil {
+			return count, err
+		}
+		count++
+	}
+	return count, tx.Commit()
+}
+
+func (s *Store) ListIOCs(ctx context.Context, iocType, source string, enabledOnly bool, limit, offset int) ([]models.IOC, error) {
+	q := "SELECT * FROM iocs WHERE 1=1"
+	args := []interface{}{}
+	n := 0
+
+	if iocType != "" {
+		n++
+		q += fmt.Sprintf(" AND type=$%d", n)
+		args = append(args, iocType)
+	}
+	if source != "" {
+		n++
+		q += fmt.Sprintf(" AND source=$%d", n)
+		args = append(args, source)
+	}
+	if enabledOnly {
+		q += " AND enabled=TRUE"
+	}
+	q += " ORDER BY created_at DESC"
+	if limit > 0 {
+		n++
+		q += fmt.Sprintf(" LIMIT $%d", n)
+		args = append(args, limit)
+	}
+	if offset > 0 {
+		n++
+		q += fmt.Sprintf(" OFFSET $%d", n)
+		args = append(args, offset)
+	}
+
+	var iocs []models.IOC
+	err := s.db.SelectContext(ctx, &iocs, q, args...)
+	return iocs, err
+}
+
+func (s *Store) GetIOC(ctx context.Context, id string) (*models.IOC, error) {
+	var ioc models.IOC
+	err := s.db.GetContext(ctx, &ioc, `SELECT * FROM iocs WHERE id=$1`, id)
+	return &ioc, err
+}
+
+func (s *Store) DeleteIOC(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM iocs WHERE id=$1`, id)
+	return err
+}
+
+func (s *Store) DeleteIOCsBySource(ctx context.Context, source string) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM iocs WHERE source=$1`, source)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// LookupIOC checks if a value exists as an enabled, non-expired IOC of the given type.
+func (s *Store) LookupIOC(ctx context.Context, iocType, value string) (*models.IOC, error) {
+	var ioc models.IOC
+	err := s.db.GetContext(ctx, &ioc, `
+		SELECT * FROM iocs
+		WHERE type=$1 AND value=$2 AND enabled=TRUE
+		  AND (expires_at IS NULL OR expires_at > NOW())
+	`, iocType, value)
+	if err != nil {
+		return nil, err
+	}
+	return &ioc, nil
+}
+
+// LoadActiveIOCs returns all enabled, non-expired IOCs of a given type, keyed by value.
+func (s *Store) LoadActiveIOCs(ctx context.Context, iocType string) (map[string]*models.IOC, error) {
+	var iocs []models.IOC
+	err := s.db.SelectContext(ctx, &iocs, `
+		SELECT * FROM iocs
+		WHERE type=$1 AND enabled=TRUE
+		  AND (expires_at IS NULL OR expires_at > NOW())
+	`, iocType)
+	if err != nil {
+		return nil, err
+	}
+	m := make(map[string]*models.IOC, len(iocs))
+	for i := range iocs {
+		m[iocs[i].Value] = &iocs[i]
+	}
+	return m, nil
+}
+
+// IncrIOCHits increments the hit count and updates last_hit_at for an IOC.
+func (s *Store) IncrIOCHits(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE iocs SET hit_count = hit_count + 1, last_hit_at = NOW() WHERE id=$1`, id)
+	return err
+}
+
+// IOCStatsBySource returns IOC counts grouped by source, optionally filtered by time range.
+func (s *Store) IOCStatsBySource(ctx context.Context, since time.Time) ([]models.IOCSourceStats, error) {
+	q := `
+		SELECT source,
+			COUNT(*) AS total,
+			COUNT(*) FILTER (WHERE type='ip') AS ip_count,
+			COUNT(*) FILTER (WHERE type='domain') AS domain_count,
+			COUNT(*) FILTER (WHERE type IN ('hash_sha256','hash_md5')) AS hash_count,
+			COUNT(*) FILTER (WHERE enabled=TRUE) AS enabled_count,
+			COALESCE(SUM(hit_count), 0) AS total_hits,
+			MIN(created_at) AS first_seen,
+			MAX(created_at) AS last_updated
+		FROM iocs
+		WHERE created_at >= $1
+		GROUP BY source
+		ORDER BY total DESC
+	`
+	var stats []models.IOCSourceStats
+	err := s.db.SelectContext(ctx, &stats, q, since)
+	return stats, err
+}
+
+func (s *Store) IOCStats(ctx context.Context) (*models.IOCStats, error) {
+	var stats models.IOCStats
+	err := s.db.GetContext(ctx, &stats, `
+		SELECT
+			COUNT(*)                                       AS total_iocs,
+			COUNT(*) FILTER (WHERE type='ip')              AS ip_count,
+			COUNT(*) FILTER (WHERE type='domain')          AS domain_count,
+			COUNT(*) FILTER (WHERE type IN ('hash_sha256','hash_md5')) AS hash_count,
+			COUNT(*) FILTER (WHERE enabled=TRUE)           AS enabled_count,
+			COALESCE(SUM(hit_count), 0)                    AS total_hits
+		FROM iocs
+	`)
+	return &stats, err
+}

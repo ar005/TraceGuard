@@ -25,6 +25,7 @@ import (
 	"github.com/youredr/edr-backend/internal/sse"
 	"github.com/youredr/edr-backend/internal/audit"
 	"github.com/youredr/edr-backend/internal/detection"
+	"github.com/youredr/edr-backend/internal/iocfeed"
 	"github.com/youredr/edr-backend/internal/migrate"
 	"github.com/youredr/edr-backend/internal/models"
 	"github.com/youredr/edr-backend/internal/store"
@@ -40,6 +41,7 @@ type Server struct {
 	al       *audit.Logger
 	llm      *llm.Client
 	lr       *liveresponse.Manager
+	iocSync  *iocfeed.Syncer
 	sse      *sse.Broker
 	log      zerolog.Logger
 	router   *gin.Engine
@@ -51,7 +53,7 @@ type Server struct {
 // New creates the API server and registers all routes.
 func New(st *store.Store, eng *detection.Engine, km *apikeys.Manager,
 	um *users.Manager, al *audit.Logger,
-	lc *llm.Client, lr *liveresponse.Manager, sb *sse.Broker,
+	lc *llm.Client, lr *liveresponse.Manager, is *iocfeed.Syncer, sb *sse.Broker,
 	log zerolog.Logger, apiKey string, rlCfg ...RateLimitConfig) *Server {
 
 	gin.SetMode(gin.ReleaseMode)
@@ -74,6 +76,7 @@ func New(st *store.Store, eng *detection.Engine, km *apikeys.Manager,
 		al:        al,
 		llm:       lc,
 		lr:        lr,
+		iocSync:   is,
 		sse:       sb,
 		log:       log.With().Str("component", "api").Logger(),
 		router:    r,
@@ -172,6 +175,18 @@ func (s *Server) registerRoutes() {
 		v1.GET("/agents/:id/packages",        s.handleListAgentPackages)
 		v1.GET("/agents/:id/vulnerabilities", s.handleListAgentVulns)
 		v1.GET("/vulnerabilities",            s.handleListVulnerabilities)
+
+		// IOC / Threat Intelligence
+		v1.GET("/iocs",           s.handleListIOCs)
+		v1.GET("/iocs/stats",     s.handleIOCStats)
+		v1.GET("/iocs/:id",       s.handleGetIOC)
+		v1.POST("/iocs",          s.handleCreateIOC)
+		v1.POST("/iocs/bulk",     s.handleBulkImportIOCs)
+		v1.DELETE("/iocs/:id",    s.handleDeleteIOC)
+		v1.DELETE("/iocs/source/:source", s.handleDeleteIOCsBySource)
+		v1.GET("/iocs/feeds",            s.handleListFeeds)
+		v1.POST("/iocs/feeds/sync",      s.handleSyncFeeds)
+		v1.GET("/iocs/sources",          s.handleIOCSourceStats)
 
 		// Threat Hunting
 		v1.POST("/hunt", s.handleHunt)
@@ -1765,4 +1780,248 @@ func (s *Server) handleListVulnerabilities(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"vulnerabilities": vulns, "total": len(vulns)})
+}
+
+// ─── IOC Handlers ─────────────────────────────────────────────────────────────
+
+// GET /api/v1/iocs
+func (s *Server) handleListIOCs(c *gin.Context) {
+	iocType := c.Query("type")
+	source := c.Query("source")
+	enabledOnly := c.Query("enabled") == "true"
+	limit := intQuery(c, "limit", 100)
+	offset := intQuery(c, "offset", 0)
+
+	iocs, err := s.store.ListIOCs(c.Request.Context(), iocType, source, enabledOnly, limit, offset)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"iocs": iocs, "total": len(iocs)})
+}
+
+// GET /api/v1/iocs/stats
+func (s *Server) handleIOCStats(c *gin.Context) {
+	stats, err := s.store.IOCStats(c.Request.Context())
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, stats)
+}
+
+// GET /api/v1/iocs/:id
+func (s *Server) handleGetIOC(c *gin.Context) {
+	id := c.Param("id")
+	ioc, err := s.store.GetIOC(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "IOC not found"})
+		return
+	}
+	c.JSON(http.StatusOK, ioc)
+}
+
+// POST /api/v1/iocs
+func (s *Server) handleCreateIOC(c *gin.Context) {
+	var req struct {
+		Type        string   `json:"type" binding:"required"`
+		Value       string   `json:"value" binding:"required"`
+		Source      string   `json:"source"`
+		Severity    int16    `json:"severity"`
+		Description string   `json:"description"`
+		Tags        []string `json:"tags"`
+		ExpiresAt   *time.Time `json:"expires_at"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Validate IOC type.
+	validTypes := map[string]bool{"ip": true, "domain": true, "hash_sha256": true, "hash_md5": true}
+	if !validTypes[req.Type] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid IOC type; must be ip, domain, hash_sha256, or hash_md5"})
+		return
+	}
+
+	source := req.Source
+	if source == "" {
+		source = "manual"
+	}
+	sev := req.Severity
+	if sev == 0 {
+		sev = 3 // HIGH by default
+	}
+
+	ioc := &models.IOC{
+		ID:          "ioc-" + uuid.New().String(),
+		Type:        req.Type,
+		Value:       strings.ToLower(strings.TrimSpace(req.Value)),
+		Source:      source,
+		Severity:    sev,
+		Description: req.Description,
+		Tags:        req.Tags,
+		Enabled:     true,
+		ExpiresAt:   req.ExpiresAt,
+		CreatedAt:   time.Now(),
+	}
+
+	if err := s.store.InsertIOC(c.Request.Context(), ioc); err != nil {
+		s.jsonError(c, err)
+		return
+	}
+
+	actorID, actorName := currentUser(c)
+	s.al.Log(c.Request.Context(), actorID, actorName, "ioc_create", "ioc", ioc.ID, ioc.Value, c.ClientIP(), fmt.Sprintf("type=%s source=%s", ioc.Type, ioc.Source))
+	c.JSON(http.StatusCreated, ioc)
+}
+
+// POST /api/v1/iocs/bulk
+func (s *Server) handleBulkImportIOCs(c *gin.Context) {
+	var req struct {
+		IOCs []struct {
+			Type        string     `json:"type" binding:"required"`
+			Value       string     `json:"value" binding:"required"`
+			Source      string     `json:"source"`
+			Severity    int16      `json:"severity"`
+			Description string     `json:"description"`
+			Tags        []string   `json:"tags"`
+			ExpiresAt   *time.Time `json:"expires_at"`
+		} `json:"iocs" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if len(req.IOCs) > 10000 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "maximum 10000 IOCs per batch"})
+		return
+	}
+
+	validTypes := map[string]bool{"ip": true, "domain": true, "hash_sha256": true, "hash_md5": true}
+	iocs := make([]models.IOC, 0, len(req.IOCs))
+	for _, r := range req.IOCs {
+		if !validTypes[r.Type] {
+			continue
+		}
+		source := r.Source
+		if source == "" {
+			source = "manual"
+		}
+		sev := r.Severity
+		if sev == 0 {
+			sev = 3
+		}
+		iocs = append(iocs, models.IOC{
+			ID:          "ioc-" + uuid.New().String(),
+			Type:        r.Type,
+			Value:       strings.ToLower(strings.TrimSpace(r.Value)),
+			Source:      source,
+			Severity:    sev,
+			Description: r.Description,
+			Tags:        r.Tags,
+			Enabled:     true,
+			ExpiresAt:   r.ExpiresAt,
+			CreatedAt:   time.Now(),
+		})
+	}
+
+	count, err := s.store.InsertIOCBatch(c.Request.Context(), iocs)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+
+	actorID, actorName := currentUser(c)
+	s.al.Log(c.Request.Context(), actorID, actorName, "ioc_bulk_import", "iocs", "", "", c.ClientIP(), fmt.Sprintf("imported %d IOCs", count))
+	c.JSON(http.StatusOK, gin.H{"imported": count, "total_submitted": len(req.IOCs)})
+}
+
+// DELETE /api/v1/iocs/:id
+func (s *Server) handleDeleteIOC(c *gin.Context) {
+	id := c.Param("id")
+	if err := s.store.DeleteIOC(c.Request.Context(), id); err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	actorID, actorName := currentUser(c)
+	s.al.Log(c.Request.Context(), actorID, actorName, "ioc_delete", "ioc", id, "", c.ClientIP(), "")
+	c.JSON(http.StatusOK, gin.H{"deleted": true})
+}
+
+// GET /api/v1/iocs/feeds
+func (s *Server) handleListFeeds(c *gin.Context) {
+	if s.iocSync == nil {
+		c.JSON(http.StatusOK, gin.H{"feeds": []interface{}{}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"feeds": s.iocSync.ListFeeds()})
+}
+
+// POST /api/v1/iocs/feeds/sync — trigger immediate sync of all feeds (or one by name)
+func (s *Server) handleSyncFeeds(c *gin.Context) {
+	if s.iocSync == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "IOC feed syncer not configured"})
+		return
+	}
+	var req struct {
+		Feed string `json:"feed"` // optional: sync only this feed
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	ctx := c.Request.Context()
+	if req.Feed != "" {
+		result, err := s.iocSync.SyncFeedByName(ctx, req.Feed)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"results": []interface{}{result}})
+		return
+	}
+
+	results := s.iocSync.SyncAllNow(ctx)
+	c.JSON(http.StatusOK, gin.H{"results": results})
+}
+
+// GET /api/v1/iocs/sources — IOC counts grouped by source with time filter
+func (s *Server) handleIOCSourceStats(c *gin.Context) {
+	period := c.DefaultQuery("period", "all")
+	var since time.Time
+	switch period {
+	case "day":
+		since = time.Now().AddDate(0, 0, -1)
+	case "week":
+		since = time.Now().AddDate(0, 0, -7)
+	case "month":
+		since = time.Now().AddDate(0, -1, 0)
+	default:
+		since = time.Time{} // epoch — all data
+	}
+
+	stats, err := s.store.IOCStatsBySource(c.Request.Context(), since)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	overall, err := s.store.IOCStats(c.Request.Context())
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"sources": stats, "overall": overall, "period": period})
+}
+
+// DELETE /api/v1/iocs/source/:source
+func (s *Server) handleDeleteIOCsBySource(c *gin.Context) {
+	source := c.Param("source")
+	count, err := s.store.DeleteIOCsBySource(c.Request.Context(), source)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	actorID, actorName := currentUser(c)
+	s.al.Log(c.Request.Context(), actorID, actorName, "ioc_delete_source", "iocs", source, "", c.ClientIP(), fmt.Sprintf("deleted %d IOCs", count))
+	c.JSON(http.StatusOK, gin.H{"deleted": count, "source": source})
 }

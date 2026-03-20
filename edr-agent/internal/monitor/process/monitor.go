@@ -182,8 +182,11 @@ type Monitor struct {
 	treeMu sync.RWMutex
 	tree   map[uint32]*types.ProcessContext
 
-	// Start times for computing exit duration: pid → start ns
+	// Start times for computing exit duration: pid → start ns (monotonic boot time)
 	startNs map[uint32]uint64
+
+	// Wall-clock start times for exit duration when boot-time unavailable
+	startWall map[uint32]time.Time
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -192,12 +195,13 @@ type Monitor struct {
 // New creates a new process Monitor. Call Start() to begin monitoring.
 func New(cfg Config, bus events.Bus, logger zerolog.Logger) *Monitor {
 	return &Monitor{
-		cfg:     cfg,
-		bus:     bus,
-		logger:  logger.With().Str("monitor", "process").Logger(),
-		tree:    make(map[uint32]*types.ProcessContext),
-		startNs: make(map[uint32]uint64),
-		stopCh:  make(chan struct{}),
+		cfg:       cfg,
+		bus:       bus,
+		logger:    logger.With().Str("monitor", "process").Logger(),
+		tree:      make(map[uint32]*types.ProcessContext),
+		startNs:   make(map[uint32]uint64),
+		startWall: make(map[uint32]time.Time),
+		stopCh:    make(chan struct{}),
 	}
 }
 
@@ -235,6 +239,12 @@ func (m *Monitor) Start(ctx context.Context) error {
 	// Start event reader goroutine.
 	m.wg.Add(1)
 	go m.readLoop(ctx)
+
+	// Start process exit watcher — polls /proc to detect exited processes.
+	// The eBPF sched_process_exit tracepoint was removed due to verifier
+	// issues; this goroutine synthesizes PROCESS_EXIT events instead.
+	m.wg.Add(1)
+	go m.procExitWatcher(ctx)
 
 	return nil
 }
@@ -389,6 +399,7 @@ func (m *Monitor) handleExecEvent(raw []byte) error {
 	m.treeMu.Lock()
 	m.tree[r.PID] = &proc
 	m.startNs[r.PID] = r.TimestampNs
+	m.startWall[r.PID] = ts
 	m.treeMu.Unlock()
 
 	ev := &types.ProcessExecEvent{
@@ -434,6 +445,7 @@ func (m *Monitor) handleExitEvent(raw []byte) error {
 	startNs := m.startNs[r.PID]
 	delete(m.tree, r.PID)
 	delete(m.startNs, r.PID)
+	delete(m.startWall, r.PID)
 	m.treeMu.Unlock()
 
 	var procCtx types.ProcessContext
@@ -735,13 +747,114 @@ func (m *Monitor) snapshotProcFS() {
 		if err != nil {
 			continue
 		}
-		proc := m.buildProcessContextFromProc(uint32(pid))
+		p := uint32(pid)
+		proc := m.buildProcessContextFromProc(p)
 		m.treeMu.Lock()
-		m.tree[uint32(pid)] = &proc
+		m.tree[p] = &proc
+		if !proc.StartTime.IsZero() {
+			m.startWall[p] = proc.StartTime
+		} else {
+			m.startWall[p] = time.Now()
+		}
 		m.treeMu.Unlock()
 		count++
 	}
 	m.logger.Info().Int("processes", count).Msg("process tree snapshot complete")
+}
+
+// ─── Process exit watcher ─────────────────────────────────────────────────────
+// Polls /proc every 2 seconds to detect processes that have exited.
+// For each tracked PID whose /proc/<pid> directory has disappeared, synthesizes
+// a PROCESS_EXIT event using the cached ProcessContext and start time.
+
+func (m *Monitor) procExitWatcher(ctx context.Context) {
+	defer m.wg.Done()
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-m.stopCh:
+			return
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.checkForExitedProcesses()
+		}
+	}
+}
+
+func (m *Monitor) checkForExitedProcesses() {
+	now := time.Now()
+
+	// Snapshot tracked PIDs under read lock.
+	m.treeMu.RLock()
+	pids := make([]uint32, 0, len(m.tree))
+	for pid := range m.tree {
+		pids = append(pids, pid)
+	}
+	m.treeMu.RUnlock()
+
+	for _, pid := range pids {
+		// Check if /proc/<pid> still exists.
+		statPath := fmt.Sprintf("/proc/%d/stat", pid)
+		if _, err := os.Stat(statPath); err == nil {
+			continue // still alive
+		}
+
+		// Process has exited — grab cached context and clean up.
+		m.treeMu.Lock()
+		proc, ok := m.tree[pid]
+		wall := m.startWall[pid]
+		delete(m.tree, pid)
+		delete(m.startNs, pid)
+		delete(m.startWall, pid)
+		m.treeMu.Unlock()
+
+		if !ok || proc == nil {
+			continue
+		}
+
+		var duration time.Duration
+		if !wall.IsZero() {
+			duration = now.Sub(wall)
+		}
+
+		// Assess severity: short-lived processes from suspicious parents are interesting.
+		sev := types.SeverityInfo
+		var tags []string
+		if duration > 0 && duration < 2*time.Second {
+			tags = append(tags, "short_lived")
+		}
+		// Processes killed by signal (we can't know the signal from polling,
+		// but we tag it as polled_exit for forensic context).
+		tags = append(tags, "polled_exit")
+
+		ev := &types.ProcessExitEvent{
+			BaseEvent: types.BaseEvent{
+				ID:        utils.NewEventID(),
+				Type:      types.EventProcessExit,
+				Timestamp: now,
+				AgentID:   m.bus.AgentID(),
+				Hostname:  m.bus.Hostname(),
+				Severity:  sev,
+				Process:   *proc,
+				Tags:      tags,
+			},
+			ExitCode: -1, // unknown — process already gone
+			Duration: duration,
+		}
+
+		m.bus.Publish(ev)
+
+		m.logger.Debug().
+			Uint32("pid", pid).
+			Str("comm", proc.Comm).
+			Str("exe", proc.ExePath).
+			Dur("duration", duration).
+			Msg("PROCESS_EXIT (polled)")
+	}
 }
 
 // ─── Severity + tagging ───────────────────────────────────────────────────────

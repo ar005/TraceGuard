@@ -26,6 +26,7 @@ import (
 	"github.com/youredr/edr-backend/internal/db"
 	"github.com/youredr/edr-backend/internal/detection"
 	"github.com/youredr/edr-backend/internal/ingest"
+	"github.com/youredr/edr-backend/internal/iocfeed"
 	"github.com/youredr/edr-backend/internal/liveresponse"
 	"github.com/youredr/edr-backend/internal/models"
 	"github.com/youredr/edr-backend/internal/store"
@@ -221,7 +222,14 @@ func main() {
 		logger.Info().Msg("AI not configured (configure via Settings page or OLLAMA_ENABLED env var)")
 	}
 
-	apiServer := api.New(st, engine, km, um, al, llmClient, lrManager, sseBroker, logger, cfg.Auth.APIKey,
+	// ── IOC Feed Syncer ──────────────────────────────────────────────────────
+	iocSyncer := iocfeed.New(st, logger, iocfeed.Config{
+		Enabled:      cfg.IOCFeed.Enabled,
+		SyncInterval: cfg.IOCFeed.SyncInterval,
+	})
+	go iocSyncer.Start(context.Background())
+
+	apiServer := api.New(st, engine, km, um, al, llmClient, lrManager, iocSyncer, sseBroker, logger, cfg.Auth.APIKey,
 		api.RateLimitConfig{
 			Enabled:           cfg.RateLimit.Enabled,
 			RequestsPerSecond: cfg.RateLimit.RequestsPerSecond,

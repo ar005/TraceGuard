@@ -49,16 +49,26 @@ type Engine struct {
 	// doing window arithmetic.
 	winMu   sync.Mutex
 	windows map[windowKey][]time.Time
+
+	// IOC caches — loaded periodically from the database.
+	// Each map is value → *IOC for O(1) lookup on every event.
+	iocMu      sync.RWMutex
+	iocIPs     map[string]*models.IOC
+	iocDomains map[string]*models.IOC
+	iocHashes  map[string]*models.IOC // SHA256 and MD5 combined
 }
 
 // New creates a detection Engine. Call Reload() to load rules from DB.
 func New(st *store.Store, log zerolog.Logger, onAlert AlertCallback) *Engine {
 	e := &Engine{
-		store:   st,
-		log:     log.With().Str("component", "detection").Logger(),
-		onAlert: onAlert,
-		reCache: map[string]*regexp.Regexp{},
-		windows: make(map[windowKey][]time.Time),
+		store:      st,
+		log:        log.With().Str("component", "detection").Logger(),
+		onAlert:    onAlert,
+		reCache:    map[string]*regexp.Regexp{},
+		windows:    make(map[windowKey][]time.Time),
+		iocIPs:     make(map[string]*models.IOC),
+		iocDomains: make(map[string]*models.IOC),
+		iocHashes:  make(map[string]*models.IOC),
 	}
 	// Prune stale windows every 5 minutes to prevent unbounded memory growth.
 	go func() {
@@ -66,6 +76,16 @@ func New(st *store.Store, log zerolog.Logger, onAlert AlertCallback) *Engine {
 		defer t.Stop()
 		for range t.C {
 			e.pruneAllWindows()
+		}
+	}()
+	// Refresh IOC cache every 60 seconds.
+	go func() {
+		// Initial load.
+		e.reloadIOCs()
+		t := time.NewTicker(60 * time.Second)
+		defer t.Stop()
+		for range t.C {
+			e.reloadIOCs()
 		}
 	}()
 	return e
@@ -115,6 +135,9 @@ func (e *Engine) Evaluate(ctx context.Context, ev *models.Event) {
 			return
 		}
 	}
+
+	// Check IOC matches (IP, domain, hash).
+	e.checkIOCs(ctx, ev, payload)
 
 	// Evaluate detection rules.
 	for i := range rules {
@@ -368,6 +391,141 @@ func (e *Engine) fireAlertWithContext(ctx context.Context, ev *models.Event, rul
 		Msg("rule fired — new alert")
 
 	if e.onAlert != nil { e.onAlert(ctx, alert) }
+}
+
+// ─── IOC matching ─────────────────────────────────────────────────────────────
+
+// reloadIOCs refreshes the in-memory IOC caches from the database.
+func (e *Engine) reloadIOCs() {
+	ctx := context.Background()
+	ips, err := e.store.LoadActiveIOCs(ctx, "ip")
+	if err != nil {
+		e.log.Warn().Err(err).Msg("failed to load IP IOCs")
+		ips = map[string]*models.IOC{}
+	}
+	domains, err := e.store.LoadActiveIOCs(ctx, "domain")
+	if err != nil {
+		e.log.Warn().Err(err).Msg("failed to load domain IOCs")
+		domains = map[string]*models.IOC{}
+	}
+	sha256, err := e.store.LoadActiveIOCs(ctx, "hash_sha256")
+	if err != nil {
+		e.log.Warn().Err(err).Msg("failed to load hash_sha256 IOCs")
+		sha256 = map[string]*models.IOC{}
+	}
+	md5, err := e.store.LoadActiveIOCs(ctx, "hash_md5")
+	if err != nil {
+		e.log.Warn().Err(err).Msg("failed to load hash_md5 IOCs")
+		md5 = map[string]*models.IOC{}
+	}
+	// Merge MD5 hashes into the same map.
+	hashes := sha256
+	for k, v := range md5 {
+		hashes[k] = v
+	}
+
+	e.iocMu.Lock()
+	e.iocIPs = ips
+	e.iocDomains = domains
+	e.iocHashes = hashes
+	e.iocMu.Unlock()
+
+	total := len(ips) + len(domains) + len(hashes)
+	if total > 0 {
+		e.log.Info().
+			Int("ips", len(ips)).Int("domains", len(domains)).Int("hashes", len(hashes)).
+			Msg("IOC cache refreshed")
+	}
+}
+
+// checkIOCs matches an event against the IOC cache and fires alerts for hits.
+func (e *Engine) checkIOCs(ctx context.Context, ev *models.Event, payload map[string]interface{}) {
+	e.iocMu.RLock()
+	ips := e.iocIPs
+	domains := e.iocDomains
+	hashes := e.iocHashes
+	e.iocMu.RUnlock()
+
+	// Skip if no IOCs loaded.
+	if len(ips) == 0 && len(domains) == 0 && len(hashes) == 0 {
+		return
+	}
+
+	// Check IP IOCs against network events.
+	if len(ips) > 0 {
+		for _, field := range []string{"dst_ip", "src_ip"} {
+			if v, ok := payload[field]; ok {
+				ip := strings.ToLower(fmt.Sprintf("%v", v))
+				if ioc, hit := ips[ip]; hit {
+					e.fireIOCAlert(ctx, ev, ioc, field, ip)
+				}
+			}
+		}
+	}
+
+	// Check domain IOCs against DNS events.
+	if len(domains) > 0 {
+		for _, field := range []string{"dns_query", "resolved_domain", "query"} {
+			if v, ok := payload[field]; ok {
+				domain := strings.ToLower(fmt.Sprintf("%v", v))
+				if ioc, hit := domains[domain]; hit {
+					e.fireIOCAlert(ctx, ev, ioc, field, domain)
+				}
+			}
+		}
+	}
+
+	// Check hash IOCs against file and process exec events.
+	if len(hashes) > 0 {
+		for _, field := range []string{"exe_hash", "hash_after", "hash_before"} {
+			if v, ok := payload[field]; ok {
+				hash := strings.ToLower(fmt.Sprintf("%v", v))
+				if hash == "" {
+					continue
+				}
+				if ioc, hit := hashes[hash]; hit {
+					e.fireIOCAlert(ctx, ev, ioc, field, hash)
+				}
+			}
+		}
+	}
+}
+
+// fireIOCAlert creates an alert when an event matches an IOC.
+func (e *Engine) fireIOCAlert(ctx context.Context, ev *models.Event, ioc *models.IOC, field, value string) {
+	// Deduplication: check for existing open alert for this IOC + agent.
+	ruleID := "ioc-" + ioc.ID
+	existing, err := e.store.FindOpenAlert(ctx, ruleID, ev.AgentID, dedupeWindow)
+	if err == nil && existing != nil {
+		go func() { _ = e.store.BumpAlert(context.Background(), existing.ID, ev.ID) }()
+		go func() { _ = e.store.IncrIOCHits(context.Background(), ioc.ID) }()
+		return
+	}
+
+	alertID := "alert-" + uuid.New().String()
+	title := fmt.Sprintf("IOC Match: %s %s", ioc.Type, ioc.Value)
+	desc := fmt.Sprintf("Event field %q matched %s IOC %q (source: %s). %s",
+		field, ioc.Type, ioc.Value, ioc.Source, ioc.Description)
+
+	alert := &models.Alert{
+		ID: alertID, Title: title, Description: desc,
+		Severity: ioc.Severity, Status: "OPEN",
+		RuleID: ruleID, RuleName: title,
+		MitreIDs: []string{}, EventIDs: []string{ev.ID},
+		AgentID: ev.AgentID, Hostname: ev.Hostname,
+		FirstSeen: time.Now(), LastSeen: time.Now(),
+	}
+
+	e.log.Warn().
+		Str("ioc_type", ioc.Type).Str("ioc_value", ioc.Value).
+		Str("field", field).Str("event_id", ev.ID).
+		Str("agent", ev.Hostname).
+		Msg("IOC match — alert fired")
+
+	go func() { _ = e.store.IncrIOCHits(context.Background(), ioc.ID) }()
+	if e.onAlert != nil {
+		e.onAlert(ctx, alert)
+	}
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

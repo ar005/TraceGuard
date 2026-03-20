@@ -494,6 +494,30 @@ var migrations = []struct {
 		CREATE INDEX IF NOT EXISTS vulns_severity_idx ON vulnerabilities(severity);
 		`,
 	},
+	{
+		name: "create_iocs",
+		sql: `
+		CREATE TABLE IF NOT EXISTS iocs (
+			id           TEXT PRIMARY KEY,
+			type         TEXT NOT NULL,
+			value        TEXT NOT NULL,
+			source       TEXT NOT NULL DEFAULT 'manual',
+			severity     SMALLINT NOT NULL DEFAULT 3,
+			description  TEXT NOT NULL DEFAULT '',
+			tags         TEXT[] NOT NULL DEFAULT '{}',
+			enabled      BOOLEAN NOT NULL DEFAULT TRUE,
+			expires_at   TIMESTAMPTZ,
+			created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			hit_count    BIGINT NOT NULL DEFAULT 0,
+			last_hit_at  TIMESTAMPTZ
+		);
+		CREATE UNIQUE INDEX IF NOT EXISTS iocs_type_value_idx ON iocs(type, value);
+		CREATE INDEX IF NOT EXISTS iocs_type_idx     ON iocs(type);
+		CREATE INDEX IF NOT EXISTS iocs_enabled_idx  ON iocs(enabled);
+		CREATE INDEX IF NOT EXISTS iocs_source_idx   ON iocs(source);
+		CREATE INDEX IF NOT EXISTS iocs_value_idx    ON iocs(value);
+		`,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.
