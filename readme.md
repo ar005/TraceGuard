@@ -504,7 +504,7 @@ See [TODO.md](TODO.md) for the full improvement roadmap. Completed items:
 - [x] Container/Kubernetes awareness (cgroup parsing, process enrichment)
 - [x] Advanced threat hunting query language (SQL-like, with safety validation)
 
-Next priorities: HTTPS, IOC feed integration, SIEM/webhook export, Prometheus metrics.
+Next priorities: HTTPS, SIEM/webhook export, Prometheus metrics.
 
 ---
 
@@ -512,4 +512,3 @@ Next priorities: HTTPS, IOC feed integration, SIEM/webhook export, Prometheus me
 
 - [TODO.md](TODO.md) — Full improvement roadmap
 - [query-guide.md](query-guide.md) — Threat hunting query language reference
-- [comparison.md](comparison.md) — Feature comparison with MDE, CrowdStrike, SentinelOne, Elastic, Wazuh
