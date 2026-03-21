@@ -3,3 +3,154 @@ venv/*
 venv*
 .env
 __pycache__
+
+
+# =========================
+# General
+# =========================
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+.env
+.env.*
+
+# =========================
+# Node.js / React / Next.js
+# =========================
+node_modules/
+.next/
+out/
+build/
+dist/
+coverage/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Next.js specific
+.next/
+.vercel/
+
+# =========================
+# Python / Flask
+# =========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+pip-wheel-metadata/
+venv/
+.env/
+.venv/
+ENV/
+env/
+.python-version
+
+# Flask
+instance/
+.webassets-cache
+
+# Testing / coverage
+.coverage
+.coverage.*
+.cache/
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# =========================
+# Go
+# =========================
+bin/
+pkg/
+*.test
+*.out
+go.sum
+
+# =========================
+# C / C++
+# =========================
+*.o
+*.obj
+*.so
+*.a
+*.out
+*.exe
+*.dll
+*.dylib
+*.lib
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# Autotools
+aclocal.m4
+autom4te.cache/
+configure
+config.log
+config.status
+libtool
+m4/
+
+# =========================
+# eBPF / Kernel builds
+# =========================
+*.bc
+*.ll
+*.elf
+*.map
+*.lst
+
+# BPF build artifacts
+*.bpf.o
+*.bpf.c
+*.skel.h
+
+# =========================
+# Logs & runtime files
+# =========================
+logs/
+*.log
+
+# =========================
+# OS generated files
+# =========================
+ehthumbs.db
+Desktop.ini
+
+# =========================
+# Misc
+# =========================
+*.pid
+*.seed
+*.pid.lock
+
+# =========================
+# Optional (comment if needed)
+# =========================
+# Ignore lock files (not recommended for production apps)
+# package-lock.json
+# yarn.lock
+# pnpm-lock.yaml

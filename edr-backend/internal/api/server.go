@@ -59,6 +59,7 @@ func New(st *store.Store, eng *detection.Engine, km *apikeys.Manager,
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(ginLogger(log), gin.Recovery())
+	r.Use(corsMiddleware())
 
 	rl := DefaultRateLimitConfig()
 	if len(rlCfg) > 0 {
@@ -1710,6 +1711,20 @@ func marshalToRaw(v interface{}) ([]byte, error) {
 		return []byte("[]"), err
 	}
 	return import_json, nil
+}
+
+func corsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Authorization")
+		c.Header("Access-Control-Max-Age", "86400")
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+		c.Next()
+	}
 }
 
 func ginLogger(log zerolog.Logger) gin.HandlerFunc {

@@ -21,11 +21,12 @@ import (
 	"github.com/youredr/edr-agent/internal/config"
 	"github.com/youredr/edr-agent/internal/events"
 	"github.com/youredr/edr-agent/internal/logger"
+	"github.com/youredr/edr-agent/internal/monitor/auth"
+	"github.com/youredr/edr-agent/internal/monitor/browser"
+	"github.com/youredr/edr-agent/internal/monitor/cmd"
 	"github.com/youredr/edr-agent/internal/monitor/file"
 	"github.com/youredr/edr-agent/internal/monitor/network"
 	"github.com/youredr/edr-agent/internal/monitor/process"
-	"github.com/youredr/edr-agent/internal/monitor/auth"
-	"github.com/youredr/edr-agent/internal/monitor/cmd"
 	"github.com/youredr/edr-agent/internal/monitor/registry"
 	"github.com/youredr/edr-agent/internal/monitor/vuln"
 	"github.com/youredr/edr-agent/internal/selfprotect"
@@ -53,6 +54,7 @@ type Agent struct {
 	cmdMonitor      *cmd.Monitor
 	authMonitor     *auth.Monitor
 	vulnMonitor     *vuln.Monitor
+	browserMonitor  *browser.Monitor
 }
 
 // New creates a new Agent from configuration.
@@ -146,6 +148,18 @@ func New(cfg *config.Config) (*Agent, error) {
 	// Package inventory / vulnerability monitor.
 	a.vulnMonitor = vuln.New(vuln.DefaultConfig(), bus, log)
 
+	// Browser monitor (receives events from TraceGuard browser extension).
+	if cfg.Monitors.Browser.Enabled {
+		listenAddr := cfg.Monitors.Browser.ListenAddr
+		if listenAddr == "" {
+			listenAddr = "127.0.0.1:9999"
+		}
+		a.browserMonitor = browser.New(browser.Config{
+			Enabled:    true,
+			ListenAddr: listenAddr,
+		}, bus, log)
+	}
+
 	// Self-protection.
 	a.protect = selfprotect.New(selfprotect.Config{
 		AgentBinPath: cfg.SelfProtect.BinPath,
@@ -231,6 +245,14 @@ func (a *Agent) Start(ctx context.Context) error {
 		}
 	}
 
+	if a.browserMonitor != nil {
+		if err := a.browserMonitor.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("browser monitor start failed")
+		} else {
+			a.log.Info().Msg("browser monitor running")
+		}
+	}
+
 	// Publish agent start event with full build info.
 	vi := version.Get()
 	a.bus.Publish(&agentLifecycleEvent{
@@ -288,6 +310,9 @@ func (a *Agent) shutdown() error {
 	time.Sleep(500 * time.Millisecond)
 
 	// Stop monitors in reverse order.
+	if a.browserMonitor != nil {
+		a.browserMonitor.Stop()
+	}
 	if a.vulnMonitor != nil {
 		a.vulnMonitor.Stop()
 	}

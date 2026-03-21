@@ -11,16 +11,16 @@ Endpoints                          Backend                         Analysts
 ┌──────────────┐                ┌──────────────────┐            ┌──────────────┐
 │  edr-agent   │  gRPC stream   │   edr-backend    │  REST API  │   edr-ui     │
 │  (Go + eBPF) │───────────────>│   (Go + Gin)     │<──────────>│  (Flask)     │
-│              │    :50051      │                  │   :8080    │   :5000      │
+│              │    :50051       │                  │   :8080    │   :5000      │
 │  23 eBPF     │                │  Detection engine│            │  Dashboard   │
 │  hooks       │  Live Response │  21 rules        │            │  Alerts      │
 │  SQLite buf  │<──────────────>│  Incidents       │            │  Incidents   │
 │  Containment │   bidi gRPC    │  PostgreSQL      │            │  Hunt        │
 └──────────────┘                └──────────────────┘            │  Live Shell  │
                                                                 │  Vulns       │
-                                        ┌──────────────┐        │  Process tree│
-                                        │  edr-admin   │        │  Rule builder│
-                                        │  (Flask)     │        └──────────────┘
+                                        ┌──────────────┐       │  Process tree│
+                                        │  edr-admin   │       │  Rule builder│
+                                        │  (Flask)     │       └──────────────┘
                                         │   :5001      │
                                         │  User/key    │
                                         │  management  │
@@ -512,3 +512,4 @@ Next priorities: HTTPS, IOC feed integration, SIEM/webhook export, Prometheus me
 
 - [TODO.md](TODO.md) — Full improvement roadmap
 - [query-guide.md](query-guide.md) — Threat hunting query language reference
+- [comparison.md](comparison.md) — Feature comparison with MDE, CrowdStrike, SentinelOne, Elastic, Wazuh

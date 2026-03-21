@@ -42,6 +42,7 @@ type MonitorsConfig struct {
 	Network  NetworkMonitorConfig  `mapstructure:"network"`
 	File     FileMonitorConfig     `mapstructure:"file"`
 	Registry RegistryMonitorConfig `mapstructure:"registry"`
+	Browser  BrowserMonitorConfig  `mapstructure:"browser"`
 }
 
 type ProcessMonitorConfig struct {
@@ -68,6 +69,11 @@ type FileMonitorConfig struct {
 type RegistryMonitorConfig struct {
 	Enabled     bool     `mapstructure:"enabled"`
 	ExtraPaths  []string `mapstructure:"extra_paths"`
+}
+
+type BrowserMonitorConfig struct {
+	Enabled    bool   `mapstructure:"enabled"`
+	ListenAddr string `mapstructure:"listen_addr"`
 }
 
 type BufferConfig struct {
@@ -107,6 +113,8 @@ func Load(path string) (*Config, error) {
 	})
 	v.SetDefault("monitors.file.hash_on_write", true)
 	v.SetDefault("monitors.registry.enabled", true)
+	v.SetDefault("monitors.browser.enabled", false)
+	v.SetDefault("monitors.browser.listen_addr", "127.0.0.1:9999")
 	v.SetDefault("buffer.path", "/var/lib/edr/events.db")
 	v.SetDefault("buffer.max_size_mb", 512)
 	v.SetDefault("buffer.flush_interval_s", 5)

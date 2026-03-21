@@ -68,6 +68,9 @@ const (
 
 	// Vulnerability / package inventory
 	EventPkgInventory EventType = "PKG_INVENTORY"
+
+	// Browser monitoring (from extension)
+	EventBrowserRequest EventType = "BROWSER_REQUEST"
 )
 
 // ─── ProcessContext ───────────────────────────────────────────────────────────
@@ -312,4 +315,26 @@ type PkgInventoryEvent struct {
 	Packages  []PackageInfo `json:"packages"`
 	OS        string        `json:"os"`
 	OSVersion string        `json:"os_version"`
+}
+
+// ─── Browser Request Events ──────────────────────────────────────────────
+
+// BrowserRequestEvent is emitted by the browser monitor when the OEDR
+// browser extension reports a completed web request.
+type BrowserRequestEvent struct {
+	BaseEvent
+	URL           string   `json:"url"`
+	Domain        string   `json:"domain"`
+	Path          string   `json:"path"`
+	Method        string   `json:"method"`
+	StatusCode    int      `json:"status_code"`     // 0 = connection error
+	ContentType   string   `json:"content_type,omitempty"`
+	Referrer      string   `json:"referrer,omitempty"`
+	TabURL        string   `json:"tab_url,omitempty"`       // URL of the tab that made the request
+	ResourceType  string   `json:"resource_type,omitempty"` // main_frame, sub_frame, xmlhttprequest
+	ServerIP      string   `json:"server_ip,omitempty"`
+	FromCache     bool     `json:"from_cache"`
+	Error         string   `json:"error,omitempty"`
+	IsFormSubmit  bool     `json:"is_form_submit"`          // POST to main_frame = credential submission
+	RedirectChain []string `json:"redirect_chain,omitempty"`
 }

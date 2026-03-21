@@ -518,6 +518,70 @@ var migrations = []struct {
 		CREATE INDEX IF NOT EXISTS iocs_value_idx    ON iocs(value);
 		`,
 	},
+	{
+		name: "seed_browser_phishing_rules",
+		sql: `
+		INSERT INTO rules (id, name, description, severity, event_types, conditions, mitre_ids, author,
+		                   rule_type, threshold_count, threshold_window_s, group_by)
+		VALUES
+		(
+			'rule-browser-form-submit-unknown',
+			'Credential Submission to Non-Allowlisted Domain',
+			'A user submitted a form (POST to main_frame) to a domain not in the organization allowlist — possible phishing credential harvest.',
+			3,
+			ARRAY['BROWSER_REQUEST'],
+			'[{"field":"is_form_submit","op":"eq","value":true},{"field":"tags","op":"contains","value":"auth-page"}]',
+			ARRAY['T1056.004'],
+			'system',
+			'match', 0, 0, ''
+		),
+		(
+			'rule-browser-ioc-domain-visit',
+			'Browser Visited IOC-Flagged Domain',
+			'A user navigated to a domain flagged in the threat intelligence IOC feed.',
+			4,
+			ARRAY['BROWSER_REQUEST'],
+			'[{"field":"resource_type","op":"eq","value":"main_frame"}]',
+			ARRAY['T1566.002'],
+			'system',
+			'match', 0, 0, ''
+		),
+		(
+			'rule-browser-redirect-chain',
+			'Suspicious Redirect Chain Detected',
+			'A browser request followed a redirect chain (3+ hops) — common in phishing campaigns using URL shorteners.',
+			2,
+			ARRAY['BROWSER_REQUEST'],
+			'[{"field":"redirect_chain","op":"length_gte","value":3}]',
+			ARRAY['T1566.002'],
+			'system',
+			'match', 0, 0, ''
+		),
+		(
+			'rule-browser-rare-tld-form',
+			'Form Submission to Rare TLD',
+			'A user submitted a form to a domain with a known-abuse TLD (.tk, .xyz, .top, .pw, .click, etc.).',
+			3,
+			ARRAY['BROWSER_REQUEST'],
+			'[{"field":"is_form_submit","op":"eq","value":true},{"field":"domain","op":"regex","value":"\\.(tk|xyz|top|pw|cc|ws|click|link|work|date|download|racing|stream|gdn|bid)$"}]',
+			ARRAY['T1566.002'],
+			'system',
+			'match', 0, 0, ''
+		),
+		(
+			'rule-browser-high-volume',
+			'Browser High Volume Requests (threshold)',
+			'50+ browser requests in 60 seconds to the same domain — possible automated phishing page or malicious redirect loop.',
+			2,
+			ARRAY['BROWSER_REQUEST'],
+			'[]',
+			ARRAY['T1204.001'],
+			'system',
+			'threshold', 50, 60, 'domain'
+		)
+		ON CONFLICT (id) DO NOTHING;
+		`,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.

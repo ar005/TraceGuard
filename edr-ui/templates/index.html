@@ -455,6 +455,7 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
         <button class="pill" onclick="fEvents('CMD_EXEC',this)">CMD</button>
         <button class="pill" onclick="fEvents('NET_CONNECT',this)">Network</button>
         <button class="pill" onclick="fEvents('FILE_WRITE',this)">File</button>
+        <button class="pill" onclick="fEvents('BROWSER_REQUEST',this)">Browser</button>
       </div>
       <button id="live-btn" class="btn" onclick="toggleLiveStream()" style="padding:5px 11px;font-size:10px">◉ LIVE</button>
       <button class="btn" onclick="importLogs()" style="padding:5px 11px;font-size:10px">⬆ IMPORT</button>
@@ -546,6 +547,7 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
             <option value="FILE_WRITE">FILE_WRITE</option>
             <option value="FILE_CREATE">FILE_CREATE</option>
             <option value="NET_CONNECT">NET_CONNECT</option>
+            <option value="BROWSER_REQUEST">BROWSER_REQUEST</option>
             <option value="AGENT_START">AGENT_START</option>
           </select>
         </div>
@@ -667,6 +669,7 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
           <div class="evt-chip" data-type="FILE_CREATE" onclick="toggleChip(this)">FILE_CREATE</div>
           <div class="evt-chip" data-type="FILE_WRITE" onclick="toggleChip(this)">FILE_WRITE</div>
           <div class="evt-chip" data-type="NET_CONNECT" onclick="toggleChip(this)">NET_CONNECT</div>
+          <div class="evt-chip" data-type="BROWSER_REQUEST" onclick="toggleChip(this)">BROWSER_REQUEST</div>
           <div class="evt-chip" data-type="*" onclick="toggleChip(this)">ALL EVENTS</div>
         </div>
       </div>
@@ -763,6 +766,7 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
               <div class="evt-chip" data-type="NET_CONNECT" onclick="toggleEvt(this)">NET_CONNECT</div>
               <div class="evt-chip" data-type="PROCESS_PTRACE" onclick="toggleEvt(this)">PROCESS_PTRACE</div>
               <div class="evt-chip" data-type="REG_SET" onclick="toggleEvt(this)">REG_SET</div>
+              <div class="evt-chip" data-type="BROWSER_REQUEST" onclick="toggleEvt(this)">BROWSER_REQUEST</div>
               <div class="evt-chip" data-type="*" onclick="toggleEvt(this)">* (ALL)</div>
             </div>
           </div>
@@ -1224,7 +1228,7 @@ function mitres(ids){
   return ids.map(i=>`<span class="mitre">${esc(i)}</span>`).join('');
 }
 function evtTag(t){
-  const C={CMD_EXEC:'var(--cyan)',CMD_HISTORY:'var(--cyan2)',PROCESS_EXEC:'#5090d0',NET_CONNECT:'var(--orange)',FILE_WRITE:'var(--amber)',FILE_CREATE:'var(--green)',PTRACE:'var(--red)'};
+  const C={CMD_EXEC:'var(--cyan)',CMD_HISTORY:'var(--cyan2)',PROCESS_EXEC:'#5090d0',NET_CONNECT:'var(--orange)',FILE_WRITE:'var(--amber)',FILE_CREATE:'var(--green)',PTRACE:'var(--red)',BROWSER_REQUEST:'#e056a0'};
   const c=C[t]||'var(--violet)';
   return `<span style="font-family:var(--mono);font-size:8px;padding:2px 5px;border:1px solid ${c};color:${c};border-radius:2px;opacity:.85">${esc(t||'–')}</span>`;
 }
