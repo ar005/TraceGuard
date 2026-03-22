@@ -337,4 +337,5 @@ type BrowserRequestEvent struct {
 	Error         string   `json:"error,omitempty"`
 	IsFormSubmit  bool     `json:"is_form_submit"`          // POST to main_frame = credential submission
 	RedirectChain []string `json:"redirect_chain,omitempty"`
+	BrowserName   string   `json:"browser_name,omitempty"`
 }

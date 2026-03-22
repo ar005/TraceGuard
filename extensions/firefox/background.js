@@ -103,7 +103,8 @@ function handleCompleted(details) {
     ip: details.ip || "",
     from_cache: details.fromCache || false,
     redirect_chain: redirects.length > 0 ? redirects : undefined,
-    response_headers: extractSecurityHeaders(details.responseHeaders)
+    response_headers: extractSecurityHeaders(details.responseHeaders),
+    browser_name: "Firefox"
   };
 
   // Get tab URL for context.
@@ -134,7 +135,8 @@ function handleError(details) {
     tab_id: details.tabId,
     timestamp: new Date(details.timeStamp).toISOString(),
     error: details.error,
-    from_cache: false
+    from_cache: false,
+    browser_name: "Firefox"
   });
 }
 

@@ -139,6 +139,9 @@ func (e *Engine) Evaluate(ctx context.Context, ev *models.Event) {
 	// Check IOC matches (IP, domain, hash).
 	e.checkIOCs(ctx, ev, payload)
 
+	// Check for typosquat / lookalike domains on browser request events.
+	e.checkTyposquat(ctx, ev, payload)
+
 	// Evaluate detection rules.
 	for i := range rules {
 		rule := &rules[i]
@@ -523,6 +526,63 @@ func (e *Engine) fireIOCAlert(ctx context.Context, ev *models.Event, ioc *models
 		Msg("IOC match — alert fired")
 
 	go func() { _ = e.store.IncrIOCHits(context.Background(), ioc.ID) }()
+	if e.onAlert != nil {
+		e.onAlert(ctx, alert)
+	}
+}
+
+// ─── Typosquat detection ──────────────────────────────────────────────────────
+
+// checkTyposquat looks for lookalike/typosquat domains in BROWSER_REQUEST events.
+func (e *Engine) checkTyposquat(ctx context.Context, ev *models.Event, payload map[string]interface{}) {
+	if ev.EventType != "BROWSER_REQUEST" {
+		return
+	}
+
+	domainVal, ok := payload["domain"]
+	if !ok {
+		return
+	}
+	domainStr := strings.ToLower(fmt.Sprintf("%v", domainVal))
+	if domainStr == "" {
+		return
+	}
+
+	brand, dist := CheckTyposquat(domainStr)
+	if brand == "" {
+		return
+	}
+
+	// Deduplication: use a synthetic rule ID for typosquat alerts.
+	ruleID := "typosquat-detection"
+	existing, err := e.store.FindOpenAlert(ctx, ruleID, ev.AgentID, dedupeWindow)
+	if err == nil && existing != nil {
+		go func() { _ = e.store.BumpAlert(context.Background(), existing.ID, ev.ID) }()
+		return
+	}
+
+	alertID := "alert-" + uuid.New().String()
+	alert := &models.Alert{
+		ID:          alertID,
+		Title:       fmt.Sprintf("Typosquat Domain Detected: %s (similar to %s)", domainStr, brand),
+		Description: fmt.Sprintf("User visited %s which is %d edit(s) away from %s — possible phishing/typosquatting.", domainStr, dist, brand),
+		Severity:    3, // HIGH
+		Status:      "OPEN",
+		RuleID:      ruleID,
+		RuleName:    "Typosquat Domain Detection",
+		MitreIDs:    []string{"T1566.002"},
+		EventIDs:    []string{ev.ID},
+		AgentID:     ev.AgentID,
+		Hostname:    ev.Hostname,
+		FirstSeen:   time.Now(),
+		LastSeen:    time.Now(),
+	}
+
+	e.log.Warn().
+		Str("domain", domainStr).Str("brand", brand).Int("distance", dist).
+		Str("event_id", ev.ID).Str("agent", ev.Hostname).
+		Msg("typosquat domain detected — alert fired")
+
 	if e.onAlert != nil {
 		e.onAlert(ctx, alert)
 	}

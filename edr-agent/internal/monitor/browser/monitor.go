@@ -84,6 +84,7 @@ type incomingEvent struct {
 	Error           string            `json:"error"`
 	RedirectChain   []redirectEntry   `json:"redirect_chain"`
 	ResponseHeaders map[string]string `json:"response_headers"`
+	BrowserName     string            `json:"browser_name"`
 }
 
 type redirectEntry struct {
@@ -289,6 +290,7 @@ func (m *Monitor) publishEvent(ev incomingEvent) {
 		Error:         ev.Error,
 		IsFormSubmit:  isFormSubmit,
 		RedirectChain: redirectURLs,
+		BrowserName:   ev.BrowserName,
 	}
 
 	m.bus.Publish(browserEv)
