@@ -21,12 +21,14 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
+	"github.com/youredr/edr-backend/internal/liveresponse"
 	"github.com/youredr/edr-backend/internal/models"
 	"github.com/youredr/edr-backend/internal/store"
 )
 
 // AlertCallback is called when a rule fires.
 type AlertCallback func(ctx context.Context, alert *models.Alert)
+
 
 // windowKey identifies a sliding window for threshold rules.
 type windowKey struct {
@@ -56,6 +58,9 @@ type Engine struct {
 	iocIPs     map[string]*models.IOC
 	iocDomains map[string]*models.IOC
 	iocHashes  map[string]*models.IOC // SHA256 and MD5 combined
+
+	// Live response manager for auto-response actions (quarantine, block_ip).
+	lr *liveresponse.Manager
 }
 
 // New creates a detection Engine. Call Reload() to load rules from DB.
@@ -89,6 +94,12 @@ func New(st *store.Store, log zerolog.Logger, onAlert AlertCallback) *Engine {
 		}
 	}()
 	return e
+}
+
+// SetAutoResponder sets the live response manager used for automatic
+// containment actions (quarantine files, block IPs) when IOC matches fire.
+func (e *Engine) SetAutoResponder(lr *liveresponse.Manager) {
+	e.lr = lr
 }
 
 // Reload refreshes the rule and suppression cache from the database.
@@ -461,6 +472,8 @@ func (e *Engine) checkIOCs(ctx context.Context, ev *models.Event, payload map[st
 				ip := strings.ToLower(fmt.Sprintf("%v", v))
 				if ioc, hit := ips[ip]; hit {
 					e.fireIOCAlert(ctx, ev, ioc, field, ip)
+					// Auto-block: instruct agent to block the matched IP.
+					go e.autoBlockIP(ctx, ev.AgentID, ip)
 				}
 			}
 		}
@@ -488,6 +501,10 @@ func (e *Engine) checkIOCs(ctx context.Context, ev *models.Event, payload map[st
 				}
 				if ioc, hit := hashes[hash]; hit {
 					e.fireIOCAlert(ctx, ev, ioc, field, hash)
+					// Auto-quarantine: if the event has a file path, quarantine it.
+					if filePath, fpOK := payload["path"]; fpOK {
+						go e.autoQuarantine(ctx, ev.AgentID, fmt.Sprintf("%v", filePath))
+					}
 				}
 			}
 		}
@@ -529,6 +546,36 @@ func (e *Engine) fireIOCAlert(ctx context.Context, ev *models.Event, ioc *models
 	if e.onAlert != nil {
 		e.onAlert(ctx, alert)
 	}
+}
+
+// ─── Auto-response actions ────────────────────────────────────────────────────
+
+// autoQuarantine sends a quarantine command to the agent for a matched file.
+func (e *Engine) autoQuarantine(ctx context.Context, agentID, filePath string) {
+	if e.lr == nil || !e.lr.IsConnected(agentID) {
+		e.log.Warn().Str("agent", agentID).Str("file", filePath).Msg("auto-quarantine skipped: agent not connected")
+		return
+	}
+	result, err := e.lr.SendCommand(ctx, agentID, "quarantine", []string{filePath}, 30)
+	if err != nil {
+		e.log.Error().Err(err).Str("agent", agentID).Str("file", filePath).Msg("auto-quarantine failed")
+		return
+	}
+	e.log.Warn().Str("agent", agentID).Str("file", filePath).Str("status", result.Status).Msg("AUTO-QUARANTINE executed")
+}
+
+// autoBlockIP sends a block_ip command to the agent for a matched IOC IP.
+func (e *Engine) autoBlockIP(ctx context.Context, agentID, ip string) {
+	if e.lr == nil || !e.lr.IsConnected(agentID) {
+		e.log.Warn().Str("agent", agentID).Str("ip", ip).Msg("auto-block skipped: agent not connected")
+		return
+	}
+	result, err := e.lr.SendCommand(ctx, agentID, "block_ip", []string{ip}, 30)
+	if err != nil {
+		e.log.Error().Err(err).Str("agent", agentID).Str("ip", ip).Msg("auto-block-ip failed")
+		return
+	}
+	e.log.Warn().Str("agent", agentID).Str("ip", ip).Str("status", result.Status).Msg("AUTO-BLOCK-IP executed")
 }
 
 // ─── Typosquat detection ──────────────────────────────────────────────────────

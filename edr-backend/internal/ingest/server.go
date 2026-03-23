@@ -23,8 +23,10 @@ import (
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/peer"
 
+	"github.com/youredr/edr-backend/internal/configver"
 	"github.com/youredr/edr-backend/internal/detection"
 	"github.com/youredr/edr-backend/internal/liveresponse"
+	"github.com/youredr/edr-backend/internal/metrics"
 	"github.com/youredr/edr-backend/internal/sse"
 	"github.com/youredr/edr-backend/internal/models"
 	pb "github.com/youredr/edr-backend/internal/proto"
@@ -39,7 +41,6 @@ type Server struct {
 	lr        *liveresponse.Manager
 	log      zerolog.Logger
 	grpc     *grpc.Server
-	configVer string
 }
 
 // TLSConfig holds cert paths for the gRPC server.
@@ -58,7 +59,6 @@ func New(st *store.Store, eng *detection.Engine, sb *sse.Broker, lr *liverespons
 		sseBroker: sb,
 		lr:        lr,
 		log:       log.With().Str("component", "ingest").Logger(),
-		configVer: "1",
 	}
 
 	s.grpc = grpc.NewServer(
@@ -131,7 +131,7 @@ func (s *Server) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Reg
 		OSVersion: req.OSVersion,
 		IP:        req.IP,
 		AgentVer:  req.AgentVer,
-		ConfigVer: s.configVer,
+		ConfigVer: configver.Get(),
 		Tags:      req.Tags,
 		Env:       req.Env,
 		Notes:     req.Notes,
@@ -152,7 +152,7 @@ func (s *Server) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Reg
 	return &pb.RegisterResponse{
 		Ok:            true,
 		AssignedID:    req.AgentID,
-		ConfigVersion: s.configVer,
+		ConfigVersion: configver.Get(),
 	}, nil
 }
 
@@ -161,6 +161,9 @@ func (s *Server) StreamEvents(stream pb.EventService_StreamEventsServer) error {
 	ctx := stream.Context()
 	var agentID, hostname string
 	received := 0
+
+	metrics.GRPCStreamsActive.Inc()
+	defer metrics.GRPCStreamsActive.Dec()
 
 	for {
 		select {
@@ -191,6 +194,8 @@ func (s *Server) StreamEvents(stream pb.EventService_StreamEventsServer) error {
 		hostname = env.Hostname
 		received++
 
+		metrics.EventsReceived.WithLabelValues(env.EventType, env.AgentID).Inc()
+
 		// Process event asynchronously to keep stream responsive.
 		go s.processEvent(env)
 	}
@@ -203,6 +208,8 @@ func (s *Server) StreamEvents(stream pb.EventService_StreamEventsServer) error {
 
 // Heartbeat handles periodic keepalive from agents.
 func (s *Server) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error) {
+	metrics.HeartbeatsReceived.Inc()
+
 	if err := s.store.TouchAgent(ctx, req.AgentID); err != nil {
 		// Non-fatal: agent might not be registered yet.
 		s.log.Warn().Str("agent_id", req.AgentID).Err(err).Msg("heartbeat touch failed")
@@ -216,7 +223,7 @@ func (s *Server) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.H
 	return &pb.HeartbeatResponse{
 		Ok:            true,
 		ServerTime:    time.Now().UnixNano(),
-		ConfigVersion: s.configVer,
+		ConfigVersion: configver.Get(),
 	}, nil
 }
 
@@ -261,15 +268,20 @@ func (s *Server) processEvent(env *pb.EventEnvelope) {
 			Err(err).
 			Str("event_id", eventID).
 			Msg("insert event failed")
+		metrics.EventsDropped.Inc()
 		return
 	}
+	metrics.EventsStored.Inc()
+
 	// Publish to SSE broker — non-blocking fan-out to connected browser clients.
 	if s.sseBroker != nil {
 		go s.sseBroker.Publish(ev)
 	}
 
 	// Run detection rules against it.
+	detStart := time.Now()
 	s.engine.Evaluate(ctx, ev)
+	metrics.DetectionDuration.Observe(time.Since(detStart).Seconds())
 }
 
 // ─── Middleware ───────────────────────────────────────────────────────────────

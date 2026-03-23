@@ -107,6 +107,12 @@ func New(cfg *config.Config) (*Agent, error) {
 		Notes:      cfg.Agent.Notes,
 	}, log)
 
+	// Register config-change callback so the agent logs when the backend
+	// bumps its policy version (rule/suppression changes).
+	trans.OnConfigChange(func(newVer string) {
+		log.Info().Str("version", newVer).Msg("config update received from backend — monitors will use updated rules on next detection cycle")
+	})
+
 	// Network containment controller.
 	contain := containment.New(cfg.Agent.BackendURL, log)
 	trans.SetContainment(contain)

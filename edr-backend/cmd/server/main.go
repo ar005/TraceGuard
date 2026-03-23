@@ -28,6 +28,7 @@ import (
 	"github.com/youredr/edr-backend/internal/ingest"
 	"github.com/youredr/edr-backend/internal/iocfeed"
 	"github.com/youredr/edr-backend/internal/liveresponse"
+	"github.com/youredr/edr-backend/internal/metrics"
 	"github.com/youredr/edr-backend/internal/models"
 	"github.com/youredr/edr-backend/internal/store"
 	"github.com/youredr/edr-backend/internal/users"
@@ -188,6 +189,10 @@ func main() {
 	// ── Live Response Manager ─────────────────────────────────────────────────
 	lrManager := liveresponse.NewManager(logger)
 
+	// Wire auto-response: detection engine sends quarantine/block_ip commands
+	// to agents via live response when IOC matches are found.
+	engine.SetAutoResponder(lrManager)
+
 	// ── gRPC Ingest Server ────────────────────────────────────────────────────
 	grpcServer := ingest.New(st, engine, sseBroker, lrManager, logger, ingest.TLSConfig{
 		Enabled:  cfg.Server.TLS.Enabled,
@@ -250,6 +255,17 @@ func main() {
 		for range ticker.C {
 			if err := st.MarkStaleAgentsOffline(context.Background(), 90*time.Second); err != nil {
 				logger.Warn().Err(err).Msg("stale agent sweep failed")
+			}
+			// Update Prometheus agent gauges.
+			if agents, err := st.ListAgents(context.Background()); err == nil {
+				metrics.AgentsTotal.Set(float64(len(agents)))
+				online := 0
+				for _, a := range agents {
+					if a.IsOnline {
+						online++
+					}
+				}
+				metrics.AgentsOnline.Set(float64(online))
 			}
 		}
 	}()

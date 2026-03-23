@@ -17,10 +17,13 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/lib/pq"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 
 	"github.com/youredr/edr-backend/internal/apikeys"
+	"github.com/youredr/edr-backend/internal/configver"
 	"github.com/youredr/edr-backend/internal/llm"
+	"github.com/youredr/edr-backend/internal/metrics"
 	"github.com/youredr/edr-backend/internal/liveresponse"
 	"github.com/youredr/edr-backend/internal/sse"
 	"github.com/youredr/edr-backend/internal/audit"
@@ -99,9 +102,13 @@ func New(st *store.Store, eng *detection.Engine, km *apikeys.Manager,
 func (s *Server) registerRoutes() {
 	r := s.router
 
+	// Prometheus metrics middleware (must be before routes).
+	r.Use(prometheusMiddleware())
+
 	// Health / status (no auth)
 	r.GET("/health",  s.handleHealth)
 	r.GET("/metrics", s.handleMetrics)
+	r.GET("/metrics/prometheus", gin.WrapH(promhttp.Handler()))
 
 	// ── Setup endpoints (no auth — only work when no users exist) ───────────
 	// NOTE: intentionally under /api/v1/setup, NOT /api/v1/admin,
@@ -1035,6 +1042,7 @@ func (s *Server) handleCreateSuppression(c *gin.Context) {
 		return
 	}
 	_ = s.engine.Reload(c.Request.Context())
+	configver.Bump()
 	c.JSON(http.StatusCreated, r)
 }
 
@@ -1070,6 +1078,7 @@ func (s *Server) handleUpdateSuppression(c *gin.Context) {
 		return
 	}
 	_ = s.engine.Reload(c.Request.Context())
+	configver.Bump()
 	c.JSON(http.StatusOK, existing)
 }
 
@@ -1080,6 +1089,7 @@ func (s *Server) handleDeleteSuppression(c *gin.Context) {
 		return
 	}
 	_ = s.engine.Reload(c.Request.Context())
+	configver.Bump()
 	c.Status(http.StatusNoContent)
 }
 
@@ -1374,6 +1384,7 @@ func (s *Server) handleCreateRule(c *gin.Context) {
 		return
 	}
 	_ = s.engine.Reload(c.Request.Context())
+	configver.Bump()
 	c.JSON(http.StatusCreated, rule)
 }
 
@@ -1423,6 +1434,7 @@ func (s *Server) handleUpdateRule(c *gin.Context) {
 		return
 	}
 	_ = s.engine.Reload(c.Request.Context())
+	configver.Bump()
 	c.JSON(http.StatusOK, existing)
 }
 
@@ -1432,6 +1444,7 @@ func (s *Server) handleDeleteRule(c *gin.Context) {
 		return
 	}
 	_ = s.engine.Reload(c.Request.Context())
+	configver.Bump()
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -1440,6 +1453,7 @@ func (s *Server) handleReloadRules(c *gin.Context) {
 		s.jsonError(c, err)
 		return
 	}
+	configver.Bump()
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -1738,6 +1752,29 @@ func ginLogger(log zerolog.Logger) gin.HandlerFunc {
 			Dur("latency", time.Since(start)).
 			Str("ip",      c.ClientIP()).
 			Msg("http")
+	}
+}
+
+func prometheusMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Skip the prometheus metrics endpoint itself to avoid recursion.
+		if c.Request.URL.Path == "/metrics/prometheus" {
+			c.Next()
+			return
+		}
+
+		start := time.Now()
+		c.Next()
+
+		status := strconv.Itoa(c.Writer.Status())
+		path := c.FullPath() // use route pattern, not actual path, to avoid high cardinality
+		if path == "" {
+			path = "unmatched"
+		}
+		elapsed := time.Since(start).Seconds()
+
+		metrics.APIRequestDuration.WithLabelValues(c.Request.Method, path, status).Observe(elapsed)
+		metrics.APIRequestsTotal.WithLabelValues(c.Request.Method, path, status).Inc()
 	}
 }
 

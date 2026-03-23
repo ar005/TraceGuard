@@ -74,8 +74,14 @@ var allowedActions = map[string]bool{
 	"find":    true,
 	"md5sum":  true,
 	"sha256sum": true,
-	"isolate":   true,
-	"release":   true,
+	"isolate":    true,
+	"release":    true,
+	"quarantine":       true,
+	"restore":          true,
+	"block_ip":         true,
+	"unblock_ip":       true,
+	"list_blocked":     true,
+	"list_quarantined": true,
 }
 
 // RegisterAgent registers an agent's live response session.

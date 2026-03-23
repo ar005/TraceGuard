@@ -43,6 +43,9 @@ var allowedActions = map[string]bool{
 	"id": true, "uname": true, "uptime": true, "stat": true,
 	"find": true, "md5sum": true, "sha256sum": true,
 	"isolate": true, "release": true,
+	"quarantine": true, "restore": true,
+	"block_ip": true, "unblock_ip": true,
+	"list_blocked": true, "list_quarantined": true,
 }
 
 // StartLiveResponse connects to the backend's LiveResponse bidi stream.
@@ -166,6 +169,110 @@ func (t *GRPCTransport) executeCommand(cmd *liveCommand) *liveResult {
 			result.Error = err.Error()
 		} else {
 			result.Stdout = "Network containment released. Normal traffic restored."
+		}
+		return result
+	case "quarantine":
+		if t.containment == nil {
+			result.Status = "error"
+			result.Error = "containment not configured"
+			return result
+		}
+		if len(cmd.Args) == 0 {
+			result.Status = "error"
+			result.Error = "quarantine requires file path"
+			return result
+		}
+		path, err := t.containment.QuarantineFile(cmd.Args[0])
+		if err != nil {
+			result.Status = "error"
+			result.Error = err.Error()
+		} else {
+			result.Stdout = fmt.Sprintf("File quarantined: %s -> %s", cmd.Args[0], path)
+		}
+		return result
+	case "restore":
+		if t.containment == nil {
+			result.Status = "error"
+			result.Error = "containment not configured"
+			return result
+		}
+		if len(cmd.Args) == 0 {
+			result.Status = "error"
+			result.Error = "restore requires quarantine name"
+			return result
+		}
+		if err := t.containment.RestoreFile(cmd.Args[0]); err != nil {
+			result.Status = "error"
+			result.Error = err.Error()
+		} else {
+			result.Stdout = fmt.Sprintf("File restored: %s", cmd.Args[0])
+		}
+		return result
+	case "block_ip":
+		if t.containment == nil {
+			result.Status = "error"
+			result.Error = "containment not configured"
+			return result
+		}
+		if len(cmd.Args) == 0 {
+			result.Status = "error"
+			result.Error = "block_ip requires IP address"
+			return result
+		}
+		if err := t.containment.BlockIP(cmd.Args[0]); err != nil {
+			result.Status = "error"
+			result.Error = err.Error()
+		} else {
+			result.Stdout = fmt.Sprintf("IP %s blocked", cmd.Args[0])
+		}
+		return result
+	case "unblock_ip":
+		if t.containment == nil {
+			result.Status = "error"
+			result.Error = "containment not configured"
+			return result
+		}
+		if len(cmd.Args) == 0 {
+			result.Status = "error"
+			result.Error = "unblock_ip requires IP address"
+			return result
+		}
+		if err := t.containment.UnblockIP(cmd.Args[0]); err != nil {
+			result.Status = "error"
+			result.Error = err.Error()
+		} else {
+			result.Stdout = fmt.Sprintf("IP %s unblocked", cmd.Args[0])
+		}
+		return result
+	case "list_blocked":
+		if t.containment == nil {
+			result.Status = "error"
+			result.Error = "containment not configured"
+			return result
+		}
+		ips := t.containment.ListBlockedIPs()
+		if len(ips) == 0 {
+			result.Stdout = "No IPs currently blocked"
+		} else {
+			result.Stdout = strings.Join(ips, "\n")
+		}
+		return result
+	case "list_quarantined":
+		if t.containment == nil {
+			result.Status = "error"
+			result.Error = "containment not configured"
+			return result
+		}
+		jsonStr, err := t.containment.ListQuarantinedJSON()
+		if err != nil {
+			result.Status = "error"
+			result.Error = err.Error()
+			return result
+		}
+		if jsonStr == "[]" {
+			result.Stdout = "No files currently quarantined"
+		} else {
+			result.Stdout = jsonStr
 		}
 		return result
 	case "exec":

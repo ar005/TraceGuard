@@ -120,6 +120,12 @@ type ContainmentController interface {
 	Isolate() error
 	Release() error
 	IsContained() bool
+	QuarantineFile(filePath string) (string, error)
+	RestoreFile(quarantineName string) error
+	ListQuarantinedJSON() (string, error)
+	BlockIP(ip string) error
+	UnblockIP(ip string) error
+	ListBlockedIPs() []string
 }
 
 type GRPCTransport struct {
@@ -131,7 +137,9 @@ type GRPCTransport struct {
 	mu     sync.RWMutex
 	conn   *grpc.ClientConn
 	connected bool
-	containment ContainmentController
+	containment    ContainmentController
+	configVersion  string
+	onConfigChange func(newVersion string)
 }
 
 func New(cfg Config, log zerolog.Logger) *GRPCTransport {
@@ -147,6 +155,12 @@ func New(cfg Config, log zerolog.Logger) *GRPCTransport {
 // SetContainment sets the containment controller for live response isolation commands.
 func (t *GRPCTransport) SetContainment(c ContainmentController) {
 	t.containment = c
+}
+
+// OnConfigChange registers a callback that is invoked when the backend
+// reports a new config version in a heartbeat or register response.
+func (t *GRPCTransport) OnConfigChange(fn func(newVersion string)) {
+	t.onConfigChange = fn
 }
 
 func (t *GRPCTransport) Start(ctx context.Context) error {
@@ -236,6 +250,17 @@ func (t *GRPCTransport) connect(ctx context.Context) error {
 	}
 
 	t.log.Info().Str("backend", t.cfg.BackendURL).Msg("connected and registered")
+
+	// Check if backend config version changed during registration.
+	if regResp.ConfigVersion != "" && regResp.ConfigVersion != t.configVersion {
+		old := t.configVersion
+		t.configVersion = regResp.ConfigVersion
+		t.log.Info().Str("old", old).Str("new", regResp.ConfigVersion).Msg("backend config version changed")
+		if t.onConfigChange != nil {
+			t.onConfigChange(regResp.ConfigVersion)
+		}
+	}
+
 	t.mu.Lock()
 	if t.conn != nil {
 		t.conn.Close()
@@ -365,6 +390,15 @@ func (t *GRPCTransport) heartbeatLoop(ctx context.Context) {
 				t.mu.Unlock()
 			} else {
 				t.log.Debug().Msg("heartbeat ok")
+				// Check if backend config version changed.
+				if resp.ConfigVersion != "" && resp.ConfigVersion != t.configVersion {
+					old := t.configVersion
+					t.configVersion = resp.ConfigVersion
+					t.log.Info().Str("old", old).Str("new", resp.ConfigVersion).Msg("backend config version changed")
+					if t.onConfigChange != nil {
+						t.onConfigChange(resp.ConfigVersion)
+					}
+				}
 			}
 		}
 	}
