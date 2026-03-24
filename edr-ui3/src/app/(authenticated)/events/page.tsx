@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
+import { Download } from "lucide-react";
 import { useApi } from "@/hooks/use-api";
 import { useSSE } from "@/hooks/use-sse";
 import { api } from "@/lib/api-client";
+import { exportToCSV, exportToJSON } from "@/lib/export";
 import { cn, formatDate, timeAgo, eventTypeColor, severityLabel } from "@/lib/utils";
 import type { Event } from "@/types";
 
@@ -391,6 +393,7 @@ export default function EventsPage() {
   const [allEvents, setAllEvents] = useState<Event[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
   const [showFilters, setShowFilters] = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
 
   /* API fetch */
   const fetchEvents = useCallback(
@@ -521,6 +524,42 @@ export default function EventsPage() {
           Events
         </h1>
 
+        <div className="flex items-center gap-2">
+        {/* Export dropdown */}
+        {displayEvents.length > 0 && (
+          <div className="relative">
+            <button
+              onClick={() => setShowExportMenu(!showExportMenu)}
+              className="flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors hover:bg-[var(--surface-2)]"
+              style={{ borderColor: "var(--border)", color: "var(--muted)" }}
+            >
+              <Download size={12} />
+              Export
+            </button>
+            {showExportMenu && (
+              <div
+                className="absolute right-0 top-full mt-1 rounded border shadow-lg z-10 py-1 min-w-[120px]"
+                style={{ background: "var(--surface-0)", borderColor: "var(--border)" }}
+              >
+                <button
+                  onClick={() => { exportToCSV(displayEvents, "events-export.csv"); setShowExportMenu(false); }}
+                  className="w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--surface-1)] transition-colors"
+                  style={{ color: "var(--fg)" }}
+                >
+                  Export as CSV
+                </button>
+                <button
+                  onClick={() => { exportToJSON(displayEvents, "events-export.json"); setShowExportMenu(false); }}
+                  className="w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--surface-1)] transition-colors"
+                  style={{ color: "var(--fg)" }}
+                >
+                  Export as JSON
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Live toggle */}
         <button
           onClick={() => setLiveMode(!liveMode)}
@@ -548,6 +587,7 @@ export default function EventsPage() {
           </span>
           {liveMode ? "Live" : "Live"}
         </button>
+        </div>
       </div>
 
       {/* Filter pills + search */}

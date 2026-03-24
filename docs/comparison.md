@@ -211,8 +211,28 @@ The largest and most impactful investments:
 
 ---
 
+## Planned — Later Phase (Requires External Infrastructure)
+
+These features are planned but deferred because they require external services or infrastructure to properly test and validate:
+
+| Feature | What's Needed to Test | Priority |
+|---------|----------------------|----------|
+| **SIEM/Webhook Export** | Splunk/ELK instance, Slack workspace, SMTP server | High — biggest gap for SOC use |
+| **CI/CD Pipeline** | GitHub repo with Actions configured | High — needed for public project |
+| **Input Validation (ReDoS)** | Regex fuzzing test suite | Medium — security hardening |
+| **HTTPS on REST API** | TLS certs (self-signed or Let's Encrypt) | Medium — production requirement |
+| **Dashboard Widgets** | Sustained event flow for meaningful charts | Medium — polish |
+| **Notification System** | Notification service or WebSocket infra | Medium — UX improvement |
+| **Case Management** | Multi-analyst workflow testing | Low — incidents page covers basics |
+| **Structured Logging** | Log aggregation setup (ELK/Loki) | Low — operational polish |
+| **Container Awareness** | Docker/K8s test environment | Low — container-specific |
+
+---
+
 ## Summary
 
-TraceGuard is a strong Linux EDR with modern architecture (eBPF, gRPC, SSE, LLM integration) and genuine innovations (browser URL monitoring, typosquat detection, multi-provider AI). It competes favorably with Wazuh and OSSEC on detection and response capabilities while offering a more modern stack. However, it is a Linux-only, single-tenant, rule-based detection system without SIEM integration -- limitations that restrict it to Linux-focused environments willing to operate without ML detection and external SOC tool integration.
+TraceGuard is a strong Linux EDR with modern architecture (eBPF, gRPC, SSE, LLM integration) and genuine innovations (browser URL monitoring, typosquat detection, multi-provider AI). It competes favorably with Wazuh and OSSEC on detection and response capabilities while offering a more modern stack. The agent now provides 14 monitors covering process, network, file, auth, command, registry, vulnerability, browser, kernel module, USB, memory injection, cron, named pipe, and network share monitoring — with 40+ detection rules and auto-response (quarantine + IP blocking).
+
+However, it is a Linux-only, single-tenant, rule-based detection system without SIEM integration — limitations that restrict it to Linux-focused environments willing to operate without ML detection and external SOC tool integration.
 
 The fastest path to broader adoption is: SIEM export (unblocks SOC teams) followed by Windows agent support (unblocks mixed environments) followed by ML detection (closes the detection quality gap). The browser extension and typosquat detection remain genuine differentiators worth highlighting, as no commercial EDR offers equivalent functionality.

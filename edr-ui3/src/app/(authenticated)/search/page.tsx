@@ -1,8 +1,10 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
+import { Download } from "lucide-react";
 import { useApi } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
+import { exportToCSV, exportToJSON } from "@/lib/export";
 import {
   cn,
   formatDate,
@@ -131,6 +133,7 @@ export default function SearchPage() {
   const [until, setUntil] = useState("");
   const [offset, setOffset] = useState(0);
   const [allEvents, setAllEvents] = useState<Event[]>([]);
+  const [showExportMenu, setShowExportMenu] = useState(false);
 
   /* Build search trigger key: only fetch when user explicitly wants to */
   const [searchTrigger, setSearchTrigger] = useState(0);
@@ -410,6 +413,45 @@ export default function SearchPage() {
 
       {/* Results */}
       {hasSearched && (
+        <>
+        {displayEvents.length > 0 && (
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-mono" style={{ color: "var(--muted)" }}>
+              {displayEvents.length} results
+            </span>
+            <div className="relative">
+              <button
+                onClick={() => setShowExportMenu(!showExportMenu)}
+                className="flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors hover:bg-[var(--surface-2)]"
+                style={{ borderColor: "var(--border)", color: "var(--muted)" }}
+              >
+                <Download size={12} />
+                Export
+              </button>
+              {showExportMenu && (
+                <div
+                  className="absolute right-0 top-full mt-1 rounded border shadow-lg z-10 py-1 min-w-[120px]"
+                  style={{ background: "var(--surface-0)", borderColor: "var(--border)" }}
+                >
+                  <button
+                    onClick={() => { exportToCSV(displayEvents, "search-results.csv"); setShowExportMenu(false); }}
+                    className="w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--surface-1)] transition-colors"
+                    style={{ color: "var(--fg)" }}
+                  >
+                    Export as CSV
+                  </button>
+                  <button
+                    onClick={() => { exportToJSON(displayEvents, "search-results.json"); setShowExportMenu(false); }}
+                    className="w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--surface-1)] transition-colors"
+                    style={{ color: "var(--fg)" }}
+                  >
+                    Export as JSON
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
         <div
           className="rounded-lg border overflow-hidden"
           style={{ background: "var(--surface-0)", borderColor: "var(--border)" }}
@@ -496,6 +538,7 @@ export default function SearchPage() {
             </div>
           )}
         </div>
+        </>
       )}
 
       {/* Load More */}

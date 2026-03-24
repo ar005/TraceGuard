@@ -638,6 +638,33 @@ func (s *Store) HuntQuery(ctx context.Context, query string, limit int) ([]model
 		}
 	}
 
+	// If the user sent a full SELECT statement, extract just the WHERE predicate.
+	normalized := strings.TrimSpace(query)
+	upperNorm := strings.ToUpper(normalized)
+
+	// Strip "SELECT * FROM events WHERE " prefix if present.
+	for _, prefix := range []string{
+		"SELECT * FROM EVENTS WHERE ",
+		"SELECT * FROM EVENTS\nWHERE ",
+		"SELECT * FROM EVENTS  WHERE ",
+	} {
+		if strings.HasPrefix(upperNorm, prefix) {
+			normalized = strings.TrimSpace(normalized[len(prefix):])
+			upperNorm = strings.ToUpper(normalized)
+			break
+		}
+	}
+
+	// Strip trailing ORDER BY / LIMIT clauses (backend applies its own).
+	for _, suffix := range []string{"ORDER BY", "LIMIT"} {
+		if idx := strings.LastIndex(upperNorm, suffix); idx > 0 {
+			normalized = strings.TrimSpace(normalized[:idx])
+			upperNorm = strings.ToUpper(normalized)
+		}
+	}
+
+	query = normalized
+
 	// Build the SQL.
 	dataSQL := fmt.Sprintf(`SELECT * FROM events WHERE (%s) ORDER BY timestamp DESC LIMIT $1`, query)
 	countSQL := fmt.Sprintf(`SELECT COUNT(*) FROM events WHERE (%s)`, query)

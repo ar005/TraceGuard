@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
-import { Globe, Chrome, ExternalLink, ArrowRight, AlertTriangle, Filter, X } from "lucide-react";
+import { Globe, Chrome, ExternalLink, ArrowRight, AlertTriangle, Filter, X, Download } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { useApi } from "@/hooks/use-api";
+import { exportToCSV, exportToJSON } from "@/lib/export";
 import { cn, formatDate, timeAgo } from "@/lib/utils";
 import type { Agent, Event } from "@/types";
 
@@ -189,6 +190,7 @@ export default function BrowserActivityPage() {
   const [domainFilter, setDomainFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
+  const [showExportMenu, setShowExportMenu] = useState(false);
 
   /* Fetch agents */
   const fetchAgents = useCallback(
@@ -367,6 +369,40 @@ export default function BrowserActivityPage() {
         <span className={stats.errors > 0 ? "text-red-400" : ""}>
           <strong className="font-mono">{stats.errors}</strong> errors
         </span>
+        <div className="flex-1" />
+        {filteredEvents.length > 0 && (
+          <div className="relative">
+            <button
+              onClick={() => setShowExportMenu(!showExportMenu)}
+              className="flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors hover:bg-[var(--surface-2)]"
+              style={{ borderColor: "var(--border)", color: "var(--muted)" }}
+            >
+              <Download size={12} />
+              Export
+            </button>
+            {showExportMenu && (
+              <div
+                className="absolute right-0 top-full mt-1 rounded border shadow-lg z-10 py-1 min-w-[120px]"
+                style={{ background: "var(--surface-0)", borderColor: "var(--border)" }}
+              >
+                <button
+                  onClick={() => { exportToCSV(filteredEvents, "browser-events.csv"); setShowExportMenu(false); }}
+                  className="w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--surface-1)] transition-colors"
+                  style={{ color: "var(--fg)" }}
+                >
+                  Export as CSV
+                </button>
+                <button
+                  onClick={() => { exportToJSON(filteredEvents, "browser-events.json"); setShowExportMenu(false); }}
+                  className="w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--surface-1)] transition-colors"
+                  style={{ color: "var(--fg)" }}
+                >
+                  Export as JSON
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Loading */}
