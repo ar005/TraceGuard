@@ -582,6 +582,123 @@ var migrations = []struct {
 		ON CONFLICT (id) DO NOTHING;
 		`,
 	},
+	{
+		name: "seed_kmod_usb_rules",
+		sql: `
+		INSERT INTO rules (id, name, description, severity, event_types, conditions, mitre_ids, author,
+		                   rule_type, threshold_count, threshold_window_s, group_by)
+		VALUES
+		(
+			'rule-kmod-unsigned',
+			'Unsigned Kernel Module Loaded',
+			'A kernel module was loaded without a valid signature — possible rootkit or unauthorized driver.',
+			4,
+			ARRAY['KERNEL_MODULE_LOAD'],
+			'[{"field":"signed","op":"eq","value":false}]',
+			ARRAY['T1547.006'],
+			'system',
+			'match', 0, 0, ''
+		),
+		(
+			'rule-kmod-tainted',
+			'Kernel Tainted After Module Load',
+			'The kernel became tainted after loading a module — indicates an out-of-tree or proprietary module.',
+			2,
+			ARRAY['KERNEL_MODULE_LOAD'],
+			'[{"field":"tainted","op":"eq","value":true}]',
+			ARRAY['T1547.006'],
+			'system',
+			'match', 0, 0, ''
+		),
+		(
+			'rule-usb-mass-storage',
+			'USB Mass Storage Device Connected',
+			'A USB mass storage device (flash drive, external HDD) was plugged in — potential data exfiltration or malware vector.',
+			2,
+			ARRAY['USB_CONNECT'],
+			'[{"field":"dev_type","op":"eq","value":"mass_storage"}]',
+			ARRAY['T1052.001'],
+			'system',
+			'match', 0, 0, ''
+		),
+		(
+			'rule-usb-burst',
+			'Multiple USB Devices Connected Rapidly (threshold)',
+			'3+ USB devices connected within 60 seconds — possible USB attack (BadUSB, rubber ducky).',
+			3,
+			ARRAY['USB_CONNECT'],
+			'[]',
+			ARRAY['T1200'],
+			'system',
+			'threshold', 3, 60, 'agent_id'
+		)
+		ON CONFLICT (id) DO NOTHING;
+		`,
+	},
+	{
+		name: "seed_memmon_cron_pipe_share_rules",
+		sql: `
+		INSERT INTO rules (id, name, description, severity, event_types, conditions, mitre_ids, author,
+		                   rule_type, threshold_count, threshold_window_s, group_by)
+		VALUES
+		(
+			'rule-memory-inject',
+			'Suspicious Memory Injection Detected',
+			'Anonymous executable memory region detected in a process — possible shellcode injection or reflective loading.',
+			4,
+			ARRAY['MEMORY_INJECT'],
+			'[]',
+			ARRAY['T1055.001','T1620'],
+			'system',
+			'match', 0, 0, ''
+		),
+		(
+			'rule-cron-suspicious',
+			'Suspicious Cron Job Created',
+			'A cron entry was created or modified containing download commands, encoded payloads, or reverse shell patterns.',
+			3,
+			ARRAY['CRON_MODIFY'],
+			'[{"field":"suspicious","op":"eq","value":true}]',
+			ARRAY['T1053.003'],
+			'system',
+			'match', 0, 0, ''
+		),
+		(
+			'rule-cron-reverse-shell',
+			'Cron Job with Reverse Shell Pattern',
+			'A cron entry contains reverse shell indicators (/dev/tcp, nc -e, bash -i).',
+			4,
+			ARRAY['CRON_MODIFY'],
+			'[{"field":"cron_tags","op":"contains","value":"reverse-shell"}]',
+			ARRAY['T1053.003','T1059.004'],
+			'system',
+			'match', 0, 0, ''
+		),
+		(
+			'rule-pipe-tmp',
+			'Named Pipe Created in Temp Directory',
+			'A FIFO/named pipe was created in /tmp, /var/tmp, or /dev/shm — used by C2 frameworks (Cobalt Strike, PsExec) for inter-process communication.',
+			3,
+			ARRAY['PIPE_CREATE'],
+			'[{"field":"location","op":"in","value":["tmp","dev_shm"]}]',
+			ARRAY['T1570','T1071'],
+			'system',
+			'match', 0, 0, ''
+		),
+		(
+			'rule-share-mount',
+			'Network Share Mounted',
+			'A CIFS/NFS network share was mounted — potential lateral movement or data staging.',
+			2,
+			ARRAY['SHARE_MOUNT'],
+			'[]',
+			ARRAY['T1021.002'],
+			'system',
+			'match', 0, 0, ''
+		)
+		ON CONFLICT (id) DO NOTHING;
+		`,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.

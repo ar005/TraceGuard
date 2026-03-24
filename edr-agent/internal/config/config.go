@@ -43,6 +43,12 @@ type MonitorsConfig struct {
 	File     FileMonitorConfig     `mapstructure:"file"`
 	Registry RegistryMonitorConfig `mapstructure:"registry"`
 	Browser  BrowserMonitorConfig  `mapstructure:"browser"`
+	KMod     KModMonitorConfig     `mapstructure:"kmod"`
+	USB      USBMonitorConfig      `mapstructure:"usb"`
+	Pipe     PipeMonConfig         `mapstructure:"pipe"`
+	Share    ShareMonConfig        `mapstructure:"share"`
+	MemMon   MemMonConfig          `mapstructure:"memmon"`
+	CronMon  CronMonConfig         `mapstructure:"cronmon"`
 }
 
 type ProcessMonitorConfig struct {
@@ -74,6 +80,38 @@ type RegistryMonitorConfig struct {
 type BrowserMonitorConfig struct {
 	Enabled    bool   `mapstructure:"enabled"`
 	ListenAddr string `mapstructure:"listen_addr"`
+}
+
+type KModMonitorConfig struct {
+	Enabled       bool `mapstructure:"enabled"`
+	PollIntervalS int  `mapstructure:"poll_interval_s"`
+}
+
+type USBMonitorConfig struct {
+	Enabled       bool `mapstructure:"enabled"`
+	PollIntervalS int  `mapstructure:"poll_interval_s"`
+}
+
+type PipeMonConfig struct {
+	Enabled       bool     `mapstructure:"enabled"`
+	PollIntervalS int      `mapstructure:"poll_interval_s"` // default 10
+	WatchPaths    []string `mapstructure:"watch_paths"`
+}
+
+type ShareMonConfig struct {
+	Enabled       bool `mapstructure:"enabled"`
+	PollIntervalS int  `mapstructure:"poll_interval_s"` // default 10
+}
+
+type MemMonConfig struct {
+	Enabled       bool     `mapstructure:"enabled"`
+	PollIntervalS int      `mapstructure:"poll_interval_s"` // default 15
+	IgnoreComms   []string `mapstructure:"ignore_comms"`    // JIT processes to skip
+}
+
+type CronMonConfig struct {
+	Enabled    bool     `mapstructure:"enabled"`
+	WatchPaths []string `mapstructure:"watch_paths"`
 }
 
 type BufferConfig struct {
@@ -115,6 +153,27 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("monitors.registry.enabled", true)
 	v.SetDefault("monitors.browser.enabled", false)
 	v.SetDefault("monitors.browser.listen_addr", "127.0.0.1:9999")
+	v.SetDefault("monitors.kmod.enabled", true)
+	v.SetDefault("monitors.kmod.poll_interval_s", 5)
+	v.SetDefault("monitors.usb.enabled", true)
+	v.SetDefault("monitors.usb.poll_interval_s", 10)
+	v.SetDefault("monitors.pipe.enabled", true)
+	v.SetDefault("monitors.pipe.poll_interval_s", 10)
+	v.SetDefault("monitors.pipe.watch_paths", []string{"/tmp", "/var/tmp", "/dev/shm", "/run"})
+	v.SetDefault("monitors.share.enabled", true)
+	v.SetDefault("monitors.share.poll_interval_s", 10)
+	v.SetDefault("monitors.memmon.enabled", true)
+	v.SetDefault("monitors.memmon.poll_interval_s", 15)
+	v.SetDefault("monitors.memmon.ignore_comms", []string{
+		"java", "node", "python3", "python", "firefox",
+		"chrome", "chromium", "code",
+	})
+	v.SetDefault("monitors.cronmon.enabled", true)
+	v.SetDefault("monitors.cronmon.watch_paths", []string{
+		"/etc/crontab", "/etc/cron.d", "/etc/cron.daily",
+		"/etc/cron.hourly", "/etc/cron.weekly", "/etc/cron.monthly",
+		"/var/spool/cron",
+	})
 	v.SetDefault("buffer.path", "/var/lib/edr/events.db")
 	v.SetDefault("buffer.max_size_mb", 512)
 	v.SetDefault("buffer.flush_interval_s", 5)

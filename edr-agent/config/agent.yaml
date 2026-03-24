@@ -76,6 +76,51 @@ monitors:
     enabled: true              # accept events from the TraceGuard browser extension
     listen_addr: "127.0.0.1:9999"  # localhost-only HTTP endpoint for extension
 
+  kmod:
+    enabled: true
+    poll_interval_s: 5
+
+  usb:
+    enabled: true
+    poll_interval_s: 10
+
+  pipe:
+    enabled: true
+    poll_interval_s: 10
+    watch_paths:
+      - /tmp
+      - /var/tmp
+      - /dev/shm
+      - /run
+
+  share:
+    enabled: true
+    poll_interval_s: 10
+
+  memmon:
+    enabled: true
+    poll_interval_s: 15   # scan /proc/*/maps every 15 seconds
+    ignore_comms:         # JIT compilers and browsers create legitimate RWX regions
+      - java
+      - node
+      - python3
+      - python
+      - firefox
+      - chrome
+      - chromium
+      - code
+
+  cronmon:
+    enabled: true
+    watch_paths:
+      - /etc/crontab
+      - /etc/cron.d
+      - /etc/cron.daily
+      - /etc/cron.hourly
+      - /etc/cron.weekly
+      - /etc/cron.monthly
+      - /var/spool/cron
+
 buffer:
   path: "/var/lib/edr/events.db"
   max_size_mb: 512

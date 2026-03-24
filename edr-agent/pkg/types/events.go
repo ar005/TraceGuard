@@ -71,6 +71,27 @@ const (
 
 	// Browser monitoring (from extension)
 	EventBrowserRequest EventType = "BROWSER_REQUEST"
+
+	// Kernel module monitoring
+	EventKernelModuleLoad   EventType = "KERNEL_MODULE_LOAD"
+	EventKernelModuleUnload EventType = "KERNEL_MODULE_UNLOAD"
+
+	// USB device monitoring
+	EventUSBConnect    EventType = "USB_CONNECT"
+	EventUSBDisconnect EventType = "USB_DISCONNECT"
+
+	// Named pipe monitoring
+	EventPipeCreate EventType = "PIPE_CREATE"
+
+	// Network share monitoring
+	EventShareMount   EventType = "SHARE_MOUNT"
+	EventShareUnmount EventType = "SHARE_UNMOUNT"
+
+	// Memory injection detection
+	EventMemoryInject EventType = "MEMORY_INJECT"
+
+	// Cron/scheduled task monitoring
+	EventCronModify EventType = "CRON_MODIFY"
 )
 
 // ─── ProcessContext ───────────────────────────────────────────────────────────
@@ -338,4 +359,87 @@ type BrowserRequestEvent struct {
 	IsFormSubmit  bool     `json:"is_form_submit"`          // POST to main_frame = credential submission
 	RedirectChain []string `json:"redirect_chain,omitempty"`
 	BrowserName   string   `json:"browser_name,omitempty"`
+}
+
+// ─── Kernel Module Events ─────────────────────────────────────────────────
+
+// KernelModuleEvent is emitted when a kernel module is loaded or unloaded.
+type KernelModuleEvent struct {
+	BaseEvent
+	ModuleName string `json:"module_name"`
+	Size       int64  `json:"size"`                    // module size in bytes (0 on unload)
+	LoadedBy   string `json:"loaded_by,omitempty"`     // process that loaded it if known
+	Tainted    bool   `json:"tainted"`                 // kernel tainted flag
+	Signed     bool   `json:"signed"`                  // module has valid signature
+	FilePath   string `json:"file_path,omitempty"`     // path to .ko file if found
+}
+
+// USBDeviceEvent is emitted when a USB device is connected or disconnected.
+type USBDeviceEvent struct {
+	BaseEvent
+	DeviceName string `json:"device_name"`              // e.g. "sdb", "sdb1"
+	VendorID   string `json:"vendor_id"`                // USB vendor ID (hex)
+	ProductID  string `json:"product_id"`               // USB product ID (hex)
+	Vendor     string `json:"vendor"`                   // human-readable vendor name
+	Product    string `json:"product"`                  // human-readable product name
+	Serial     string `json:"serial,omitempty"`
+	BusNum     string `json:"bus_num"`
+	DevNum     string `json:"dev_num"`
+	DevType    string `json:"dev_type"`                 // "mass_storage", "hid", "audio", etc.
+	MountPoint string `json:"mount_point,omitempty"`    // if auto-mounted
+}
+
+// ─── Named Pipe Events ───────────────────────────────────────────────────
+
+// PipeEvent is emitted when a named pipe (FIFO) is created in a watched directory.
+type PipeEvent struct {
+	BaseEvent
+	PipePath    string `json:"pipe_path"`
+	CreatorPID  uint32 `json:"creator_pid,omitempty"`
+	CreatorComm string `json:"creator_comm,omitempty"`
+	Permissions string `json:"permissions"`
+	Location    string `json:"location"` // "tmp", "dev_shm", "run", "other"
+}
+
+// ─── Network Share Events ────────────────────────────────────────────────
+
+// ShareMountEvent is emitted when a network filesystem (NFS/CIFS/SMB) is mounted or unmounted.
+type ShareMountEvent struct {
+	BaseEvent
+	Source     string `json:"source"`      // e.g. "//192.168.1.10/share"
+	MountPoint string `json:"mount_point"` // e.g. "/mnt/share"
+	FSType     string `json:"fs_type"`     // "cifs", "nfs", "nfs4"
+	Options    string `json:"options"`     // mount options
+	RemoteHost string `json:"remote_host"` // extracted IP/hostname
+}
+
+// ─── Memory Injection Events ──────────────────────────────────────────────
+
+// MemoryInjectEvent is emitted when suspicious anonymous executable memory
+// regions are detected in a process (potential shellcode or code injection).
+type MemoryInjectEvent struct {
+	BaseEvent
+	TargetPID   uint32 `json:"target_pid"`
+	TargetComm  string `json:"target_comm"`
+	Address     string `json:"address"`     // hex address range
+	Size        int64  `json:"size"`        // bytes
+	Permissions string `json:"permissions"` // e.g. "rwxp"
+	Description string `json:"description"` // what was detected
+	Technique   string `json:"technique"`   // "anonymous_exec", "process_vm_write", "mprotect_exec", "memfd_exec"
+}
+
+// ─── Cron Modify Events ──────────────────────────────────────────────────
+
+// CronModifyEvent is emitted when a crontab file or systemd timer is
+// created, modified, or deleted.
+type CronModifyEvent struct {
+	BaseEvent
+	FilePath   string   `json:"file_path"`
+	Action     string   `json:"action"`                // "created", "modified", "deleted"
+	CronUser   string   `json:"cron_user"`             // user the cron runs as
+	Schedule   string   `json:"schedule"`              // e.g. "*/5 * * * *"
+	Command    string   `json:"command"`               // the command to execute
+	IsTimer    bool     `json:"is_timer"`              // systemd timer vs cron
+	Suspicious bool     `json:"suspicious"`            // contains wget/curl/base64/encoded
+	CronTags   []string `json:"cron_tags,omitempty"`   // "downloads", "encoded", "reverse-shell"
 }

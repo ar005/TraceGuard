@@ -25,6 +25,12 @@ import (
 	"github.com/youredr/edr-agent/internal/monitor/browser"
 	"github.com/youredr/edr-agent/internal/monitor/cmd"
 	"github.com/youredr/edr-agent/internal/monitor/file"
+	"github.com/youredr/edr-agent/internal/monitor/kmod"
+	"github.com/youredr/edr-agent/internal/monitor/cronmon"
+	"github.com/youredr/edr-agent/internal/monitor/memmon"
+	"github.com/youredr/edr-agent/internal/monitor/pipemon"
+	"github.com/youredr/edr-agent/internal/monitor/sharemount"
+	"github.com/youredr/edr-agent/internal/monitor/usb"
 	"github.com/youredr/edr-agent/internal/monitor/network"
 	"github.com/youredr/edr-agent/internal/monitor/process"
 	"github.com/youredr/edr-agent/internal/monitor/registry"
@@ -55,6 +61,12 @@ type Agent struct {
 	authMonitor     *auth.Monitor
 	vulnMonitor     *vuln.Monitor
 	browserMonitor  *browser.Monitor
+	kmodMonitor        *kmod.Monitor
+	usbMonitor         *usb.Monitor
+	pipeMonitor        *pipemon.Monitor
+	shareMountMonitor  *sharemount.Monitor
+	memMonitor         *memmon.Monitor
+	cronMonitor        *cronmon.Monitor
 }
 
 // New creates a new Agent from configuration.
@@ -166,6 +178,88 @@ func New(cfg *config.Config) (*Agent, error) {
 		}, bus, log)
 	}
 
+	// Kernel module monitor.
+	if cfg.Monitors.KMod.Enabled {
+		pollInterval := cfg.Monitors.KMod.PollIntervalS
+		if pollInterval <= 0 {
+			pollInterval = 5
+		}
+		a.kmodMonitor = kmod.New(kmod.Config{
+			Enabled:       true,
+			PollIntervalS: pollInterval,
+		}, bus, log)
+	}
+
+	// USB device monitor.
+	if cfg.Monitors.USB.Enabled {
+		pollInterval := cfg.Monitors.USB.PollIntervalS
+		if pollInterval <= 0 {
+			pollInterval = 10
+		}
+		a.usbMonitor = usb.New(usb.Config{
+			Enabled:       true,
+			PollIntervalS: pollInterval,
+		}, bus, log)
+	}
+
+	// Named pipe monitor.
+	if cfg.Monitors.Pipe.Enabled {
+		pollInterval := cfg.Monitors.Pipe.PollIntervalS
+		if pollInterval <= 0 {
+			pollInterval = 10
+		}
+		watchPaths := cfg.Monitors.Pipe.WatchPaths
+		if len(watchPaths) == 0 {
+			watchPaths = []string{"/tmp", "/var/tmp", "/dev/shm", "/run"}
+		}
+		a.pipeMonitor = pipemon.New(pipemon.Config{
+			Enabled:       true,
+			PollIntervalS: pollInterval,
+			WatchPaths:    watchPaths,
+		}, bus, log)
+	}
+
+	// Network share mount monitor.
+	if cfg.Monitors.Share.Enabled {
+		pollInterval := cfg.Monitors.Share.PollIntervalS
+		if pollInterval <= 0 {
+			pollInterval = 10
+		}
+		a.shareMountMonitor = sharemount.New(sharemount.Config{
+			Enabled:       true,
+			PollIntervalS: pollInterval,
+		}, bus, log)
+	}
+
+	// Memory injection monitor.
+	if cfg.Monitors.MemMon.Enabled {
+		pollInterval := cfg.Monitors.MemMon.PollIntervalS
+		if pollInterval <= 0 {
+			pollInterval = 15
+		}
+		ignoreComms := cfg.Monitors.MemMon.IgnoreComms
+		if len(ignoreComms) == 0 {
+			ignoreComms = memmon.DefaultConfig().IgnoreComms
+		}
+		a.memMonitor = memmon.New(memmon.Config{
+			Enabled:       true,
+			PollIntervalS: pollInterval,
+			IgnoreComms:   ignoreComms,
+		}, bus, log)
+	}
+
+	// Cron monitor.
+	if cfg.Monitors.CronMon.Enabled {
+		watchPaths := cfg.Monitors.CronMon.WatchPaths
+		if len(watchPaths) == 0 {
+			watchPaths = cronmon.DefaultConfig().WatchPaths
+		}
+		a.cronMonitor = cronmon.New(cronmon.Config{
+			Enabled:    true,
+			WatchPaths: watchPaths,
+		}, bus, log)
+	}
+
 	// Self-protection.
 	a.protect = selfprotect.New(selfprotect.Config{
 		AgentBinPath: cfg.SelfProtect.BinPath,
@@ -259,6 +353,54 @@ func (a *Agent) Start(ctx context.Context) error {
 		}
 	}
 
+	if a.kmodMonitor != nil {
+		if err := a.kmodMonitor.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("kmod monitor start failed")
+		} else {
+			a.log.Info().Msg("kernel module monitor running")
+		}
+	}
+
+	if a.usbMonitor != nil {
+		if err := a.usbMonitor.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("usb monitor start failed")
+		} else {
+			a.log.Info().Msg("USB device monitor running")
+		}
+	}
+
+	if a.pipeMonitor != nil {
+		if err := a.pipeMonitor.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("pipe monitor start failed")
+		} else {
+			a.log.Info().Msg("named pipe monitor running")
+		}
+	}
+
+	if a.shareMountMonitor != nil {
+		if err := a.shareMountMonitor.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("share mount monitor start failed")
+		} else {
+			a.log.Info().Msg("network share monitor running")
+		}
+	}
+
+	if a.memMonitor != nil {
+		if err := a.memMonitor.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("memory injection monitor start failed")
+		} else {
+			a.log.Info().Msg("memory injection monitor running")
+		}
+	}
+
+	if a.cronMonitor != nil {
+		if err := a.cronMonitor.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("cron monitor start failed")
+		} else {
+			a.log.Info().Msg("cron monitor running")
+		}
+	}
+
 	// Publish agent start event with full build info.
 	vi := version.Get()
 	a.bus.Publish(&agentLifecycleEvent{
@@ -316,6 +458,24 @@ func (a *Agent) shutdown() error {
 	time.Sleep(500 * time.Millisecond)
 
 	// Stop monitors in reverse order.
+	if a.cronMonitor != nil {
+		a.cronMonitor.Stop()
+	}
+	if a.memMonitor != nil {
+		a.memMonitor.Stop()
+	}
+	if a.shareMountMonitor != nil {
+		a.shareMountMonitor.Stop()
+	}
+	if a.pipeMonitor != nil {
+		a.pipeMonitor.Stop()
+	}
+	if a.usbMonitor != nil {
+		a.usbMonitor.Stop()
+	}
+	if a.kmodMonitor != nil {
+		a.kmodMonitor.Stop()
+	}
 	if a.browserMonitor != nil {
 		a.browserMonitor.Stop()
 	}
