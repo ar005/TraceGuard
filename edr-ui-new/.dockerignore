@@ -1,0 +1,8 @@
+node_modules
+.next
+.env
+.env.*
+npm-debug.log*
+README.md
+CLAUDE.md
+AGENTS.md
