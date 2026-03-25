@@ -58,6 +58,12 @@ const QUERY_TEMPLATES: QueryTemplate[] = [
   { category: "Security", label: "Suspicious cron jobs", query: `SELECT * FROM events WHERE event_type = 'CRON_MODIFY' AND payload->>'suspicious' = 'true' LIMIT 50` },
   { category: "Security", label: "Reverse shell cron entries", query: `SELECT * FROM events WHERE event_type = 'CRON_MODIFY' AND payload->>'cron_tags' LIKE '%reverse-shell%' LIMIT 50` },
 
+  // TLS SNI
+  { category: "TLS/HTTPS", label: "All TLS SNI connections", query: `SELECT * FROM events WHERE event_type = 'NET_TLS_SNI' ORDER BY timestamp DESC LIMIT 100` },
+  { category: "TLS/HTTPS", label: "TLS connections to rare TLDs", query: `SELECT * FROM events WHERE event_type = 'NET_TLS_SNI' AND payload->>'domain' ~ '\\.(tk|xyz|top|pw|cc|click)$' LIMIT 50` },
+  { category: "TLS/HTTPS", label: "TLS connections by specific process", query: `SELECT * FROM events WHERE event_type = 'NET_TLS_SNI' AND payload->>'process_comm' = 'curl' LIMIT 50` },
+  { category: "TLS/HTTPS", label: "TLS 1.0/1.1 connections (deprecated)", query: `SELECT * FROM events WHERE event_type = 'NET_TLS_SNI' AND payload->>'tls_version' IN ('TLS 1.0','TLS 1.1') LIMIT 50` },
+
   // Commands
   { category: "Commands", label: "Reverse shell commands", query: `SELECT * FROM events WHERE event_type IN ('CMD_EXEC','CMD_HISTORY') AND payload->>'tags' LIKE '%revshell%' LIMIT 50` },
   { category: "Commands", label: "History evasion attempts", query: `SELECT * FROM events WHERE event_type IN ('CMD_EXEC','CMD_HISTORY') AND payload->>'tags' LIKE '%history-evasion%' LIMIT 50` },
@@ -109,6 +115,8 @@ function summarizeEvent(evt: Event): string {
     case "SHARE_MOUNT":
     case "SHARE_UNMOUNT":
       return `${p.source ?? "?"} -> ${p.mount_point ?? "?"} (${p.fs_type ?? "?"})`;
+    case "NET_TLS_SNI":
+      return `${p.process_comm ?? ""} → ${p.domain ?? "?"} (${p.dst_ip ?? "?"}:${p.dst_port ?? "443"}) ${p.tls_version ?? ""}`;
     case "LOGIN_SUCCESS":
     case "LOGIN_FAILED":
     case "SUDO_EXEC":

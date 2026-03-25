@@ -699,6 +699,37 @@ var migrations = []struct {
 		ON CONFLICT (id) DO NOTHING;
 		`,
 	},
+	{
+		name: "seed_tlssni_rules",
+		sql: `
+		INSERT INTO rules (id, name, description, severity, event_types, conditions, mitre_ids, author,
+		                   rule_type, threshold_count, threshold_window_s, group_by)
+		VALUES
+		(
+			'rule-tlssni-rare-tld',
+			'TLS Connection to Rare TLD',
+			'A process established a TLS connection to a domain with a known-abuse TLD (.tk, .xyz, .top, .pw, .click, etc.).',
+			2,
+			ARRAY['NET_TLS_SNI'],
+			'[{"field":"domain","op":"regex","value":"\\.(tk|xyz|top|pw|cc|ws|click|link|work|date|download|racing|stream|gdn|bid)$"}]',
+			ARRAY['T1071.001'],
+			'system',
+			'match', 0, 0, ''
+		),
+		(
+			'rule-tlssni-beaconing',
+			'TLS Beaconing to Single Domain (threshold)',
+			'20+ TLS connections to the same external domain in 5 minutes — possible C2 beaconing.',
+			3,
+			ARRAY['NET_TLS_SNI'],
+			'[]',
+			ARRAY['T1071.001','T1573.002'],
+			'system',
+			'threshold', 20, 300, 'domain'
+		)
+		ON CONFLICT (id) DO NOTHING;
+		`,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.

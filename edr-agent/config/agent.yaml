@@ -110,6 +110,9 @@ monitors:
       - chromium
       - code
 
+  tlssni:
+    enabled: true
+
   cronmon:
     enabled: true
     watch_paths:

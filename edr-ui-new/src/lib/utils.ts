@@ -139,6 +139,8 @@ export function eventTypeColor(type: string): string {
       return "text-yellow-400";
     case "PIPE_CREATE":
       return "text-cyan-400";
+    case "NET_TLS_SNI":
+      return "text-indigo-400";
     case "SHARE_MOUNT":
     case "SHARE_UNMOUNT":
       return "text-teal-400";

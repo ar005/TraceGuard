@@ -92,6 +92,9 @@ const (
 
 	// Cron/scheduled task monitoring
 	EventCronModify EventType = "CRON_MODIFY"
+
+	// TLS SNI monitoring
+	EventTLSSNI EventType = "NET_TLS_SNI"
 )
 
 // ─── ProcessContext ───────────────────────────────────────────────────────────
@@ -429,6 +432,19 @@ type MemoryInjectEvent struct {
 }
 
 // ─── Cron Modify Events ──────────────────────────────────────────────────
+
+// TLSSNIEvent is emitted when a TLS ClientHello with SNI is observed.
+type TLSSNIEvent struct {
+	BaseEvent
+	Domain      string `json:"domain"`                    // SNI server_name value
+	DstIP       string `json:"dst_ip"`                    // destination IP
+	DstPort     uint16 `json:"dst_port"`                  // destination port (usually 443)
+	SrcIP       string `json:"src_ip"`                    // source IP
+	SrcPort     uint16 `json:"src_port"`                  // source port
+	TLSVersion  string `json:"tls_version"`               // from ClientHello (e.g. "TLS 1.2", "TLS 1.3")
+	ProcessPID  uint32 `json:"process_pid,omitempty"`     // resolved from /proc/net/tcp if possible
+	ProcessComm string `json:"process_comm,omitempty"`    // process name
+}
 
 // CronModifyEvent is emitted when a crontab file or systemd timer is
 // created, modified, or deleted.

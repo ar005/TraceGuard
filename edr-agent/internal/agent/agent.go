@@ -32,6 +32,7 @@ import (
 	"github.com/youredr/edr-agent/internal/monitor/sharemount"
 	"github.com/youredr/edr-agent/internal/monitor/usb"
 	"github.com/youredr/edr-agent/internal/monitor/network"
+	"github.com/youredr/edr-agent/internal/monitor/tlssni"
 	"github.com/youredr/edr-agent/internal/monitor/process"
 	"github.com/youredr/edr-agent/internal/monitor/registry"
 	"github.com/youredr/edr-agent/internal/monitor/vuln"
@@ -67,6 +68,7 @@ type Agent struct {
 	shareMountMonitor  *sharemount.Monitor
 	memMonitor         *memmon.Monitor
 	cronMonitor        *cronmon.Monitor
+	tlssniMonitor      *tlssni.Monitor
 }
 
 // New creates a new Agent from configuration.
@@ -260,6 +262,11 @@ func New(cfg *config.Config) (*Agent, error) {
 		}, bus, log)
 	}
 
+	// TLS SNI monitor.
+	if cfg.Monitors.TLSSNI.Enabled {
+		a.tlssniMonitor = tlssni.New(tlssni.DefaultConfig(), bus, log)
+	}
+
 	// Self-protection.
 	a.protect = selfprotect.New(selfprotect.Config{
 		AgentBinPath: cfg.SelfProtect.BinPath,
@@ -401,6 +408,14 @@ func (a *Agent) Start(ctx context.Context) error {
 		}
 	}
 
+	if a.tlssniMonitor != nil {
+		if err := a.tlssniMonitor.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("TLS SNI monitor start failed (need root/CAP_NET_RAW)")
+		} else {
+			a.log.Info().Msg("TLS SNI monitor running")
+		}
+	}
+
 	// Publish agent start event with full build info.
 	vi := version.Get()
 	a.bus.Publish(&agentLifecycleEvent{
@@ -458,6 +473,9 @@ func (a *Agent) shutdown() error {
 	time.Sleep(500 * time.Millisecond)
 
 	// Stop monitors in reverse order.
+	if a.tlssniMonitor != nil {
+		a.tlssniMonitor.Stop()
+	}
 	if a.cronMonitor != nil {
 		a.cronMonitor.Stop()
 	}

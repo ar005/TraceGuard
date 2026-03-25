@@ -23,6 +23,7 @@ const FILTERS = [
   { label: "Memory", value: "MEMORY_INJECT" },
   { label: "Cron", value: "CRON_MODIFY" },
   { label: "Pipe", value: "PIPE_CREATE" },
+  { label: "TLS SNI", value: "NET_TLS_SNI" },
   { label: "Share", value: "SHARE_MOUNT" },
 ] as const;
 
@@ -43,6 +44,7 @@ const TYPE_BADGE_COLORS: Record<string, string> = {
   PIPE_CREATE: "bg-cyan-400/15 text-cyan-300",
   SHARE_MOUNT: "bg-teal-600/15 text-teal-300",
   SHARE_UNMOUNT: "bg-teal-600/15 text-teal-300",
+  NET_TLS_SNI: "bg-indigo-500/15 text-indigo-400",
 };
 
 const PAGE_SIZE = 50;
@@ -118,6 +120,13 @@ function extractSummary(evt: Event): string {
       const fsType = (p.fs_type as string) ?? "";
       const parts2 = [source, mountPt, fsType].filter(Boolean);
       return parts2.length > 0 ? parts2.join(" -> ") : "—";
+    }
+    case "NET_TLS_SNI": {
+      const domain = (p.domain as string) ?? "";
+      const dstIp = (p.dst_ip as string) ?? "";
+      const comm = (p.process_comm as string) ?? "";
+      const ver = (p.tls_version as string) ?? "";
+      return [comm, domain, dstIp, ver].filter(Boolean).join(" → ") || "—";
     }
     default:
       return (p.cmdline as string) ?? (p.command as string) ?? (p.path as string) ?? "—";

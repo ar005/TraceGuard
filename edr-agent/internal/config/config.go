@@ -49,6 +49,7 @@ type MonitorsConfig struct {
 	Share    ShareMonConfig        `mapstructure:"share"`
 	MemMon   MemMonConfig          `mapstructure:"memmon"`
 	CronMon  CronMonConfig         `mapstructure:"cronmon"`
+	TLSSNI   TLSSNIConfig          `mapstructure:"tlssni"`
 }
 
 type ProcessMonitorConfig struct {
@@ -114,6 +115,10 @@ type CronMonConfig struct {
 	WatchPaths []string `mapstructure:"watch_paths"`
 }
 
+type TLSSNIConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+}
+
 type BufferConfig struct {
 	Path           string `mapstructure:"path"`
 	MaxSizeMB      int    `mapstructure:"max_size_mb"`
@@ -174,6 +179,7 @@ func Load(path string) (*Config, error) {
 		"/etc/cron.hourly", "/etc/cron.weekly", "/etc/cron.monthly",
 		"/var/spool/cron",
 	})
+	v.SetDefault("monitors.tlssni.enabled", true)
 	v.SetDefault("buffer.path", "/var/lib/edr/events.db")
 	v.SetDefault("buffer.max_size_mb", 512)
 	v.SetDefault("buffer.flush_interval_s", 5)
