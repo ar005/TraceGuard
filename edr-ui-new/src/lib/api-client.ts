@@ -33,7 +33,7 @@ function buildUrl(path: string, params?: Record<string, string | number | boolea
 
 async function request<T>(method: string, path: string, body?: unknown, params?: Record<string, string | number | boolean | undefined>): Promise<T> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30_000);
+  const timeout = setTimeout(() => controller.abort(), 90_000);
 
   try {
     const res = await fetch(buildUrl(path, params), {

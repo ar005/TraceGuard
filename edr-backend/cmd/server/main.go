@@ -18,6 +18,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/youredr/edr-backend/internal/api"
+	"github.com/youredr/edr-backend/internal/cvecache"
 	"github.com/youredr/edr-backend/internal/sse"
 	"github.com/youredr/edr-backend/internal/llm"
 	"github.com/youredr/edr-backend/internal/apikeys"
@@ -240,6 +241,10 @@ func main() {
 			RequestsPerSecond: cfg.RateLimit.RequestsPerSecond,
 			Burst:             cfg.RateLimit.Burst,
 		})
+	// ── CVE Cache Fetcher ────────────────────────────────────────────────────
+	cveFetcher := cvecache.New(st, logger)
+	apiServer.SetCVEFetcher(cveFetcher)
+
 	go func() {
 		if err := apiServer.Listen(cfg.Server.HTTPAddr); err != nil {
 			if err.Error() != "http: Server closed" {

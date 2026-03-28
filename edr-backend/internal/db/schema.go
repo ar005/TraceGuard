@@ -730,6 +730,25 @@ var migrations = []struct {
 		ON CONFLICT (id) DO NOTHING;
 		`,
 	},
+	{
+		name: "create_cve_cache",
+		sql: `
+		CREATE TABLE IF NOT EXISTS cve_cache (
+			cve_id         TEXT PRIMARY KEY,
+			severity       TEXT NOT NULL DEFAULT 'UNKNOWN',
+			description    TEXT NOT NULL DEFAULT '',
+			published_date TIMESTAMPTZ,
+			"references"   TEXT[] NOT NULL DEFAULT '{}',
+			exploit_available BOOLEAN NOT NULL DEFAULT FALSE,
+			cisa_kev       BOOLEAN NOT NULL DEFAULT FALSE,
+			source         TEXT NOT NULL DEFAULT 'nvd',
+			fetched_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			raw_json       JSONB
+		);
+		CREATE INDEX IF NOT EXISTS cve_cache_severity_idx ON cve_cache(severity);
+		CREATE INDEX IF NOT EXISTS cve_cache_fetched_idx ON cve_cache(fetched_at);
+		`,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.

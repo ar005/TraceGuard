@@ -1311,6 +1311,33 @@ func (s *Store) LoadActiveIOCs(ctx context.Context, iocType string) (map[string]
 	return m, nil
 }
 
+// ─── CVE Cache ───────────────────────────────────────────────────────────────
+
+// GetCVE returns a cached CVE detail by ID.
+func (s *Store) GetCVE(ctx context.Context, cveID string) (*models.CVEDetail, error) {
+	var c models.CVEDetail
+	err := s.db.GetContext(ctx, &c, `SELECT cve_id, severity, description, published_date, "references", exploit_available, cisa_kev, source, fetched_at FROM cve_cache WHERE cve_id=$1`, cveID)
+	return &c, err
+}
+
+// UpsertCVE inserts or updates a CVE in the cache.
+func (s *Store) UpsertCVE(ctx context.Context, c *models.CVEDetail) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO cve_cache (cve_id, severity, description, published_date, "references", exploit_available, cisa_kev, source, fetched_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
+		ON CONFLICT (cve_id) DO UPDATE SET
+			severity = EXCLUDED.severity,
+			description = EXCLUDED.description,
+			published_date = EXCLUDED.published_date,
+			"references" = EXCLUDED."references",
+			exploit_available = EXCLUDED.exploit_available,
+			cisa_kev = EXCLUDED.cisa_kev,
+			source = EXCLUDED.source,
+			fetched_at = NOW()
+	`, c.CVEID, c.Severity, c.Description, c.PublishedDate, pq.Array(c.References), c.ExploitAvailable, c.CisaKEV, c.Source)
+	return err
+}
+
 // IncrIOCHits increments the hit count and updates last_hit_at for an IOC.
 func (s *Store) IncrIOCHits(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx,

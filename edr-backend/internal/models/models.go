@@ -207,6 +207,19 @@ type RuleCondition struct {
 	Value interface{} `json:"value"`
 }
 
+// CVEDetail represents a cached CVE record from NVD or other source.
+type CVEDetail struct {
+	CVEID            string         `db:"cve_id"            json:"cve_id"`
+	Severity         string         `db:"severity"          json:"severity"`
+	Description      string         `db:"description"       json:"description"`
+	PublishedDate    *time.Time     `db:"published_date"    json:"published_date,omitempty"`
+	References       pq.StringArray `db:"references"        json:"references"`
+	ExploitAvailable bool           `db:"exploit_available" json:"exploit_available"`
+	CisaKEV          bool           `db:"cisa_kev"          json:"cisa_kev"`
+	Source           string         `db:"source"            json:"source"`
+	FetchedAt        time.Time      `db:"fetched_at"        json:"fetched_at"`
+}
+
 // SeverityLabel returns a human-readable severity label.
 func SeverityLabel(s int16) string {
 	switch s {

@@ -282,6 +282,39 @@ func (s *Server) processEvent(env *pb.EventEnvelope) {
 	detStart := time.Now()
 	s.engine.Evaluate(ctx, ev)
 	metrics.DetectionDuration.Observe(time.Since(detStart).Seconds())
+
+	// Process PKG_INVENTORY events: extract packages into the agent_packages table.
+	if env.EventType == "PKG_INVENTORY" {
+		go s.processPackageInventory(ctx, env.AgentID, env.Payload)
+	}
+}
+
+func (s *Server) processPackageInventory(ctx context.Context, agentID string, payload []byte) {
+	var data struct {
+		Packages []struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+			Arch    string `json:"arch"`
+		} `json:"packages"`
+	}
+	if err := json.Unmarshal(payload, &data); err != nil {
+		s.log.Error().Err(err).Msg("failed to parse PKG_INVENTORY payload")
+		return
+	}
+	if len(data.Packages) == 0 {
+		return
+	}
+
+	pkgs := make([]models.AgentPackage, len(data.Packages))
+	for i, p := range data.Packages {
+		pkgs[i] = models.AgentPackage{Name: p.Name, Version: p.Version, Arch: p.Arch}
+	}
+
+	if err := s.store.UpsertAgentPackages(ctx, agentID, pkgs); err != nil {
+		s.log.Error().Err(err).Str("agent", agentID).Int("packages", len(pkgs)).Msg("failed to store packages")
+		return
+	}
+	s.log.Info().Str("agent", agentID).Int("packages", len(pkgs)).Msg("package inventory updated")
 }
 
 // ─── Middleware ───────────────────────────────────────────────────────────────

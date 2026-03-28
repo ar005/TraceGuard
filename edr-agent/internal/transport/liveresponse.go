@@ -46,6 +46,7 @@ var allowedActions = map[string]bool{
 	"quarantine": true, "restore": true,
 	"block_ip": true, "unblock_ip": true,
 	"list_blocked": true, "list_quarantined": true,
+	"scan_packages": true,
 }
 
 // StartLiveResponse connects to the backend's LiveResponse bidi stream.
@@ -275,6 +276,21 @@ func (t *GRPCTransport) executeCommand(cmd *liveCommand) *liveResult {
 			result.Stdout = jsonStr
 		}
 		return result
+	case "scan_packages":
+		// Run dpkg-query or rpm to collect package list; the actual inventory
+		// event will be sent by the next scheduled vuln monitor cycle, but we
+		// return immediate output for the live response caller.
+		if _, err := exec.LookPath("dpkg-query"); err == nil {
+			cmdName = "dpkg-query"
+			cmdArgs = []string{"-W", "-f", "${Package}\t${Version}\t${Architecture}\n"}
+		} else if _, err := exec.LookPath("rpm"); err == nil {
+			cmdName = "rpm"
+			cmdArgs = []string{"-qa", "--queryformat", "%{NAME}\t%{VERSION}-%{RELEASE}\t%{ARCH}\n"}
+		} else {
+			result.Status = "error"
+			result.Error = "no supported package manager found (dpkg-query or rpm)"
+			return result
+		}
 	case "exec":
 		if len(cmd.Args) == 0 {
 			result.Status = "error"

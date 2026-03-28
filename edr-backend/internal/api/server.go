@@ -22,6 +22,7 @@ import (
 
 	"github.com/youredr/edr-backend/internal/apikeys"
 	"github.com/youredr/edr-backend/internal/configver"
+	"github.com/youredr/edr-backend/internal/cvecache"
 	"github.com/youredr/edr-backend/internal/llm"
 	"github.com/youredr/edr-backend/internal/metrics"
 	"github.com/youredr/edr-backend/internal/liveresponse"
@@ -49,8 +50,9 @@ type Server struct {
 	log      zerolog.Logger
 	router   *gin.Engine
 	http     *http.Server
-	apiKey   string // legacy single-key fallback
-	rateLimit RateLimitConfig
+	apiKey     string // legacy single-key fallback
+	rateLimit  RateLimitConfig
+	cveFetcher *cvecache.Fetcher
 }
 
 // New creates the API server and registers all routes.
@@ -181,8 +183,10 @@ func (s *Server) registerRoutes() {
 
 		// Package inventory & vulnerabilities
 		v1.GET("/agents/:id/packages",        s.handleListAgentPackages)
+		v1.POST("/agents/:id/scan-packages",  s.handleScanPackages)
 		v1.GET("/agents/:id/vulnerabilities", s.handleListAgentVulns)
 		v1.GET("/vulnerabilities",            s.handleListVulnerabilities)
+		v1.GET("/cve/:id",                    s.handleGetCVE)
 
 		// IOC / Threat Intelligence
 		v1.GET("/iocs",           s.handleListIOCs)
@@ -1794,6 +1798,62 @@ func (s *Server) handleListAgentPackages(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"packages": pkgs, "total": len(pkgs)})
 }
 
+// POST /api/v1/agents/:id/scan-packages
+func (s *Server) handleScanPackages(c *gin.Context) {
+	agentID := c.Param("id")
+	if s.lr == nil || !s.lr.IsConnected(agentID) {
+		c.JSON(http.StatusOK, gin.H{"status": "agent not connected for live response", "agent_id": agentID, "packages": 0})
+		return
+	}
+
+	// Send scan command and WAIT for the result (synchronous — up to 60s).
+	result, err := s.lr.SendCommand(c.Request.Context(), agentID, "scan_packages", nil, 60)
+	if err != nil {
+		s.log.Warn().Err(err).Str("agent", agentID).Msg("package scan failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "scan failed: " + err.Error()})
+		return
+	}
+
+	// Parse the tab-delimited output (name\tversion\tarch per line).
+	output := ""
+	if result != nil {
+		output = result.Stdout
+	}
+
+	lines := strings.Split(output, "\n")
+	var pkgs []models.AgentPackage
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) < 2 {
+			continue
+		}
+		pkg := models.AgentPackage{
+			AgentID: agentID,
+			Name:    parts[0],
+			Version: parts[1],
+		}
+		if len(parts) >= 3 {
+			pkg.Arch = parts[2]
+		}
+		pkgs = append(pkgs, pkg)
+	}
+
+	if len(pkgs) > 0 {
+		if err := s.store.UpsertAgentPackages(c.Request.Context(), agentID, pkgs); err != nil {
+			s.log.Error().Err(err).Str("agent", agentID).Msg("failed to store scanned packages")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store packages"})
+			return
+		}
+	}
+
+	s.log.Info().Str("agent", agentID).Int("packages", len(pkgs)).Msg("on-demand package scan complete")
+	c.JSON(http.StatusOK, gin.H{"status": "scan complete", "agent_id": agentID, "packages": len(pkgs)})
+}
+
 // GET /api/v1/agents/:id/vulnerabilities
 func (s *Server) handleListAgentVulns(c *gin.Context) {
 	agentID := c.Param("id")
@@ -1832,6 +1892,32 @@ func (s *Server) handleListVulnerabilities(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"vulnerabilities": vulns, "total": len(vulns)})
+}
+
+// ─── CVE Cache ───────────────────────────────────────────────────────────────
+
+// SetCVEFetcher injects the CVE cache fetcher after construction.
+func (s *Server) SetCVEFetcher(f *cvecache.Fetcher) {
+	s.cveFetcher = f
+}
+
+// GET /api/v1/cve/:id
+func (s *Server) handleGetCVE(c *gin.Context) {
+	cveID := strings.ToUpper(c.Param("id"))
+	if !strings.HasPrefix(cveID, "CVE-") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid CVE ID format"})
+		return
+	}
+	if s.cveFetcher == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "CVE lookup not configured"})
+		return
+	}
+	detail, err := s.cveFetcher.Lookup(c.Request.Context(), cveID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, detail)
 }
 
 // ─── IOC Handlers ─────────────────────────────────────────────────────────────

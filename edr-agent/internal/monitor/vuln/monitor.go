@@ -29,7 +29,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		Enabled:  true,
-		Interval: 6 * time.Hour,
+		Interval: 24 * time.Hour,
 	}
 }
 
@@ -46,7 +46,7 @@ type Monitor struct {
 // New creates a new vuln monitor.
 func New(cfg Config, bus events.Bus, log zerolog.Logger) *Monitor {
 	if cfg.Interval == 0 {
-		cfg.Interval = 6 * time.Hour
+		cfg.Interval = 24 * time.Hour
 	}
 	return &Monitor{
 		cfg:    cfg,

@@ -82,6 +82,7 @@ var allowedActions = map[string]bool{
 	"unblock_ip":       true,
 	"list_blocked":     true,
 	"list_quarantined": true,
+	"scan_packages":    true,
 }
 
 // RegisterAgent registers an agent's live response session.
