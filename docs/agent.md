@@ -238,6 +238,136 @@ Receives web request events from the TraceGuard browser extension (Chrome/Firefo
 - Auto-tags events: `browser`, resource type, `form-submit`, `cached`, `redirected`, `auth-page`
 - Provides a `/health` endpoint for extension connectivity checks
 
+### Kernel Module Monitor (kmod)
+
+Monitors kernel module loads and unloads by polling `/proc/modules`. Detects rootkits and unauthorized kernel drivers.
+
+- Polls `/proc/modules` at configurable intervals (default 5 seconds)
+- Detects new module loads and module removals by comparing against a baseline snapshot
+- Checks module signing status (signed vs unsigned) via `modinfo`
+- Detects kernel taint state changes after module loads
+- Reports module name and size
+
+**Event types:** `KERNEL_MODULE_LOAD`, `KERNEL_MODULE_UNLOAD`
+
+**Config options:**
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `monitors.kmod.enabled` | bool | `true` | Enable kernel module monitoring. |
+| `monitors.kmod.poll_interval_s` | int | `5` | How often (in seconds) to poll /proc/modules. |
+
+### USB Device Monitor
+
+Monitors USB device connect/disconnect events by polling `/sys/bus/usb/devices/`. Detects mass storage devices (data exfiltration vectors) and rapid USB insertion attacks (BadUSB, rubber ducky).
+
+- Polls sysfs USB device tree at configurable intervals (default 10 seconds)
+- Detects new device connections and removals by comparing against a baseline
+- Extracts vendor ID, product ID, vendor name, product name, serial number, bus/device numbers
+- Classifies device types (mass storage, HID, etc.) from sysfs attributes
+
+**Event types:** `USB_CONNECT`, `USB_DISCONNECT`
+
+**Config options:**
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `monitors.usb.enabled` | bool | `true` | Enable USB device monitoring. |
+| `monitors.usb.poll_interval_s` | int | `10` | How often (in seconds) to poll sysfs for USB changes. |
+
+### Memory Injection Monitor (memmon)
+
+Detects suspicious memory operations by polling `/proc/[pid]/maps` for anonymous executable memory regions -- a strong indicator of shellcode injection or reflective DLL loading.
+
+- Scans `/proc/*/maps` at configurable intervals (default 15 seconds)
+- Identifies anonymous memory regions with executable permissions (rwxp) not backed by a file
+- Maintains a baseline of known regions per PID to avoid duplicate alerts
+- Skips processes known to use JIT compilation (Java, Node.js, Python, browsers, VS Code) via configurable ignore list
+- Reports region address, size, and permissions
+
+**Event types:** `MEMORY_INJECT`
+
+**Config options:**
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `monitors.memmon.enabled` | bool | `true` | Enable memory injection detection. |
+| `monitors.memmon.poll_interval_s` | int | `15` | How often (in seconds) to scan /proc/*/maps. |
+| `monitors.memmon.ignore_comms` | string[] | `[java, node, python3, python, firefox, chrome, chromium, code]` | Process names to skip (JIT compilers create legitimate executable anonymous regions). |
+
+### Cron Parsing Monitor (cronmon)
+
+Watches cron directories and systemd timer files for changes. Subscribes to FILE_WRITE and FILE_CREATE events on the event bus, parses crontab content, and emits structured CRON_MODIFY events with entry details and suspicious pattern detection.
+
+- Subscribes to file events on cron paths (no additional polling)
+- Parses crontab files to extract schedule, user, and command fields
+- Tags suspicious entries: download commands (wget, curl), encoded payloads (base64), reverse shell patterns (/dev/tcp, nc -e, bash -i)
+- Monitors standard cron directories: `/etc/crontab`, `/etc/cron.d`, `/etc/cron.daily`, `/etc/cron.hourly`, `/etc/cron.weekly`, `/etc/cron.monthly`, `/var/spool/cron`
+
+**Event types:** `CRON_MODIFY`
+
+**Config options:**
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `monitors.cronmon.enabled` | bool | `true` | Enable cron parsing monitor. |
+| `monitors.cronmon.watch_paths` | string[] | `[/etc/crontab, /etc/cron.d, /etc/cron.daily, /etc/cron.hourly, /etc/cron.weekly, /etc/cron.monthly, /var/spool/cron]` | Paths to monitor for cron changes. |
+
+### Named Pipe Monitor (pipemon)
+
+Monitors watched directories for new named pipes (FIFOs). Named pipes in temp directories are a common indicator of C2 frameworks like Cobalt Strike and PsExec for inter-process communication.
+
+- Polls watched directories at configurable intervals (default 10 seconds)
+- Detects new FIFO-type files by comparing against a baseline
+- Reports pipe path, permissions, and location classification (tmp, dev_shm, run)
+- Default watch paths: `/tmp`, `/var/tmp`, `/dev/shm`, `/run`
+
+**Event types:** `PIPE_CREATE`
+
+**Config options:**
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `monitors.pipe.enabled` | bool | `true` | Enable named pipe monitoring. |
+| `monitors.pipe.poll_interval_s` | int | `10` | How often (in seconds) to scan directories for new FIFOs. |
+| `monitors.pipe.watch_paths` | string[] | `[/tmp, /var/tmp, /dev/shm, /run]` | Directories to watch for named pipe creation. |
+
+### Network Share Monitor (sharemount)
+
+Monitors network filesystem mounts (NFS, CIFS, SMB) by polling `/proc/mounts`. Detects lateral movement via new share mounts and data staging via network shares.
+
+- Polls `/proc/mounts` at configurable intervals (default 10 seconds)
+- Detects mount and unmount events for network filesystem types: cifs, nfs, nfs4, smbfs
+- Extracts mount source, mount point, filesystem type, mount options, and remote host
+- Compares against baseline to detect new mounts and removed mounts
+
+**Event types:** `SHARE_MOUNT`, `SHARE_UNMOUNT`
+
+**Config options:**
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `monitors.share.enabled` | bool | `true` | Enable network share monitoring. |
+| `monitors.share.poll_interval_s` | int | `10` | How often (in seconds) to poll /proc/mounts. |
+
+### TLS SNI Monitor (tlssni)
+
+Passively extracts TLS Server Name Indication (SNI) from ClientHello messages using a raw AF_INET socket. This reveals which HTTPS domains every process connects to without certificates or MITM proxy. Requires root or CAP_NET_RAW.
+
+- Opens a raw socket to capture outbound TCP packets to port 443
+- Parses TLS ClientHello messages to extract the SNI extension field
+- Performs PID attribution by correlating source port with `/proc/net/tcp`
+- Deduplicates events with a 30-second TTL cache (same domain + PID)
+- Detection rules match on rare TLDs and beaconing patterns
+
+**Event types:** `NET_TLS_SNI`
+
+**Config options:**
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `monitors.tlssni.enabled` | bool | `true` | Enable TLS SNI extraction. |
+
 ## Event Types
 
 ### Process Events
@@ -305,6 +435,51 @@ Receives web request events from the TraceGuard browser extension (Chrome/Firefo
 | Event Type | Description |
 |---|---|
 | `PKG_INVENTORY` | Full package inventory snapshot from the endpoint. Includes list of packages with name/version/arch, OS, and OS version. |
+
+### Kernel Module Events
+
+| Event Type | Description |
+|---|---|
+| `KERNEL_MODULE_LOAD` | A kernel module was loaded. Includes module name, size, signed/unsigned status, and kernel taint state. |
+| `KERNEL_MODULE_UNLOAD` | A kernel module was unloaded. Includes module name. |
+
+### USB Device Events
+
+| Event Type | Description |
+|---|---|
+| `USB_CONNECT` | A USB device was connected. Includes vendor ID, product ID, vendor name, product name, serial number, bus/device numbers, device type. |
+| `USB_DISCONNECT` | A USB device was disconnected. Includes the same device identification fields. |
+
+### Memory Injection Events
+
+| Event Type | Description |
+|---|---|
+| `MEMORY_INJECT` | An anonymous executable memory region was detected in a process. Includes PID, comm, region address, size, and permissions. Indicates possible shellcode injection or reflective loading. |
+
+### Cron Events
+
+| Event Type | Description |
+|---|---|
+| `CRON_MODIFY` | A cron entry was created, modified, or deleted. Includes file path, parsed schedule, user, command, and suspicious pattern tags (download, encoded, reverse-shell). |
+
+### Named Pipe Events
+
+| Event Type | Description |
+|---|---|
+| `PIPE_CREATE` | A named pipe (FIFO) was created in a watched directory. Includes pipe path, permissions, and location classification. |
+
+### Network Share Events
+
+| Event Type | Description |
+|---|---|
+| `SHARE_MOUNT` | A network filesystem (CIFS/NFS/SMB) was mounted. Includes source, mount point, filesystem type, options, and remote host. |
+| `SHARE_UNMOUNT` | A network filesystem was unmounted. Includes the same mount identification fields. |
+
+### TLS SNI Events
+
+| Event Type | Description |
+|---|---|
+| `NET_TLS_SNI` | A TLS ClientHello SNI field was extracted from an outbound HTTPS connection. Includes domain name, destination IP/port, and PID attribution. |
 
 ### Browser Events
 

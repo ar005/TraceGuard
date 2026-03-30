@@ -757,8 +757,8 @@ func Open(dsn string) (*sqlx.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect postgres: %w", err)
 	}
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(5)
+	db.SetMaxOpenConns(50)
+	db.SetMaxIdleConns(25)
 	return db, nil
 }
 

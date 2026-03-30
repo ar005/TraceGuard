@@ -6,17 +6,17 @@ package ingest
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
-	"crypto/tls"
-	"crypto/x509"
-	"os"
-
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -27,11 +27,22 @@ import (
 	"github.com/youredr/edr-backend/internal/detection"
 	"github.com/youredr/edr-backend/internal/liveresponse"
 	"github.com/youredr/edr-backend/internal/metrics"
-	"github.com/youredr/edr-backend/internal/sse"
 	"github.com/youredr/edr-backend/internal/models"
 	pb "github.com/youredr/edr-backend/internal/proto"
+	"github.com/youredr/edr-backend/internal/sse"
 	"github.com/youredr/edr-backend/internal/store"
 )
+
+const (
+	batchSize          = 50
+	batchFlushInterval = 200 * time.Millisecond
+)
+
+// batchEntry pairs an event with its envelope for post-insert processing.
+type batchEntry struct {
+	event *models.Event
+	env   *pb.EventEnvelope
+}
 
 // Server implements the gRPC EventService.
 type Server struct {
@@ -39,8 +50,12 @@ type Server struct {
 	engine    *detection.Engine
 	sseBroker *sse.Broker
 	lr        *liveresponse.Manager
-	log      zerolog.Logger
-	grpc     *grpc.Server
+	log       zerolog.Logger
+	grpc      *grpc.Server
+
+	batchMu    sync.Mutex
+	batchBuf   []*batchEntry
+	batchTimer *time.Timer
 }
 
 // TLSConfig holds cert paths for the gRPC server.
@@ -230,9 +245,6 @@ func (s *Server) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.H
 // ─── Internal ─────────────────────────────────────────────────────────────────
 
 func (s *Server) processEvent(env *pb.EventEnvelope) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
 	// Validate payload is valid JSON.
 	if !json.Valid(env.Payload) {
 		s.log.Warn().
@@ -262,30 +274,76 @@ func (s *Server) processEvent(env *pb.EventEnvelope) {
 		Payload:   json.RawMessage(env.Payload),
 	}
 
-	// Store the event.
-	if err := s.store.InsertEvent(ctx, ev); err != nil {
-		s.log.Error().
-			Err(err).
-			Str("event_id", eventID).
-			Msg("insert event failed")
-		metrics.EventsDropped.Inc()
+	// Add to batch instead of inserting immediately.
+	s.addToBatch(&batchEntry{event: ev, env: env})
+}
+
+func (s *Server) addToBatch(entry *batchEntry) {
+	s.batchMu.Lock()
+	s.batchBuf = append(s.batchBuf, entry)
+
+	// Flush if batch is full.
+	if len(s.batchBuf) >= batchSize {
+		batch := s.batchBuf
+		s.batchBuf = nil
+		if s.batchTimer != nil {
+			s.batchTimer.Stop()
+		}
+		s.batchMu.Unlock()
+		s.flushBatch(batch)
 		return
 	}
-	metrics.EventsStored.Inc()
 
-	// Publish to SSE broker — non-blocking fan-out to connected browser clients.
-	if s.sseBroker != nil {
-		go s.sseBroker.Publish(ev)
+	// Start/reset flush timer for partial batches.
+	if s.batchTimer != nil {
+		s.batchTimer.Stop()
+	}
+	s.batchTimer = time.AfterFunc(batchFlushInterval, func() {
+		s.batchMu.Lock()
+		batch := s.batchBuf
+		s.batchBuf = nil
+		s.batchMu.Unlock()
+		if len(batch) > 0 {
+			s.flushBatch(batch)
+		}
+	})
+	s.batchMu.Unlock()
+}
+
+func (s *Server) flushBatch(batch []*batchEntry) {
+	if len(batch) == 0 {
+		return
 	}
 
-	// Run detection rules against it.
-	detStart := time.Now()
-	s.engine.Evaluate(ctx, ev)
-	metrics.DetectionDuration.Observe(time.Since(detStart).Seconds())
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 
-	// Process PKG_INVENTORY events: extract packages into the agent_packages table.
-	if env.EventType == "PKG_INVENTORY" {
-		go s.processPackageInventory(ctx, env.AgentID, env.Payload)
+	// Batch insert all events.
+	events := make([]*models.Event, len(batch))
+	for i, b := range batch {
+		events[i] = b.event
+	}
+
+	if err := s.store.InsertEventBatch(ctx, events); err != nil {
+		s.log.Error().Err(err).Int("batch_size", len(batch)).Msg("batch insert failed")
+		metrics.EventsDropped.Add(float64(len(batch)))
+		return
+	}
+	metrics.EventsStored.Add(float64(len(batch)))
+
+	// Post-insert processing for each event (SSE, detection, PKG_INVENTORY).
+	for _, b := range batch {
+		if s.sseBroker != nil {
+			go s.sseBroker.Publish(b.event)
+		}
+
+		detStart := time.Now()
+		s.engine.Evaluate(ctx, b.event)
+		metrics.DetectionDuration.Observe(time.Since(detStart).Seconds())
+
+		if b.env.EventType == "PKG_INVENTORY" {
+			go s.processPackageInventory(ctx, b.env.AgentID, b.env.Payload)
+		}
 	}
 }
 

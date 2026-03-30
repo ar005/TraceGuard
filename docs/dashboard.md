@@ -63,7 +63,7 @@ The API client (`src/lib/api-client.ts`) reads this variable at runtime on the c
 
 ## Pages
 
-The dashboard includes 14 authenticated pages plus a login page. The sidebar organizes them into four navigation sections.
+The dashboard includes 18 authenticated pages plus a login page. The sidebar organizes them into five navigation sections.
 
 ### Main
 
@@ -73,7 +73,8 @@ The dashboard includes 14 authenticated pages plus a login page. The sidebar org
 | **Alerts** | `/alerts` | Paginated alert list with status filters (All, Open, Investigating, Closed) and severity filters (Critical, High, Medium, Low, Info). Each alert row shows severity dot, title, rule name, hostname, hit count, MITRE ATT&CK IDs, status badge, and first-seen time. Clicking an alert opens a slide-out detail drawer. |
 | **Events** | `/events` | Event stream with type filters (All, Process, Command, Network, File, Browser, DNS). Supports a live mode toggle that connects to SSE for real-time event streaming. Includes text search. Clicking an event opens a detail drawer showing full JSON payload and an optional process tree viewer. |
 | **Commands** | `/commands` | Filtered view of CMD_EXEC events. Lists commands with timestamp, hostname, and the command line. Includes a text filter for searching specific commands. |
-| **Agents** | `/agents` | Table of registered agents showing online/offline status (color-coded dot), hostname, IP address, OS and version, agent version, and last-seen time. |
+| **Agents** | `/agents` | Table of registered agents showing online/offline status (color-coded dot), hostname, IP address, OS and version, agent version, and last-seen time. Click an agent row to navigate to the agent detail page. |
+| **Agent Detail** | `/agents/[id]` | Deep-dive into a single agent with 4 tabs: **Overview** (agent metadata, OS info, tags, uptime, last seen), **Events** (filtered event stream for this agent), **Alerts** (alerts triggered on this agent), **Packages** (installed package inventory with scan trigger). |
 
 ### Investigation
 
@@ -87,10 +88,18 @@ The dashboard includes 14 authenticated pages plus a login page. The sidebar org
 
 | Page | Route | Description |
 |---|---|---|
-| **Rules** | `/rules` | Detection rule management. Lists all rules with toggle switches for enable/disable, name, description, severity, event types, rule type (match/threshold), MITRE IDs, and author. Expandable rows show full conditions JSON, threshold settings (count, window, group-by), and MITRE ATT&CK links. Includes a "Reload Rules" button and per-rule delete. |
+| **Rules** | `/rules` | Detection rule management. Lists all rules with toggle switches for enable/disable, name, description, severity, event types, rule type (match/threshold), MITRE IDs, and author. Expandable rows show full conditions JSON, threshold settings (count, window, group-by), and MITRE ATT&CK links. Includes a "Reload Rules" button, per-rule delete, and a **visual rule builder** for creating rules without writing JSON. |
 | **Suppressions** | `/suppressions` | Suppression rule management for filtering noise. Lists suppression rules with enable/disable toggles, name, conditions, event types, hit count, and last hit time. Supports creating new suppression rules with event type selection. |
 | **IOCs** | `/iocs` | Indicators of Compromise management. Supports type filters (IP, Domain, Hash). Lists IOCs with type badge, value, source, severity, hit count, tags, and expiry. Supports adding new IOCs (IP, domain, hash_sha256, hash_md5) and syncing feeds. |
 | **Vulnerabilities** | `/vulnerabilities` | Vulnerability scanner results. Lists CVEs detected on agent endpoints with severity badges (Critical, High, Medium, Low, Unknown), CVE ID, package name, installed version, fixed version, and host. |
+
+### Monitoring
+
+| Page | Route | Description |
+|---|---|---|
+| **USB Devices** | `/usb` | USB device inventory and activity history. Shows all USB devices detected across agents with vendor/product identification, serial numbers, device type classification (mass storage, HID, etc.), and connect/disconnect timeline. Filterable by agent, device type, and time range. |
+| **Browser Activity** | `/browser` | Browser request monitoring from the TraceGuard browser extension. Displays captured HTTP/HTTPS requests with filters for agent, browser, domain, status code, and resource type. Includes a timeline view and detail panel showing full URL, referrer, redirect chain, form submission detection, and server IP. |
+| **Metrics** | `/metrics` | Prometheus metrics visualization. Displays backend health metrics including event ingest rates, alert counts, agent connectivity, gRPC performance, API latency, detection engine timing, SSE connections, and database statistics. |
 
 ### Operations
 
@@ -98,6 +107,18 @@ The dashboard includes 14 authenticated pages plus a login page. The sidebar org
 |---|---|---|
 | **Live Response** | `/live-response` | Remote command execution terminal. Select an online agent from a dropdown, then type commands in a terminal-style interface. Commands are sent to the agent and responses displayed in a scrollable output area. Supports command history (up/down arrows). |
 | **Settings** | `/settings` | Application configuration including theme selection, LLM provider settings (Ollama, OpenAI, Anthropic, Gemini), and data retention policies. |
+
+## Visual Rule Builder
+
+The Rules page includes a visual rule builder accessible via a "New Rule" or "Build Rule" button. It provides a form-based interface for creating detection rules without writing JSON:
+
+- **Rule metadata**: Name, description, severity (dropdown), author, MITRE ATT&CK technique IDs
+- **Event type selection**: Multi-select checkboxes for target event types (PROCESS_EXEC, NET_CONNECT, FILE_WRITE, etc.)
+- **Condition builder**: Add/remove conditions with field name, operator (dropdown of all supported operators), and value inputs
+- **Rule type toggle**: Switch between match and threshold rule types
+- **Threshold settings**: When threshold is selected, configure count, window (seconds), and group-by field
+- **Preview**: Shows the resulting rule JSON before submission
+- **Validation**: Client-side validation of required fields and condition syntax
 
 ## Design System
 

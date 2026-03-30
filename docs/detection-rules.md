@@ -125,7 +125,7 @@ Produces these addressable fields: `process.comm`, `process.pid`, `path`, and al
 
 ## Seeded Detection Rules
 
-The backend ships with 30+ pre-configured detection rules across multiple categories.
+The backend ships with 45+ pre-configured detection rules across multiple categories.
 
 ### Process Rules
 
@@ -178,6 +178,52 @@ The backend ships with 30+ pre-configured detection rules across multiple catego
 | **DGA Domain Detected** | High (3) | Match | T1568.002 | DNS query resolved a domain with DGA characteristics: excessive length (50+ chars), high digit proportion, or repeating alphanumeric patterns. |
 | **DNS Query to Rare/Suspicious TLD** | Medium (2) | Match | T1071.004 | DNS query targeted a TLD frequently abused by threat actors: `.tk`, `.xyz`, `.top`, `.pw`, `.cc`, `.ws`, `.click`, `.link`, `.work`, `.date`, `.download`, `.racing`, `.stream`, `.gdn`, `.bid`. |
 
+### Kernel Module Rules
+
+| Rule | Severity | Type | MITRE | Description |
+|---|---|---|---|---|
+| **Unsigned Kernel Module Loaded** | Critical (4) | Match | T1547.006 | A kernel module was loaded without a valid signature. Indicates a possible rootkit or unauthorized driver insertion. |
+| **Kernel Tainted After Module Load** | Medium (2) | Match | T1547.006 | The kernel became tainted after loading a module, indicating an out-of-tree or proprietary module was inserted. |
+
+### USB Rules
+
+| Rule | Severity | Type | MITRE | Description |
+|---|---|---|---|---|
+| **USB Mass Storage Device Connected** | Medium (2) | Match | T1052.001 | A USB mass storage device (flash drive, external HDD) was plugged in. Potential data exfiltration or malware delivery vector. |
+| **Multiple USB Devices Connected Rapidly (threshold)** | High (3) | Threshold (3/60s by agent_id) | T1200 | 3+ USB devices connected within 60 seconds. Indicates a possible USB attack (BadUSB, rubber ducky). |
+
+### Memory Injection Rules
+
+| Rule | Severity | Type | MITRE | Description |
+|---|---|---|---|---|
+| **Suspicious Memory Injection Detected** | Critical (4) | Match | T1055.001, T1620 | Anonymous executable memory region detected in a process. Indicates possible shellcode injection or reflective loading. |
+
+### Cron Rules
+
+| Rule | Severity | Type | MITRE | Description |
+|---|---|---|---|---|
+| **Suspicious Cron Job Created** | High (3) | Match | T1053.003 | A cron entry was created or modified containing download commands, encoded payloads, or reverse shell patterns. |
+| **Cron Job with Reverse Shell Pattern** | Critical (4) | Match | T1053.003, T1059.004 | A cron entry contains reverse shell indicators (/dev/tcp, nc -e, bash -i). |
+
+### Named Pipe Rules
+
+| Rule | Severity | Type | MITRE | Description |
+|---|---|---|---|---|
+| **Named Pipe Created in Temp Directory** | High (3) | Match | T1570, T1071 | A FIFO/named pipe was created in /tmp, /var/tmp, or /dev/shm. Used by C2 frameworks (Cobalt Strike, PsExec) for inter-process communication. |
+
+### Network Share Rules
+
+| Rule | Severity | Type | MITRE | Description |
+|---|---|---|---|---|
+| **Network Share Mounted** | Medium (2) | Match | T1021.002 | A CIFS/NFS network share was mounted. Potential lateral movement or data staging activity. |
+
+### TLS SNI Rules
+
+| Rule | Severity | Type | MITRE | Description |
+|---|---|---|---|---|
+| **TLS Connection to Rare TLD** | Medium (2) | Match | T1071.001 | A process established a TLS connection to a domain with a known-abuse TLD (.tk, .xyz, .top, .pw, .click, etc.). |
+| **TLS Beaconing to Single Domain (threshold)** | High (3) | Threshold (20/300s by domain) | T1071.001, T1573.002 | 20+ TLS connections to the same external domain in 5 minutes. Possible C2 beaconing over HTTPS. |
+
 ### Browser Rules
 
 | Rule | Severity | Type | MITRE | Description |
@@ -187,6 +233,25 @@ The backend ships with 30+ pre-configured detection rules across multiple catego
 | **Suspicious Redirect Chain Detected** | Medium (2) | Match | T1566.002 | Browser request followed 3+ redirect hops. |
 | **Form Submission to Rare TLD** | High (3) | Match | T1566.002 | User submitted a form to a domain with an abuse-prone TLD. |
 | **Browser High Volume Requests (threshold)** | Medium (2) | Threshold (50/60s by domain) | T1204.001 | 50+ browser requests to the same domain in 60 seconds. |
+
+## Typosquat Domain Detection
+
+The detection engine includes a built-in typosquat/lookalike domain detection system that operates independently of the rule engine. It is evaluated against BROWSER_REQUEST events automatically.
+
+### How It Works
+
+1. When a BROWSER_REQUEST event arrives, the engine extracts the domain from the URL.
+2. The domain is normalized using homoglyph substitution (e.g., replacing Cyrillic characters that visually resemble Latin ones).
+3. The normalized domain is compared against a list of 32 well-known brand domains (Google, Microsoft, Apple, Amazon, PayPal, etc.) using Levenshtein distance.
+4. If the edit distance is within a configurable threshold (indicating a near-match but not exact match), an alert is generated with the title "Typosquat Domain Detection".
+5. This catches domains like `g00gle.com`, `micros0ft.com`, `paypa1.com`, etc.
+
+### Key Properties
+
+- **Not a rule** -- this is built into the detection engine itself and cannot be disabled via the rules API.
+- **32 monitored brands** -- covers major tech companies, banks, social media, and email providers.
+- **Homoglyph-aware** -- normalizes Unicode lookalike characters before comparison.
+- **Levenshtein distance** -- catches character transpositions, additions, and substitutions.
 
 ## Suppression Rules
 
@@ -356,21 +421,29 @@ All seeded rules include MITRE ATT&CK technique IDs. The dashboard renders these
 | Technique | Name | Rules |
 |---|---|---|
 | T1003 | OS Credential Dumping | Credential Dumper Executed |
+| T1021.002 | Remote Services: SMB/Windows Admin Shares | Network Share Mounted |
 | T1046 | Network Service Discovery | Port Scanner, Port Scan (threshold) |
-| T1053.003 | Scheduled Task/Job: Cron | Cron Persistence |
+| T1052.001 | Exfiltration Over Physical Medium: USB | USB Mass Storage Device Connected |
+| T1053.003 | Scheduled Task/Job: Cron | Cron Persistence, Suspicious Cron Job, Cron Reverse Shell |
+| T1055.001 | Process Injection: DLL Injection | Suspicious Memory Injection |
 | T1055.008 | Process Injection: Ptrace | ptrace Injection |
 | T1056.004 | Input Capture: Credential API Hooking | Browser Credential Submission |
 | T1059 | Command and Scripting Interpreter | Execution Burst |
-| T1059.004 | Command and Scripting Interpreter: Unix Shell | Web Shell, Reverse Shell |
+| T1059.004 | Command and Scripting Interpreter: Unix Shell | Web Shell, Reverse Shell, Cron Reverse Shell |
 | T1070.003 | Indicator Removal: Clear Command History | History Evasion |
-| T1071 | Application Layer Protocol | Outbound High Port, Beaconing |
+| T1071 | Application Layer Protocol | Outbound High Port, Beaconing, Named Pipe in Temp |
+| T1071.001 | Application Layer Protocol: Web Protocols | TLS Rare TLD, TLS Beaconing |
 | T1071.004 | Application Layer Protocol: DNS | DNS Rare TLD |
 | T1110 | Brute Force | SSH Brute Force |
 | T1110.001 | Brute Force: Password Guessing | Login Brute Force, SSH Brute Force Single IP |
 | T1190 | Exploit Public-Facing Application | Web Shell |
+| T1200 | Hardware Additions | USB Rapid Connect Burst |
 | T1204.001 | User Execution: Malicious Link | Browser High Volume |
+| T1547.006 | Boot or Logon Autostart: Kernel Modules and Extensions | Unsigned Kernel Module, Kernel Tainted |
 | T1548.003 | Abuse Elevation Control: Sudo and Sudo Caching | sudoers Write, Sudo Root Shell |
 | T1566.002 | Phishing: Spearphishing Link | IOC Domain, Redirect Chain, Rare TLD Form |
 | T1568.002 | Dynamic Resolution: DGA | DGA Domain |
+| T1570 | Lateral Tool Transfer | Named Pipe in Temp |
+| T1573.002 | Encrypted Channel: Asymmetric Cryptography | TLS Beaconing |
 | T1574.006 | Hijack Execution Flow: LD_PRELOAD | LD_PRELOAD Hijack |
-| T1620 | Reflective Code Loading | memfd Exec |
+| T1620 | Reflective Code Loading | memfd Exec, Memory Injection |

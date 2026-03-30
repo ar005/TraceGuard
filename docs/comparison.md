@@ -20,8 +20,13 @@ Legend: ✅ = Yes | ❌ = No | 🟡 = Partial/Limited | 🔧 = Planned/Roadmap
 | Command/shell monitoring | ✅ CMD_EXEC events | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🟡 Log-based |
 | Login/auth monitoring | ✅ auth.log tailing | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Browser URL monitoring | ✅ Chrome/Firefox extension | ❌ | 🟡 SmartScreen/Web Content Filter | ❌ | ❌ | ✅ Web Control | ❌ | ❌ | ❌ |
-| USB/removable media monitoring | ❌ | ✅ Device Control | ✅ Device Control | ✅ Device Control | 🟡 | ✅ Peripheral Control | 🟡 | 🟡 Via rules | ❌ |
-| Kernel module monitoring | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🟡 Via FIM | 🟡 Via FIM |
+| USB/removable media monitoring | ✅ sysfs polling | ✅ Device Control | ✅ Device Control | ✅ Device Control | 🟡 | ✅ Peripheral Control | 🟡 | 🟡 Via rules | ❌ |
+| Kernel module monitoring | ✅ /proc/modules polling | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🟡 Via FIM | 🟡 Via FIM |
+| Memory injection detection | ✅ /proc/maps scanning | ✅ | ✅ | ✅ | ✅ | ✅ | 🟡 | ❌ | ❌ |
+| Cron/scheduled task monitoring | ✅ Crontab parsing | ✅ | ✅ Scheduled Tasks | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Named pipe monitoring | ✅ FIFO detection | ✅ | ✅ | ✅ | 🟡 | 🟡 | ❌ | ❌ | ❌ |
+| Network share monitoring | ✅ /proc/mounts polling | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 🟡 | ❌ |
+| TLS SNI extraction | ✅ Raw socket ClientHello | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
 
 ### Detection & Response
 
@@ -124,8 +129,6 @@ These are features that any organization evaluating EDR solutions will consider 
 | Gap | Impact | Difficulty |
 |-----|--------|------------|
 | **No granular RBAC** | Production deployments need analyst/admin/viewer roles with scoped permissions. | Low-Medium |
-| **No USB/removable media monitoring** | A common data exfiltration vector, especially in regulated industries. | Medium — udev monitoring on Linux |
-| **No kernel module monitoring** | Rootkit loading via kernel modules is a critical detection vector. | Medium — eBPF probe on `init_module`/`finit_module` |
 | **No automated investigation playbooks** | Commercial EDRs auto-triage alerts, reducing analyst workload significantly. | High — requires workflow engine |
 | **No attack timeline view** | Analysts need to visualize the full kill chain, not just individual events. | Medium — frontend feature using existing event data |
 | **No forensic artifact collection** | Collecting memory dumps, browser artifacts, registry hives for investigation. | High |
@@ -145,7 +148,7 @@ These are features that any organization evaluating EDR solutions will consider 
 | **No case management** | Grouping alerts into investigations with notes and status. | Medium |
 | **No report generation** | PDF/scheduled reports for compliance and management. | Medium |
 | **No EDR benchmarking/AV-TEST results** | Commercial products publish third-party test results. Not applicable to TraceGuard's scope, but worth noting. | N/A |
-| **eBPF TLS SNI extraction** | Capturing HTTPS domains without browser extension. On roadmap but not built. | Medium |
+| ~~eBPF TLS SNI extraction~~ | ✅ **Implemented** — raw socket ClientHello parsing with PID attribution. | Done |
 
 ---
 
@@ -171,11 +174,11 @@ These are low-to-medium effort items that immediately make TraceGuard viable for
 
 Raise the detection quality to be competitive with Wazuh and approach commercial parity:
 
-6. **Kernel module monitoring** — Add eBPF probes on `init_module`/`finit_module` syscalls. Critical for rootkit detection. Relatively contained scope.
+6. ~~**Kernel module monitoring**~~ — ✅ **Implemented.** Polls /proc/modules with signed/unsigned detection and taint state tracking.
 
-7. **USB/removable media monitoring** — Monitor udev events for device attach/detach. Important for data exfiltration detection.
+7. ~~**USB/removable media monitoring**~~ — ✅ **Implemented.** Polls sysfs for USB device connect/disconnect with vendor/product identification.
 
-8. **eBPF TLS SNI extraction** — Already on the roadmap. Captures HTTPS domains at the kernel level without requiring browser extensions.
+8. ~~**eBPF TLS SNI extraction**~~ — ✅ **Implemented.** Raw socket ClientHello parsing with SNI extraction and PID attribution.
 
 9. **Attack timeline view** — Build a frontend component that visualizes the kill chain for an incident (process tree + network + file events on a time axis). The data already exists; this is a UI feature.
 
@@ -231,8 +234,10 @@ These features are planned but deferred because they require external services o
 
 ## Summary
 
-TraceGuard is a strong Linux EDR with modern architecture (eBPF, gRPC, SSE, LLM integration) and genuine innovations (browser URL monitoring, typosquat detection, multi-provider AI). It competes favorably with Wazuh and OSSEC on detection and response capabilities while offering a more modern stack. The agent now provides 14 monitors covering process, network, file, auth, command, registry, vulnerability, browser, kernel module, USB, memory injection, cron, named pipe, and network share monitoring — with 40+ detection rules and auto-response (quarantine + IP blocking).
+TraceGuard is a strong Linux EDR with modern architecture (eBPF, gRPC, SSE, LLM integration) and genuine innovations (browser URL monitoring, typosquat detection, multi-provider AI). It competes favorably with Wazuh and OSSEC on detection and response capabilities while offering a more modern stack. The agent now provides **15 monitors** covering process, network, file, auth, command, registry, vulnerability, browser, kernel module, USB, memory injection, cron, named pipe, network share, and TLS SNI monitoring -- emitting **37 event types** with **45+ detection rules** and auto-response (quarantine + IP blocking). The dashboard features 7 color themes, a visual rule builder, agent detail pages, USB/browser/metrics pages, 37 hunt query templates, and CSV/JSON export.
 
-However, it is a Linux-only, single-tenant, rule-based detection system without SIEM integration — limitations that restrict it to Linux-focused environments willing to operate without ML detection and external SOC tool integration.
+All endpoint monitoring gaps identified in earlier versions have been closed: USB monitoring, kernel module monitoring, memory injection detection, cron parsing, named pipe monitoring, network share monitoring, and TLS SNI extraction are all implemented.
+
+However, it is a Linux-only, single-tenant, rule-based detection system without SIEM integration -- limitations that restrict it to Linux-focused environments willing to operate without ML detection and external SOC tool integration.
 
 The fastest path to broader adoption is: SIEM export (unblocks SOC teams) followed by Windows agent support (unblocks mixed environments) followed by ML detection (closes the detection quality gap). The browser extension and typosquat detection remain genuine differentiators worth highlighting, as no commercial EDR offers equivalent functionality.
