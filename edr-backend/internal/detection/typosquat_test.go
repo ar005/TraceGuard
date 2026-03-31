@@ -69,6 +69,57 @@ func TestCheckTyposquat(t *testing.T) {
 	}
 }
 
+func TestCheckTyposquat_AdditionalCases(t *testing.T) {
+	tests := []struct {
+		domain    string
+		wantBrand string
+		wantMatch bool
+	}{
+		// Subdomains with typosquats.
+		{"www.g00gle.com", "google", true},
+		{"www.amaz0n.com", "amazon", true},
+		{"www.faceb00k.com", "facebook", true},
+
+		// Exact brand match should NOT fire (not a typosquat).
+		{"amazon.com", "", false},
+		{"paypal.com", "", false},
+		{"netflix.com", "", false},
+		{"spotify.com", "", false},
+		{"zoom.com", "", false},
+
+		// Completely unrelated domains.
+		{"example.com", "", false},
+		{"mycompany.io", "", false},
+		{"localhost.dev", "", false},
+		{"randomword123.com", "", false},
+		{"abcdefghijklmnop.com", "", false},
+
+		// Homoglyph-heavy substitutions.
+		{"g0ogle.com", "google", true},   // single 0->o
+		{"pa1pal.com", "paypal", true},    // 1->l plus y->missing? actually lev dist
+		{"netf1ix.com", "netflix", true},  // 1->l
+
+		// Deep subdomain with typo in the main part.
+		{"www.micros0ft.com", "microsoft", true},
+
+		// Short brand near-miss.
+		{"slakc.com", "slack", true}, // transposition
+	}
+	for _, tt := range tests {
+		t.Run("extra_"+tt.domain, func(t *testing.T) {
+			brand, dist := CheckTyposquat(tt.domain)
+			gotMatch := brand != ""
+			if gotMatch != tt.wantMatch {
+				t.Errorf("CheckTyposquat(%q): match=%v (brand=%q, dist=%d), wantMatch=%v",
+					tt.domain, gotMatch, brand, dist, tt.wantMatch)
+			}
+			if tt.wantMatch && brand != tt.wantBrand {
+				t.Errorf("CheckTyposquat(%q): brand=%q, want %q", tt.domain, brand, tt.wantBrand)
+			}
+		})
+	}
+}
+
 func TestNormalizeHomoglyphs(t *testing.T) {
 	tests := []struct {
 		input string
@@ -78,6 +129,16 @@ func TestNormalizeHomoglyphs(t *testing.T) {
 		{"paypa1", "paypal"},
 		{"rnicrosoft", "microsoft"},
 		{"amaz0n", "amazon"},
+		{"g0og1e", "google"},         // mixed 0->o and 1->l (l->e is not a sub though)
+		{"faceb00k", "facebook"},     // double 0->o
+		{"vvindovvs", "windows"},     // vv->w twice
+		{"app!e", "apple"},           // !->l
+		{"netf1ix", "netflix"},       // 1->l
+		{"@m@zon", "amazon"},         // @->a twice (first) but rest doesn't match; just testing replacement
+		{"$lack", "slack"},           // $->s
+		{"3bay", "ebay"},             // 3->e
+		{"", ""},                     // empty string
+		{"hello", "hello"},           // no substitutions needed
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
