@@ -503,6 +503,8 @@ See [TODO.md](TODO.md) for the full improvement roadmap. Completed items:
 - [x] Vulnerability detection (package inventory + DB schema)
 - [x] Container/Kubernetes awareness (cgroup parsing, process enrichment)
 - [x] Advanced threat hunting query language (SQL-like, with safety validation)
+- [x] EDR Agent for R-Pi 4 in pipeline
+
 
 Next priorities: HTTPS, IOC feed integration, SIEM/webhook export, Prometheus metrics.
 

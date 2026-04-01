@@ -1,0 +1,91 @@
+# TraceGuard Agent Configuration — Raspberry Pi
+# Optimized for Pi 4 (ARM64, no BTF/eBPF)
+
+agent:
+  id: ""
+  id_file: "/var/lib/edr/agent.id"
+  hostname: ""
+  backend_url: "localhost:50051"
+  tags: [rpi, arm64]
+  env: ""
+  notes: "Raspberry Pi 4 endpoint"
+  tls:
+    cert: ""
+    key: ""
+    ca: ""
+    insecure: true
+
+monitors:
+  # eBPF monitors — DISABLED (no BTF on Pi kernel 6.12+rpt)
+  process:
+    enabled: false
+  network:
+    enabled: false
+  file:
+    enabled: false
+
+  # Userspace monitors — all work on ARM64 Linux
+  registry:
+    enabled: true
+    extra_paths:
+      - /etc/environment
+      - /etc/profile.d
+      - /boot/firmware/config.txt
+      - /boot/firmware/cmdline.txt
+
+  browser:
+    enabled: true
+    listen_addr: "127.0.0.1:9999"
+
+  kmod:
+    enabled: true
+    poll_interval_s: 15
+
+  usb:
+    enabled: true
+    poll_interval_s: 10
+
+  memmon:
+    enabled: true
+    poll_interval_s: 30
+    ignore_comms:
+      - java
+      - node
+      - python3
+      - python
+      - chromium-browser
+      - firefox-esr
+
+  cronmon:
+    enabled: true
+
+  pipemon:
+    enabled: true
+    poll_interval_s: 15
+    watch_paths:
+      - /tmp
+      - /var/tmp
+      - /dev/shm
+      - /run
+
+  sharemount:
+    enabled: true
+    poll_interval_s: 15
+
+  tlssni:
+    enabled: true
+
+buffer:
+  path: "/var/lib/edr/events.db"
+  max_size_mb: 64
+  flush_interval_s: 10
+
+log:
+  level: "info"
+  format: "json"
+  path: "/var/log/edr/agent.log"
+
+self_protect:
+  bin_path: ""
+  watchdog: true
+  immutable_bin: false
