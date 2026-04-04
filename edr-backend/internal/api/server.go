@@ -148,6 +148,10 @@ func (s *Server) registerRoutes() {
 		// Process tree
 		v1.GET("/processes/:pid/tree", s.handleGetProcessTree)
 
+		// Browser navigation tree
+		v1.GET("/browser/tree", s.handleGetBrowserTree)
+		v1.GET("/browser/tabs", s.handleListBrowserTabs)
+
 		// Alerts
 		v1.GET("/alerts",             s.handleListAlerts)
 		v1.GET("/alerts/:id",         s.handleGetAlert)
@@ -1612,6 +1616,64 @@ func (s *Server) handleGetProcessTree(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"tree": tree, "pid": pid, "agent_id": agentID})
+}
+
+// ─── Browser Navigation Tree ──────────────────────────────────────────────────
+
+// GET /api/v1/browser/tree?agent_id=X&since=Y&until=Z&tab_id=N
+func (s *Server) handleGetBrowserTree(c *gin.Context) {
+	agentID := c.Query("agent_id")
+	if agentID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "agent_id is required"})
+		return
+	}
+
+	now := time.Now()
+	since := now.Add(-1 * time.Hour)
+	until := now
+
+	if v := c.Query("since"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			since = t
+		}
+	}
+	if v := c.Query("until"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			until = t
+		}
+	}
+
+	tabID := intQuery(c, "tab_id", 0)
+
+	tree, err := s.store.GetBrowserTree(c.Request.Context(), agentID, since, until, tabID)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"tree": tree, "agent_id": agentID})
+}
+
+// GET /api/v1/browser/tabs?agent_id=X&since=Y
+func (s *Server) handleListBrowserTabs(c *gin.Context) {
+	agentID := c.Query("agent_id")
+	if agentID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "agent_id is required"})
+		return
+	}
+
+	since := time.Now().Add(-24 * time.Hour)
+	if v := c.Query("since"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			since = t
+		}
+	}
+
+	tabs, err := s.store.GetBrowserTabs(c.Request.Context(), agentID, since)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"tabs": tabs})
 }
 
 // ─── LLM / AI Settings ────────────────────────────────────────────────────────

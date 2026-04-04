@@ -76,9 +76,7 @@
 - [ ] Emit BROWSER_VISIT events with full URL + visit timestamp
 - [ ] Fallback for when extension is not installed
 
-## In Progress
-
-- [ ] **Batch event inserts** — Bulk event insertion for improved ingest performance (being finalized)
+- [x] **Browser navigation tree** — URL flow tree visualization (like process tree but for browser navigations), tab selector, time range, IOC domain highlighting, redirect chain expansion
 
 ## Later — Requires External Setup/Infrastructure
 
