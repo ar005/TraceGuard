@@ -285,10 +285,51 @@ def login_page():
 def do_login():
     u = request.form.get("username", "").strip()
     p = request.form.get("password", "")
+
+    # Check if this is a TOTP verification submission.
+    mfa_token = request.form.get("mfa_token", "")
+    totp_code = request.form.get("totp_code", "")
+    if mfa_token and totp_code:
+        return _do_totp_verify(mfa_token, totp_code)
+
     try:
         r = requests.post(
             f"{BACKEND}/api/v1/auth/login",
             json={"username": u, "password": p},
+            headers={"Content-Type": "application/json"},
+            timeout=8,
+        )
+        data = r.json()
+    except requests.exceptions.ConnectionError:
+        return render_template("login.html", error="backend", backend_url=BACKEND)
+    except Exception as e:
+        return render_template("login.html", error="backend", backend_url=str(e))
+
+    if r.status_code == 200:
+        # Check if MFA is required.
+        if data.get("mfa_required"):
+            return render_template("login.html", mfa_required=True,
+                                   mfa_token=data.get("mfa_token", ""),
+                                   username=u)
+
+        user = data.get("user", {})
+        if user.get("role") != "admin":
+            return render_template("login.html", error="noadmin")
+        session.permanent    = True
+        session["logged_in"] = True
+        session["username"]  = user["username"]
+        session["role"]      = user["role"]
+        session["user_id"]   = user["id"]
+        session["token"]     = data["token"]
+        return redirect(url_for("portal"))
+    return render_template("login.html", error="invalid")
+
+def _do_totp_verify(mfa_token, totp_code):
+    """Complete TOTP verification for admin portal login."""
+    try:
+        r = requests.post(
+            f"{BACKEND}/api/v1/auth/totp/verify-login",
+            json={"mfa_token": mfa_token, "code": totp_code},
             headers={"Content-Type": "application/json"},
             timeout=8,
         )
@@ -309,7 +350,8 @@ def do_login():
         session["user_id"]   = user["id"]
         session["token"]     = data["token"]
         return redirect(url_for("portal"))
-    return render_template("login.html", error="invalid")
+    return render_template("login.html", error="invalid_totp", mfa_required=True,
+                           mfa_token=mfa_token)
 
 @app.route("/logout", methods=["POST"])
 def logout():
@@ -366,6 +408,24 @@ def api_delete_user(uid):
 @login_required
 def api_reset_password(uid):
     s, d = _backend(f"/api/v1/admin/users/{uid}/reset-password", "POST", request.get_json())
+    return jsonify(d), s
+
+@app.route("/api/users/<uid>/totp/setup", methods=["POST"])
+@login_required
+def api_totp_setup(uid):
+    s, d = _backend(f"/api/v1/admin/users/{uid}/totp/setup", "POST")
+    return jsonify(d), s
+
+@app.route("/api/users/<uid>/totp/confirm", methods=["POST"])
+@login_required
+def api_totp_confirm(uid):
+    s, d = _backend(f"/api/v1/admin/users/{uid}/totp/confirm", "POST", request.get_json())
+    return jsonify(d), s
+
+@app.route("/api/users/<uid>/totp", methods=["DELETE"])
+@login_required
+def api_totp_disable(uid):
+    s, d = _backend(f"/api/v1/admin/users/{uid}/totp", "DELETE")
     return jsonify(d), s
 
 @app.route("/api/keys", methods=["GET"])

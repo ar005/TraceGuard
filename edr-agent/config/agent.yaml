@@ -113,6 +113,27 @@ monitors:
   tlssni:
     enabled: true
 
+  fim:
+    enabled: true
+    poll_interval_s: 300   # check file integrity every 5 minutes
+    auto_baseline: true    # create baseline on first run
+    baseline_path: "/var/lib/edr/fim_baseline.json"
+    watch_paths:
+      - /etc/passwd
+      - /etc/shadow
+      - /etc/group
+      - /etc/sudoers
+      - /etc/sudoers.d
+      - /etc/ssh/sshd_config
+      - /etc/ssh/ssh_config
+      - /etc/pam.d
+      - /etc/hosts
+      - /etc/resolv.conf
+      - /etc/ld.so.preload
+      - /etc/ld.so.conf
+      - /etc/crontab
+      - /etc/cron.d
+
   cronmon:
     enabled: true
     watch_paths:

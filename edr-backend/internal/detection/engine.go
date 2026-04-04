@@ -36,6 +36,19 @@ type windowKey struct {
 	groupVal string
 }
 
+// seqKey identifies an in-progress sequence for a (rule, correlation value).
+type seqKey struct {
+	ruleID  string
+	corrVal string
+}
+
+// seqTracker tracks progress through a sequence rule's steps.
+type seqTracker struct {
+	completedSteps int
+	eventIDs       []string
+	firstSeen      time.Time
+}
+
 // Engine evaluates rules against events in real time.
 type Engine struct {
 	store        *store.Store
@@ -46,11 +59,16 @@ type Engine struct {
 	onAlert      AlertCallback
 	reCache      map[string]*regexp.Regexp
 
-	// Threshold sliding windows: windowKey → ordered list of event timestamps.
+	// Threshold sliding windows: windowKey �� ordered list of event timestamps.
 	// Protected by winMu — separate lock to avoid holding the rule lock while
 	// doing window arithmetic.
 	winMu   sync.Mutex
 	windows map[windowKey][]time.Time
+
+	// Sequence tracking: seqKey → list of active trackers.
+	seqMu          sync.Mutex
+	sequences      map[seqKey][]*seqTracker
+	parsedSeqSteps map[string][]models.SequenceStep // ruleID → parsed steps (cached on Reload)
 
 	// IOC caches — loaded periodically from the database.
 	// Each map is value → *IOC for O(1) lookup on every event.
@@ -66,21 +84,24 @@ type Engine struct {
 // New creates a detection Engine. Call Reload() to load rules from DB.
 func New(st *store.Store, log zerolog.Logger, onAlert AlertCallback) *Engine {
 	e := &Engine{
-		store:      st,
-		log:        log.With().Str("component", "detection").Logger(),
-		onAlert:    onAlert,
-		reCache:    map[string]*regexp.Regexp{},
-		windows:    make(map[windowKey][]time.Time),
-		iocIPs:     make(map[string]*models.IOC),
-		iocDomains: make(map[string]*models.IOC),
-		iocHashes:  make(map[string]*models.IOC),
+		store:          st,
+		log:            log.With().Str("component", "detection").Logger(),
+		onAlert:        onAlert,
+		reCache:        map[string]*regexp.Regexp{},
+		windows:        make(map[windowKey][]time.Time),
+		sequences:      make(map[seqKey][]*seqTracker),
+		parsedSeqSteps: make(map[string][]models.SequenceStep),
+		iocIPs:         make(map[string]*models.IOC),
+		iocDomains:     make(map[string]*models.IOC),
+		iocHashes:      make(map[string]*models.IOC),
 	}
-	// Prune stale windows every 5 minutes to prevent unbounded memory growth.
+	// Prune stale windows and sequences every 5 minutes.
 	go func() {
 		t := time.NewTicker(5 * time.Minute)
 		defer t.Stop()
 		for range t.C {
 			e.pruneAllWindows()
+			e.pruneSequences()
 		}
 	}()
 	// Refresh IOC cache every 60 seconds.
@@ -113,11 +134,23 @@ func (e *Engine) Reload(ctx context.Context) error {
 		e.log.Warn().Err(err).Msg("load suppressions failed — continuing without")
 		sups = nil
 	}
+	// Pre-parse sequence steps so we don't unmarshal on every event.
+	parsed := make(map[string][]models.SequenceStep)
+	for _, r := range rules {
+		if r.RuleType == "sequence" && len(r.SequenceSteps) > 0 {
+			var steps []models.SequenceStep
+			if err := json.Unmarshal(r.SequenceSteps, &steps); err == nil && len(steps) >= 2 {
+				parsed[r.ID] = steps
+			}
+		}
+	}
+
 	e.mu.Lock()
 	e.rules = rules
 	e.suppressions = sups
+	e.parsedSeqSteps = parsed
 	e.mu.Unlock()
-	e.log.Info().Int("rules", len(rules)).Int("suppressions", len(sups)).Msg("rules loaded")
+	e.log.Info().Int("rules", len(rules)).Int("suppressions", len(sups)).Int("sequence_rules", len(parsed)).Msg("rules loaded")
 	return nil
 }
 
@@ -158,6 +191,13 @@ func (e *Engine) Evaluate(ctx context.Context, ev *models.Event) {
 		rule := &rules[i]
 		if !rule.Enabled { continue }
 		if !matchesEventType(rule.EventTypes, ev.EventType) { continue }
+
+		// Sequence rules use per-step conditions, not global conditions.
+		if rule.RuleType == "sequence" {
+			e.evaluateSequence(ctx, ev, rule, payload)
+			continue
+		}
+
 		var conditions []models.RuleCondition
 		if err := json.Unmarshal(rule.Conditions, &conditions); err != nil {
 			e.log.Warn().Str("rule", rule.ID).Err(err).Msg("invalid rule conditions")
@@ -284,6 +324,172 @@ func (e *Engine) pruneAllWindows() {
 			delete(e.windows, k)
 		} else {
 			e.windows[k] = ts[start:]
+		}
+	}
+}
+
+// ─── Sequence evaluation ─────────────────────────────────────────────────────
+
+// evaluateSequence checks if an event advances or starts a sequence rule.
+func (e *Engine) evaluateSequence(ctx context.Context, ev *models.Event, rule *models.Rule, payload map[string]interface{}) {
+	e.mu.RLock()
+	steps, ok := e.parsedSeqSteps[rule.ID]
+	e.mu.RUnlock()
+	if !ok || len(steps) < 2 {
+		return
+	}
+
+	window := time.Duration(rule.SequenceWindowS) * time.Second
+	if window <= 0 {
+		window = 30 * time.Second
+	}
+	corrVal := e.resolveGroupKey(ev, payload, rule.SequenceBy)
+	key := seqKey{ruleID: rule.ID, corrVal: corrVal}
+	now := time.Now()
+
+	e.seqMu.Lock()
+	defer e.seqMu.Unlock()
+
+	trackers := e.sequences[key]
+
+	// Prune expired trackers.
+	alive := trackers[:0]
+	for _, t := range trackers {
+		if now.Sub(t.firstSeen) <= window {
+			alive = append(alive, t)
+		}
+	}
+
+	// Check if this event advances any existing tracker to its next step.
+	for i := len(alive) - 1; i >= 0; i-- {
+		t := alive[i]
+		nextIdx := t.completedSteps
+		if nextIdx >= len(steps) {
+			continue
+		}
+
+		step := steps[nextIdx]
+		if !matchesEventType(step.EventTypes, ev.EventType) {
+			continue
+		}
+		if !e.matchesAll(payload, step.Conditions) {
+			continue
+		}
+
+		// Event matches the next expected step.
+		t.completedSteps++
+		t.eventIDs = append(t.eventIDs, ev.ID)
+
+		// Check if the sequence is now complete.
+		if t.completedSteps >= len(steps) {
+			e.fireSequenceAlert(ctx, ev, rule, t, steps)
+			alive = append(alive[:i], alive[i+1:]...)
+		}
+	}
+
+	// Check if this event matches step 0 (start of a NEW sequence).
+	step0 := steps[0]
+	if matchesEventType(step0.EventTypes, ev.EventType) && e.matchesAll(payload, step0.Conditions) {
+		alive = append(alive, &seqTracker{
+			completedSteps: 1,
+			eventIDs:       []string{ev.ID},
+			firstSeen:      now,
+		})
+	}
+
+	// Cap tracker count per key to prevent memory abuse.
+	const maxTrackersPerKey = 100
+	if len(alive) > maxTrackersPerKey {
+		alive = alive[len(alive)-maxTrackersPerKey:]
+	}
+
+	if len(alive) == 0 {
+		delete(e.sequences, key)
+	} else {
+		e.sequences[key] = alive
+	}
+}
+
+// fireSequenceAlert creates an alert when all steps of a sequence rule are satisfied.
+func (e *Engine) fireSequenceAlert(ctx context.Context, ev *models.Event, rule *models.Rule, t *seqTracker, steps []models.SequenceStep) {
+	// Build step labels for the description.
+	var stepDescs []string
+	for i, s := range steps {
+		label := s.Label
+		if label == "" {
+			label = fmt.Sprintf("step %d", i+1)
+		}
+		stepDescs = append(stepDescs, label)
+	}
+	seqDesc := strings.Join(stepDescs, " → ")
+
+	extraCtx := fmt.Sprintf("sequence: %s | %d events in %ds window, correlated by %s",
+		seqDesc, len(t.eventIDs), rule.SequenceWindowS, rule.SequenceBy)
+
+	// Deduplication check.
+	existing, err := e.store.FindOpenAlert(ctx, rule.ID, ev.AgentID, dedupeWindow)
+	if err == nil && existing != nil {
+		go func() {
+			for _, eid := range t.eventIDs {
+				_ = e.store.BumpAlert(context.Background(), existing.ID, eid)
+			}
+		}()
+		e.log.Debug().Str("rule", rule.Name).Str("alert", existing.ID).Msg("sequence alert deduped")
+		return
+	}
+
+	alertID := "alert-" + uuid.New().String()
+	alert := &models.Alert{
+		ID: alertID, Title: rule.Name, Description: rule.Description + " [" + extraCtx + "]",
+		Severity: rule.Severity, Status: "OPEN",
+		RuleID: rule.ID, RuleName: rule.Name,
+		MitreIDs: rule.MitreIDs, EventIDs: t.eventIDs,
+		AgentID: ev.AgentID, Hostname: ev.Hostname,
+		FirstSeen: t.firstSeen, LastSeen: time.Now(),
+	}
+
+	e.log.Warn().
+		Str("rule", rule.Name).
+		Strs("event_ids", t.eventIDs).
+		Int("steps", len(steps)).
+		Str("agent", ev.Hostname).
+		Msg("sequence rule fired — new alert")
+
+	if e.onAlert != nil {
+		e.onAlert(ctx, alert)
+	}
+}
+
+// pruneSequences removes expired sequence trackers.
+func (e *Engine) pruneSequences() {
+	e.mu.RLock()
+	seqWindows := make(map[string]time.Duration)
+	for _, r := range e.rules {
+		if r.RuleType == "sequence" && r.SequenceWindowS > 0 {
+			seqWindows[r.ID] = time.Duration(r.SequenceWindowS) * time.Second
+		}
+	}
+	e.mu.RUnlock()
+
+	now := time.Now()
+	e.seqMu.Lock()
+	defer e.seqMu.Unlock()
+	for k, trackers := range e.sequences {
+		win, ok := seqWindows[k.ruleID]
+		if !ok {
+			delete(e.sequences, k)
+			continue
+		}
+		alive := trackers[:0]
+		for _, t := range trackers {
+			if now.Sub(t.firstSeen) <= win {
+				alive = append(alive, t)
+			}
+		}
+		if len(alive) == 0 {
+			delete(e.sequences, k)
+		} else {
+			e.sequences[k] = alive
 		}
 	}
 }

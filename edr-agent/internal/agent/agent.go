@@ -25,6 +25,7 @@ import (
 	"github.com/youredr/edr-agent/internal/monitor/browser"
 	"github.com/youredr/edr-agent/internal/monitor/cmd"
 	"github.com/youredr/edr-agent/internal/monitor/file"
+	"github.com/youredr/edr-agent/internal/monitor/fim"
 	"github.com/youredr/edr-agent/internal/monitor/kmod"
 	"github.com/youredr/edr-agent/internal/monitor/cronmon"
 	"github.com/youredr/edr-agent/internal/monitor/memmon"
@@ -69,6 +70,7 @@ type Agent struct {
 	memMonitor         *memmon.Monitor
 	cronMonitor        *cronmon.Monitor
 	tlssniMonitor      *tlssni.Monitor
+	fimMonitor         *fim.Monitor
 }
 
 // New creates a new Agent from configuration.
@@ -267,6 +269,29 @@ func New(cfg *config.Config) (*Agent, error) {
 		a.tlssniMonitor = tlssni.New(tlssni.DefaultConfig(), bus, log)
 	}
 
+	// File Integrity Monitoring.
+	if cfg.Monitors.FIM.Enabled {
+		pollInterval := cfg.Monitors.FIM.PollIntervalS
+		if pollInterval <= 0 {
+			pollInterval = 300
+		}
+		watchPaths := cfg.Monitors.FIM.WatchPaths
+		if len(watchPaths) == 0 {
+			watchPaths = fim.DefaultConfig().WatchPaths
+		}
+		baselinePath := cfg.Monitors.FIM.BaselinePath
+		if baselinePath == "" {
+			baselinePath = "/var/lib/edr/fim_baseline.json"
+		}
+		a.fimMonitor = fim.New(fim.Config{
+			Enabled:       true,
+			PollIntervalS: pollInterval,
+			WatchPaths:    watchPaths,
+			BaselinePath:  baselinePath,
+			AutoBaseline:  cfg.Monitors.FIM.AutoBaseline,
+		}, bus, log)
+	}
+
 	// Self-protection.
 	a.protect = selfprotect.New(selfprotect.Config{
 		AgentBinPath: cfg.SelfProtect.BinPath,
@@ -416,6 +441,14 @@ func (a *Agent) Start(ctx context.Context) error {
 		}
 	}
 
+	if a.fimMonitor != nil {
+		if err := a.fimMonitor.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("FIM monitor start failed")
+		} else {
+			a.log.Info().Msg("file integrity monitor running")
+		}
+	}
+
 	// Publish agent start event with full build info.
 	vi := version.Get()
 	a.bus.Publish(&agentLifecycleEvent{
@@ -473,6 +506,9 @@ func (a *Agent) shutdown() error {
 	time.Sleep(500 * time.Millisecond)
 
 	// Stop monitors in reverse order.
+	if a.fimMonitor != nil {
+		a.fimMonitor.Stop()
+	}
 	if a.tlssniMonitor != nil {
 		a.tlssniMonitor.Stop()
 	}

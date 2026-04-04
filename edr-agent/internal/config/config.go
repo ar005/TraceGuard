@@ -50,6 +50,7 @@ type MonitorsConfig struct {
 	MemMon   MemMonConfig          `mapstructure:"memmon"`
 	CronMon  CronMonConfig         `mapstructure:"cronmon"`
 	TLSSNI   TLSSNIConfig          `mapstructure:"tlssni"`
+	FIM      FIMConfig             `mapstructure:"fim"`
 }
 
 type ProcessMonitorConfig struct {
@@ -119,6 +120,14 @@ type TLSSNIConfig struct {
 	Enabled bool `mapstructure:"enabled"`
 }
 
+type FIMConfig struct {
+	Enabled       bool     `mapstructure:"enabled"`
+	PollIntervalS int      `mapstructure:"poll_interval_s"`
+	WatchPaths    []string `mapstructure:"watch_paths"`
+	BaselinePath  string   `mapstructure:"baseline_path"`
+	AutoBaseline  bool     `mapstructure:"auto_baseline"`
+}
+
 type BufferConfig struct {
 	Path           string `mapstructure:"path"`
 	MaxSizeMB      int    `mapstructure:"max_size_mb"`
@@ -180,6 +189,19 @@ func Load(path string) (*Config, error) {
 		"/var/spool/cron",
 	})
 	v.SetDefault("monitors.tlssni.enabled", true)
+	v.SetDefault("monitors.fim.enabled", true)
+	v.SetDefault("monitors.fim.poll_interval_s", 300)
+	v.SetDefault("monitors.fim.auto_baseline", true)
+	v.SetDefault("monitors.fim.baseline_path", "/var/lib/edr/fim_baseline.json")
+	v.SetDefault("monitors.fim.watch_paths", []string{
+		"/etc/passwd", "/etc/shadow", "/etc/group", "/etc/gshadow",
+		"/etc/sudoers", "/etc/sudoers.d",
+		"/etc/ssh/sshd_config", "/etc/ssh/ssh_config",
+		"/etc/pam.d",
+		"/etc/hosts", "/etc/resolv.conf",
+		"/etc/ld.so.preload", "/etc/ld.so.conf",
+		"/etc/crontab", "/etc/cron.d",
+	})
 	v.SetDefault("buffer.path", "/var/lib/edr/events.db")
 	v.SetDefault("buffer.max_size_mb", 512)
 	v.SetDefault("buffer.flush_interval_s", 5)

@@ -432,10 +432,15 @@ func (s *Store) UpsertRule(ctx context.Context, r *models.Rule) error {
 	}
 	if r.RuleType == "" { r.RuleType = "match" }
 	if r.GroupBy  == "" { r.GroupBy  = "agent_id" }
+	if r.SequenceBy == "" { r.SequenceBy = "agent_id" }
+	seqSteps := r.SequenceSteps
+	if len(seqSteps) == 0 { seqSteps = json.RawMessage("[]") }
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO rules (id, name, description, enabled, severity, event_types, conditions, mitre_ids, author,
-		                   rule_type, threshold_count, threshold_window_s, group_by, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW(),NOW())
+		                   rule_type, threshold_count, threshold_window_s, group_by,
+		                   sequence_steps, sequence_window_s, sequence_by,
+		                   created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW(),NOW())
 		ON CONFLICT (id) DO UPDATE SET
 			name              = EXCLUDED.name,
 			description       = EXCLUDED.description,
@@ -448,10 +453,14 @@ func (s *Store) UpsertRule(ctx context.Context, r *models.Rule) error {
 			threshold_count   = EXCLUDED.threshold_count,
 			threshold_window_s= EXCLUDED.threshold_window_s,
 			group_by          = EXCLUDED.group_by,
+			sequence_steps    = EXCLUDED.sequence_steps,
+			sequence_window_s = EXCLUDED.sequence_window_s,
+			sequence_by       = EXCLUDED.sequence_by,
 			updated_at        = NOW()
 	`, r.ID, r.Name, r.Description, r.Enabled, r.Severity,
 		pq.Array(r.EventTypes), conds, pq.Array(r.MitreIDs), r.Author,
-		r.RuleType, r.ThresholdCount, r.ThresholdWindowS, r.GroupBy)
+		r.RuleType, r.ThresholdCount, r.ThresholdWindowS, r.GroupBy,
+		seqSteps, r.SequenceWindowS, r.SequenceBy)
 	return err
 }
 

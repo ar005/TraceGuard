@@ -71,6 +71,7 @@ const EVENT_TYPE_COLORS: Record<string, string> = {
   SHARE_UNMOUNT: "#0d9488",
   USER_LOGIN: "#f59e0b",
   USER_LOGOUT: "#d97706",
+  FIM_VIOLATION: "#f43f5e",
 };
 
 /* ---------- Skeleton helpers ---------- */

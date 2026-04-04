@@ -25,6 +25,7 @@ const FILTERS = [
   { label: "Pipe", value: "PIPE_CREATE" },
   { label: "TLS SNI", value: "NET_TLS_SNI" },
   { label: "Share", value: "SHARE_MOUNT" },
+  { label: "FIM", value: "FIM_VIOLATION" },
 ] as const;
 
 const TYPE_BADGE_COLORS: Record<string, string> = {
@@ -45,6 +46,7 @@ const TYPE_BADGE_COLORS: Record<string, string> = {
   SHARE_MOUNT: "bg-teal-600/15 text-teal-300",
   SHARE_UNMOUNT: "bg-teal-600/15 text-teal-300",
   NET_TLS_SNI: "bg-indigo-500/15 text-indigo-400",
+  FIM_VIOLATION: "bg-rose-500/15 text-rose-400",
 };
 
 const PAGE_SIZE = 50;
@@ -127,6 +129,11 @@ function extractSummary(evt: Event): string {
       const comm = (p.process_comm as string) ?? "";
       const ver = (p.tls_version as string) ?? "";
       return [comm, domain, dstIp, ver].filter(Boolean).join(" → ") || "—";
+    }
+    case "FIM_VIOLATION": {
+      const fimPath = (p.file_path as string) ?? "";
+      const fimAction = (p.action as string) ?? "";
+      return [fimAction.toUpperCase(), fimPath].filter(Boolean).join(": ") || "—";
     }
     default:
       return (p.cmdline as string) ?? (p.command as string) ?? (p.path as string) ?? "—";

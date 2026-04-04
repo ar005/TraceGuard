@@ -58,6 +58,13 @@ const QUERY_TEMPLATES: QueryTemplate[] = [
   { category: "Security", label: "Suspicious cron jobs", query: `SELECT * FROM events WHERE event_type = 'CRON_MODIFY' AND payload->>'suspicious' = 'true' LIMIT 50` },
   { category: "Security", label: "Reverse shell cron entries", query: `SELECT * FROM events WHERE event_type = 'CRON_MODIFY' AND payload->>'cron_tags' LIKE '%reverse-shell%' LIMIT 50` },
 
+  // File Integrity Monitoring
+  { category: "FIM", label: "All FIM violations", query: `SELECT * FROM events WHERE event_type = 'FIM_VIOLATION' ORDER BY timestamp DESC LIMIT 100` },
+  { category: "FIM", label: "Modified files", query: `SELECT * FROM events WHERE event_type = 'FIM_VIOLATION' AND payload->>'action' = 'modified' LIMIT 50` },
+  { category: "FIM", label: "Deleted monitored files", query: `SELECT * FROM events WHERE event_type = 'FIM_VIOLATION' AND payload->>'action' = 'deleted' LIMIT 50` },
+  { category: "FIM", label: "Password/shadow file changes", query: `SELECT * FROM events WHERE event_type = 'FIM_VIOLATION' AND payload->>'file_path' ~ '(passwd|shadow|gshadow)' LIMIT 50` },
+  { category: "FIM", label: "SSH config changes", query: `SELECT * FROM events WHERE event_type = 'FIM_VIOLATION' AND payload->>'file_path' LIKE '%ssh%' LIMIT 50` },
+
   // TLS SNI
   { category: "TLS/HTTPS", label: "All TLS SNI connections", query: `SELECT * FROM events WHERE event_type = 'NET_TLS_SNI' ORDER BY timestamp DESC LIMIT 100` },
   { category: "TLS/HTTPS", label: "TLS connections to rare TLDs", query: `SELECT * FROM events WHERE event_type = 'NET_TLS_SNI' AND payload->>'domain' ~ '\\.(tk|xyz|top|pw|cc|click)$' LIMIT 50` },
@@ -121,6 +128,8 @@ function summarizeEvent(evt: Event): string {
     case "LOGIN_FAILED":
     case "SUDO_EXEC":
       return `${p.username ?? "?"} via ${p.service ?? "?"} ${p.source_ip ? "from " + p.source_ip : ""}`;
+    case "FIM_VIOLATION":
+      return `${String(p.action ?? "?").toUpperCase()}: ${p.file_path ?? "?"}`;
     default:
       return JSON.stringify(p).slice(0, 120);
   }

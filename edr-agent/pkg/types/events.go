@@ -95,6 +95,9 @@ const (
 
 	// TLS SNI monitoring
 	EventTLSSNI EventType = "NET_TLS_SNI"
+
+	// File Integrity Monitoring
+	EventFIMViolation EventType = "FIM_VIOLATION"
 )
 
 // ─── ProcessContext ───────────────────────────────────────────────────────────
@@ -458,4 +461,20 @@ type CronModifyEvent struct {
 	IsTimer    bool     `json:"is_timer"`              // systemd timer vs cron
 	Suspicious bool     `json:"suspicious"`            // contains wget/curl/base64/encoded
 	CronTags   []string `json:"cron_tags,omitempty"`   // "downloads", "encoded", "reverse-shell"
+}
+
+// ─── File Integrity Monitoring Events ────────────────────────────────────
+
+// FIMViolationEvent is emitted when a monitored file's checksum
+// differs from the stored baseline.
+type FIMViolationEvent struct {
+	BaseEvent
+	FilePath     string `json:"file_path"`
+	ExpectedHash string `json:"expected_hash"`  // SHA-256 from baseline
+	ActualHash   string `json:"actual_hash"`    // SHA-256 computed now
+	FileSize     int64  `json:"file_size"`
+	FileMode     string `json:"file_mode"`      // e.g. "0644"
+	ModTime      string `json:"mod_time"`       // last modification time
+	Action       string `json:"action"`         // "modified", "deleted", "created", "permissions_changed"
+	BaselineTime string `json:"baseline_time"`  // when the baseline was last taken
 }

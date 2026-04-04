@@ -124,8 +124,9 @@ func (s *Server) registerRoutes() {
 	// ── Public auth endpoints ──────────────────────────────────────────────
 	auth := r.Group("/api/v1/auth")
 	{
-		auth.POST("/login",   s.handleLogin)
-		auth.POST("/refresh", s.handleRefresh)
+		auth.POST("/login",              s.handleLogin)
+		auth.POST("/refresh",            s.handleRefresh)
+		auth.POST("/totp/verify-login",  s.handleTOTPVerifyLogin)
 	}
 
 	// ── Authenticated routes (JWT or API key) ─────────────────────────────
@@ -244,6 +245,11 @@ func (s *Server) registerRoutes() {
 		adm.DELETE("/users/:id",              s.handleAdminDeleteUser)
 		adm.POST("/users/:id/reset-password", s.handleAdminResetPassword)
 		adm.DELETE("/reset-all-users",        s.handleSetupReset)
+
+		// TOTP / MFA management
+		adm.POST("/users/:id/totp/setup",    s.handleTOTPSetup)
+		adm.POST("/users/:id/totp/confirm",  s.handleTOTPConfirm)
+		adm.DELETE("/users/:id/totp",         s.handleTOTPDisable)
 
 		// API Keys (also available under /keys above, duplicated for admin portal convenience)
 		adm.GET("/keys",             s.handleListKeys)
@@ -418,18 +424,28 @@ func (s *Server) handleLogin(c *gin.Context) {
 		return
 	}
 
-	u, token, err := s.um.Authenticate(c.Request.Context(), body.Username, body.Password)
+	result, err := s.um.Authenticate(c.Request.Context(), body.Username, body.Password)
 	if err != nil {
 		s.al.Log(c.Request.Context(), "", body.Username, "login_fail", "user", "", body.Username, c.ClientIP(), err.Error())
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
 
-	s.al.Log(c.Request.Context(), u.ID, u.Username, "login", "user", u.ID, u.Username, c.ClientIP(), "")
+	// If TOTP is required, return a partial response with an MFA token.
+	if result.MFARequired {
+		s.al.Log(c.Request.Context(), result.User.ID, result.User.Username, "login_mfa_pending", "user", result.User.ID, result.User.Username, c.ClientIP(), "")
+		c.JSON(http.StatusOK, gin.H{
+			"mfa_required": true,
+			"mfa_token":    result.MFAToken,
+		})
+		return
+	}
+
+	s.al.Log(c.Request.Context(), result.User.ID, result.User.Username, "login", "user", result.User.ID, result.User.Username, c.ClientIP(), "")
 	c.JSON(http.StatusOK, gin.H{
-		"token":      token,
+		"token":      result.Token,
 		"expires_at": time.Now().Add(12 * time.Hour),
-		"user":       u,
+		"user":       result.User,
 	})
 }
 
@@ -446,12 +462,9 @@ func (s *Server) handleRefresh(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found or disabled"})
 		return
 	}
-	u2, token, err := s.um.Authenticate(c.Request.Context(), u.Username, "")
-	// Authenticate with empty password will fail — we need to issue directly
-	_ = u2
-	_ = err
-	// Issue token directly since we already validated
-	if token, err = s.um.IssueToken(u); err != nil {
+	// Issue token directly since we already validated via JWT.
+	token, err := s.um.IssueToken(u)
+	if err != nil {
 		s.jsonError(c, err)
 		return
 	}
@@ -459,6 +472,96 @@ func (s *Server) handleRefresh(c *gin.Context) {
 		"token":      token,
 		"expires_at": time.Now().Add(12 * time.Hour),
 	})
+}
+
+// ─── TOTP / MFA handlers ─────────────────────────────────────────────────────
+
+// POST /api/v1/auth/totp/verify-login — complete login with TOTP code.
+func (s *Server) handleTOTPVerifyLogin(c *gin.Context) {
+	var body struct {
+		MFAToken string `json:"mfa_token" binding:"required"`
+		Code     string `json:"code"      binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	u, token, err := s.um.VerifyTOTPLogin(c.Request.Context(), body.MFAToken, body.Code)
+	if err != nil {
+		s.al.Log(c.Request.Context(), "", "", "totp_verify_fail", "user", "", "", c.ClientIP(), err.Error())
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid TOTP code"})
+		return
+	}
+
+	s.al.Log(c.Request.Context(), u.ID, u.Username, "login", "user", u.ID, u.Username, c.ClientIP(), "totp verified")
+	c.JSON(http.StatusOK, gin.H{
+		"token":      token,
+		"expires_at": time.Now().Add(12 * time.Hour),
+		"user":       u,
+	})
+}
+
+// POST /api/v1/admin/users/:id/totp/setup — start TOTP enrollment for a user.
+func (s *Server) handleTOTPSetup(c *gin.Context) {
+	userID := c.Param("id")
+	result, err := s.um.SetupTOTP(c.Request.Context(), userID)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	s.al.Log(c.Request.Context(), s.currentUserID(c), s.currentUsername(c),
+		"totp_setup", "user", userID, "", c.ClientIP(), "")
+	c.JSON(http.StatusOK, result)
+}
+
+// POST /api/v1/admin/users/:id/totp/confirm — verify code and enable TOTP.
+func (s *Server) handleTOTPConfirm(c *gin.Context) {
+	userID := c.Param("id")
+	var body struct {
+		Code string `json:"code" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := s.um.ConfirmTOTP(c.Request.Context(), userID, body.Code); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	s.al.Log(c.Request.Context(), s.currentUserID(c), s.currentUsername(c),
+		"totp_enabled", "user", userID, "", c.ClientIP(), "")
+	c.JSON(http.StatusOK, gin.H{"status": "totp enabled"})
+}
+
+// DELETE /api/v1/admin/users/:id/totp — disable TOTP for a user.
+func (s *Server) handleTOTPDisable(c *gin.Context) {
+	userID := c.Param("id")
+	if err := s.um.DisableTOTP(c.Request.Context(), userID); err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	s.al.Log(c.Request.Context(), s.currentUserID(c), s.currentUsername(c),
+		"totp_disabled", "user", userID, "", c.ClientIP(), "")
+	c.JSON(http.StatusOK, gin.H{"status": "totp disabled"})
+}
+
+// currentUserID extracts the user ID from the JWT claims in the context.
+func (s *Server) currentUserID(c *gin.Context) string {
+	if v, ok := c.Get("user_id"); ok {
+		return fmt.Sprintf("%v", v)
+	}
+	return ""
+}
+
+// currentUsername extracts the username from the JWT claims in the context.
+func (s *Server) currentUsername(c *gin.Context) string {
+	if v, ok := c.Get("username"); ok {
+		return fmt.Sprintf("%v", v)
+	}
+	return ""
 }
 
 // GET /api/v1/me — returns current user info.
@@ -1360,6 +1463,9 @@ func (s *Server) handleCreateRule(c *gin.Context) {
 		ThresholdCount   int         `json:"threshold_count"`
 		ThresholdWindowS int         `json:"threshold_window_s"`
 		GroupBy          string      `json:"group_by"`
+		SequenceSteps    interface{} `json:"sequence_steps"`
+		SequenceWindowS  int         `json:"sequence_window_s"`
+		SequenceBy       string      `json:"sequence_by"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -1367,8 +1473,11 @@ func (s *Server) handleCreateRule(c *gin.Context) {
 	}
 
 	import_json, _ := marshalToRaw(body.Conditions)
+	seqStepsJSON, _ := marshalToRaw(body.SequenceSteps)
+	if seqStepsJSON == nil { seqStepsJSON = json.RawMessage("[]") }
 	if body.RuleType == "" { body.RuleType = "match" }
 	if body.GroupBy  == "" { body.GroupBy  = "agent_id" }
+	if body.SequenceBy == "" { body.SequenceBy = "agent_id" }
 	rule := &models.Rule{
 		ID:               "rule-" + uuid.New().String(),
 		Name:             body.Name,
@@ -1383,6 +1492,9 @@ func (s *Server) handleCreateRule(c *gin.Context) {
 		ThresholdCount:   body.ThresholdCount,
 		ThresholdWindowS: body.ThresholdWindowS,
 		GroupBy:          body.GroupBy,
+		SequenceSteps:    seqStepsJSON,
+		SequenceWindowS:  body.SequenceWindowS,
+		SequenceBy:       body.SequenceBy,
 	}
 	if rule.Author == "" {
 		rule.Author = "api"
@@ -1415,6 +1527,9 @@ func (s *Server) handleUpdateRule(c *gin.Context) {
 		ThresholdCount   *int        `json:"threshold_count"`
 		ThresholdWindowS *int        `json:"threshold_window_s"`
 		GroupBy          *string     `json:"group_by"`
+		SequenceSteps    interface{} `json:"sequence_steps"`
+		SequenceWindowS  *int        `json:"sequence_window_s"`
+		SequenceBy       *string     `json:"sequence_by"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -1431,9 +1546,16 @@ func (s *Server) handleUpdateRule(c *gin.Context) {
 	if body.ThresholdCount   != nil { existing.ThresholdCount   = *body.ThresholdCount   }
 	if body.ThresholdWindowS != nil { existing.ThresholdWindowS = *body.ThresholdWindowS }
 	if body.GroupBy          != nil { existing.GroupBy          = *body.GroupBy          }
+	if body.SequenceWindowS  != nil { existing.SequenceWindowS  = *body.SequenceWindowS  }
+	if body.SequenceBy       != nil { existing.SequenceBy       = *body.SequenceBy       }
 	if body.Conditions       != nil {
 		if raw, err := marshalToRaw(body.Conditions); err == nil {
 			existing.Conditions = raw
+		}
+	}
+	if body.SequenceSteps != nil {
+		if raw, err := marshalToRaw(body.SequenceSteps); err == nil {
+			existing.SequenceSteps = raw
 		}
 	}
 

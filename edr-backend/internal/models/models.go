@@ -79,6 +79,17 @@ type Rule struct {
 	ThresholdCount     int             `db:"threshold_count"     json:"threshold_count"`
 	ThresholdWindowS   int             `db:"threshold_window_s"  json:"threshold_window_s"`
 	GroupBy            string          `db:"group_by"            json:"group_by"`
+	// Sequence rule fields (rule_type = "sequence")
+	SequenceSteps    json.RawMessage `db:"sequence_steps"    json:"sequence_steps"`
+	SequenceWindowS  int             `db:"sequence_window_s"  json:"sequence_window_s"`
+	SequenceBy       string          `db:"sequence_by"        json:"sequence_by"`
+}
+
+// SequenceStep defines one step in a sequence detection rule.
+type SequenceStep struct {
+	EventTypes []string        `json:"event_types"`
+	Conditions []RuleCondition `json:"conditions"`
+	Label      string          `json:"label,omitempty"`
 }
 
 // SuppressionRule silences events that match its conditions before detection runs.

@@ -594,11 +594,15 @@ function renderUsers() {
       <td style="color:var(--dim)">${u.email||'—'}</td>
       <td><span class="badge ${u.role==='admin'?'badge-yellow':'badge-cyan'}">${u.role}</span></td>
       <td><span class="badge ${u.enabled?'badge-green':'badge-red'}">${u.enabled?'Active':'Disabled'}</span></td>
+      <td><span class="badge ${u.totp_enabled?'badge-green':'badge-red'}" style="font-size:8px">${u.totp_enabled?'🔐 MFA':'No MFA'}</span></td>
       <td style="color:var(--muted)">${u.last_login_at ? fmtDate(u.last_login_at) : 'Never'}</td>
-      <td style="color:var(--muted)">${u.created_by}</td>
       <td>
         <div class="td-actions">
           <button class="btn btn-sm" onclick="openEditUser('${u.id}')">Edit</button>
+          ${u.totp_enabled
+            ? `<button class="btn btn-sm btn-warn" onclick="confirmDisableTOTP('${u.id}','${u.username}')">Disable MFA</button>`
+            : `<button class="btn btn-sm" onclick="startTOTPSetup('${u.id}','${u.username}')">Enable MFA</button>`
+          }
           <button class="btn btn-sm btn-danger" onclick="confirmDeleteUser('${u.id}','${u.username}')">Delete</button>
         </div>
       </td>
@@ -678,6 +682,87 @@ function confirmDeleteUser(id, username) {
     closeModal('modal-confirm');
     if (!ok) { showAlert('users-err', data.error||'Delete failed'); return; }
     showAlert('users-ok', `User "${username}" deleted`, 'ok');
+    loadUsers();
+  };
+  openModal('modal-confirm');
+}
+
+// ── TOTP / MFA ───────────────────────────────────────────────────────────────
+
+let _totpUserId = '';
+let _totpBackupCodes = [];
+
+async function startTOTPSetup(id, username) {
+  _totpUserId = id;
+  const { ok, data } = await api(`/api/users/${id}/totp/setup`, 'POST');
+  if (!ok) { showAlert('users-err', data.error||'Failed to start TOTP setup'); return; }
+
+  _totpBackupCodes = data.backup_codes || [];
+
+  // Build otpauth URI for QR code display
+  const url = data.url || '';
+  const secret = data.secret || '';
+
+  // Build the modal content dynamically
+  let html = `
+    <div class="modal-header"><span>Enable MFA for ${username}</span><span class="modal-close" onclick="closeModal('modal-totp-setup')">&times;</span></div>
+    <div class="modal-body" style="max-width:420px">
+      <div id="totp-err" class="alert alert-danger"></div>
+      <div style="margin-bottom:16px">
+        <div style="font-family:var(--mono);font-size:9px;color:var(--dim);letter-spacing:1px;text-transform:uppercase;margin-bottom:8px">1. Scan this QR code with your authenticator app</div>
+        <div style="background:#fff;padding:16px;border-radius:4px;text-align:center;margin-bottom:8px">
+          <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(url)}" alt="QR Code" width="200" height="200">
+        </div>
+        <div style="font-family:var(--mono);font-size:9px;color:var(--muted);margin-bottom:4px">Or enter manually:</div>
+        <code style="font-size:11px;color:var(--cyan);word-break:break-all;letter-spacing:2px">${secret}</code>
+      </div>
+      <div style="margin-bottom:16px">
+        <div style="font-family:var(--mono);font-size:9px;color:var(--dim);letter-spacing:1px;text-transform:uppercase;margin-bottom:8px">2. Save these backup codes</div>
+        <div style="background:var(--bg2);border:1px solid var(--line2);border-radius:2px;padding:10px;font-family:var(--mono);font-size:11px;display:grid;grid-template-columns:1fr 1fr;gap:4px 20px">
+          ${_totpBackupCodes.map(c => `<span style="color:var(--yellow)">${c}</span>`).join('')}
+        </div>
+        <div style="font-size:10px;color:var(--red);margin-top:4px">⚠ These codes are shown only once. Save them now!</div>
+      </div>
+      <div style="margin-bottom:12px">
+        <div style="font-family:var(--mono);font-size:9px;color:var(--dim);letter-spacing:1px;text-transform:uppercase;margin-bottom:8px">3. Enter verification code</div>
+        <input id="totp-code" type="text" maxlength="6" placeholder="6-digit code" class="input" style="width:180px;font-size:18px;letter-spacing:8px;text-align:center" autocomplete="off">
+      </div>
+      <button class="btn btn-primary" onclick="confirmTOTPSetup()" style="width:100%">Verify &amp; Enable MFA</button>
+    </div>`;
+
+  // Reuse the confirm modal or create a TOTP modal
+  let modal = document.getElementById('modal-totp-setup');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'modal-totp-setup';
+    modal.className = 'modal-overlay';
+    modal.innerHTML = '<div class="modal">' + html + '</div>';
+    document.body.appendChild(modal);
+  } else {
+    modal.querySelector('.modal').innerHTML = html;
+  }
+  modal.classList.add('show');
+  setTimeout(() => { const inp = document.getElementById('totp-code'); if(inp) inp.focus(); }, 100);
+}
+
+async function confirmTOTPSetup() {
+  const code = (document.getElementById('totp-code')?.value || '').trim();
+  if (code.length < 6) { showAlert('totp-err','Enter the 6-digit code from your authenticator'); return; }
+  const { ok, data } = await api(`/api/users/${_totpUserId}/totp/confirm`, 'POST', { code });
+  if (!ok) { showAlert('totp-err', data.error||'Invalid code — try again'); return; }
+  closeModal('modal-totp-setup');
+  showAlert('users-ok', 'MFA enabled successfully', 'ok');
+  loadUsers();
+}
+
+function confirmDisableTOTP(id, username) {
+  document.getElementById('confirm-title').textContent = 'Disable MFA';
+  document.getElementById('confirm-msg').textContent   = `Remove MFA from "${username}"? They will only need a password to log in.`;
+  document.getElementById('confirm-btn').onclick = async () => {
+    const { ok, data } = await api(`/api/users/${id}/totp`, 'DELETE');
+    closeModal('modal-confirm');
+    if (!ok) { showAlert('users-err', data.error||'Failed to disable MFA'); return; }
+    showAlert('users-ok', `MFA disabled for "${username}"`, 'ok');
     loadUsers();
   };
   openModal('modal-confirm');

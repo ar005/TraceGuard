@@ -147,6 +147,8 @@ export function eventTypeColor(type: string): string {
     case "USER_LOGIN":
     case "USER_LOGOUT":
       return "text-amber-400";
+    case "FIM_VIOLATION":
+      return "text-rose-400";
     default:
       return "text-neutral-400";
   }
