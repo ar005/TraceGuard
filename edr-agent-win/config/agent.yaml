@@ -1,0 +1,98 @@
+# TraceGuard Windows Agent Configuration
+# Default location: C:\ProgramData\TraceGuard\agent.yaml
+
+agent:
+  # id: ""  # auto-generated on first run
+  backend_url: "localhost:50051"
+  tls:
+    insecure: true  # set false in production
+    # cert: "C:\\ProgramData\\TraceGuard\\certs\\agent.crt"
+    # key: "C:\\ProgramData\\TraceGuard\\certs\\agent.key"
+    # ca: "C:\\ProgramData\\TraceGuard\\certs\\ca.crt"
+  tags:
+    - windows
+  env: "production"
+  notes: "Windows 11 endpoint"
+
+monitors:
+  # ETW-based monitors
+  process:
+    enabled: true
+    max_ancestry_depth: 5
+  network:
+    enabled: true
+    ignore_localhost: true
+  file:
+    enabled: true
+    watch_paths:
+      - 'C:\Windows\System32\'
+      - 'C:\Users\'
+      - 'C:\ProgramData\'
+      - 'C:\Windows\Temp\'
+    hash_on_write: true
+  registry:
+    enabled: true
+  dns:
+    enabled: true
+
+  # Win32 API monitors
+  auth:
+    enabled: true
+  command:
+    enabled: true
+  vuln:
+    enabled: true
+  browser:
+    enabled: false
+    listen_addr: "127.0.0.1:9999"
+  driver:
+    enabled: true
+    poll_interval_s: 5
+  usb:
+    enabled: true
+    poll_interval_s: 10
+  pipe:
+    enabled: true
+    poll_interval_s: 10
+  share:
+    enabled: true
+    poll_interval_s: 10
+  memmon:
+    enabled: true
+    poll_interval_s: 15
+    ignore_comms:
+      - java.exe
+      - node.exe
+      - python.exe
+      - firefox.exe
+      - chrome.exe
+      - msedge.exe
+      - code.exe
+  schtask:
+    enabled: true
+    poll_interval_s: 30
+  tlssni:
+    enabled: false  # requires Npcap
+  fim:
+    enabled: true
+    poll_interval_s: 300
+    auto_baseline: true
+    watch_paths:
+      - 'C:\Windows\System32\drivers\etc\hosts'
+      - 'C:\Windows\System32\config\SAM'
+      - 'C:\Windows\System32\config\SECURITY'
+      - 'C:\Windows\System32\config\SYSTEM'
+      - 'C:\Windows\System32\GroupPolicy'
+      - 'C:\Windows\Tasks'
+      - 'C:\Windows\System32\sethc.exe'
+      - 'C:\Windows\System32\utilman.exe'
+
+buffer:
+  path: 'C:\ProgramData\TraceGuard\events.db'
+  max_size_mb: 512
+  flush_interval_s: 5
+
+log:
+  level: info
+  format: json
+  path: 'C:\ProgramData\TraceGuard\Logs\agent.log'
