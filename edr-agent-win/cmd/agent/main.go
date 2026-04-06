@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/windows/svc"
 
@@ -103,13 +104,25 @@ type TraceGuardService struct{}
 func (s *TraceGuardService) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (ssec bool, errno uint32) {
 	changes <- svc.Status{State: svc.StartPending}
 
+	// Log startup errors to a crash file so we can diagnose service failures.
+	crashLog := func(msg string) {
+		os.MkdirAll(`C:\ProgramData\TraceGuard\Logs`, 0755)
+		f, err := os.OpenFile(`C:\ProgramData\TraceGuard\Logs\crash.log`, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0640)
+		if err == nil {
+			fmt.Fprintf(f, "%s  %s\n", time.Now().Format(time.RFC3339), msg)
+			f.Close()
+		}
+	}
+
 	cfg, err := config.Load(*flagConfig)
 	if err != nil {
+		crashLog(fmt.Sprintf("config load error: %v", err))
 		return true, 1
 	}
 
 	a, err := agent.New(cfg)
 	if err != nil {
+		crashLog(fmt.Sprintf("agent init error: %v", err))
 		return true, 1
 	}
 
@@ -138,6 +151,7 @@ func (s *TraceGuardService) Execute(args []string, r <-chan svc.ChangeRequest, c
 			}
 		case err := <-agentDone:
 			if err != nil {
+				crashLog(fmt.Sprintf("agent runtime error: %v", err))
 				return true, 1
 			}
 			return false, 0

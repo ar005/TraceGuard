@@ -27,7 +27,13 @@ if ($svc) {
     Start-Sleep -Seconds 2
 
     Write-Host "[2/4] Removing service..." -ForegroundColor Yellow
-    sc.exe delete $svcName | Out-Null
+    # Remove-Service available in PS 6+; fall back to sc.exe for PS 5.1
+    if (Get-Command Remove-Service -ErrorAction SilentlyContinue) {
+        Remove-Service -Name $svcName
+    } else {
+        sc.exe delete $svcName | Out-Null
+    }
+    Start-Sleep -Seconds 1
     Write-Host "  Service removed"
 } else {
     Write-Host "[1-2/4] Service not found (already removed)" -ForegroundColor Gray

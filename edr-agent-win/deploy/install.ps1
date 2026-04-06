@@ -70,23 +70,35 @@ Write-Host "[4/6] Installing Windows service..." -ForegroundColor Yellow
 $svcName = "TraceGuardAgent"
 $existing = Get-Service -Name $svcName -ErrorAction SilentlyContinue
 if ($existing) {
-    Write-Host "  Service already exists. Stopping..."
+    Write-Host "  Service already exists. Stopping and removing..."
     Stop-Service -Name $svcName -Force -ErrorAction SilentlyContinue
-    sc.exe delete $svcName | Out-Null
-    Start-Sleep -Seconds 2
+    Start-Sleep -Seconds 1
+    if (Get-Command Remove-Service -ErrorAction SilentlyContinue) {
+        Remove-Service -Name $svcName -ErrorAction SilentlyContinue
+    } else {
+        sc.exe delete $svcName | Out-Null
+    }
+    Start-Sleep -Seconds 3  # wait for SCM to fully release the service name
 }
 
-$binPath = "`"$InstallDir\edr-agent.exe`" --config `"$configDest`""
-sc.exe create $svcName binpath= $binPath start= auto DisplayName= "TraceGuard Endpoint Agent"
-sc.exe description $svcName "Open EDR endpoint detection and response agent for Windows"
-sc.exe failure $svcName reset= 60 actions= restart/5000/restart/10000/restart/30000
+# sc.exe requires binpath= followed by a single string with embedded quotes.
+# Use New-Service instead — it handles quoting correctly.
+$binExe = Join-Path $InstallDir "edr-agent.exe"
+$svcArgs = "--config `"$configDest`""
+
+$newSvc = New-Service -Name $svcName `
+    -BinaryPathName "`"$binExe`" $svcArgs" `
+    -DisplayName "TraceGuard Endpoint Agent" `
+    -Description "Open EDR endpoint detection and response agent for Windows" `
+    -StartupType Automatic `
+    -ErrorAction Stop
 
 Write-Host "  Service '$svcName' installed"
 
-# Set service to run as LocalSystem (default, has full access)
-Write-Host "[5/6] Configuring service security..." -ForegroundColor Yellow
-sc.exe config $svcName obj= "LocalSystem"
-Write-Host "  Service configured to run as LocalSystem"
+# Set auto-restart on failure (New-Service doesn't support this).
+Write-Host "[5/6] Configuring service recovery..." -ForegroundColor Yellow
+sc.exe failure $svcName reset= 60 actions= restart/5000/restart/10000/restart/30000 | Out-Null
+Write-Host "  Service will auto-restart on failure (3 attempts: 5s, 10s, 30s)"
 
 # Start service
 Write-Host "[6/6] Starting service..." -ForegroundColor Yellow

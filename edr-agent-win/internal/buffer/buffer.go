@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite" // pure-Go SQLite — no CGO required for cross-compilation
 	"github.com/rs/zerolog"
 
 	"github.com/youredr/edr-agent-win/internal/events"
@@ -63,7 +63,7 @@ func New(cfg Config, log zerolog.Logger) (*LocalBuffer, error) {
 		return nil, fmt.Errorf("create buffer dir: %w", err)
 	}
 
-	db, err := sql.Open("sqlite3", cfg.Path+"?_journal_mode=WAL&_synchronous=NORMAL")
+	db, err := sql.Open("sqlite", cfg.Path+"?_journal_mode=WAL&_synchronous=NORMAL")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
