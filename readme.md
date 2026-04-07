@@ -89,45 +89,6 @@ Endpoints                          Backend                         Analysts
 - Anti-tamper detection (ptrace on agent PID, binary deletion/modification)
 - Optional immutable binary via `chattr +i`
 
----
-
-## Detection engine
-
-21 built-in rules, two rule types:
-
-**Match rules** — fire when a single event satisfies all conditions.
-
-**Threshold rules** — fire when N events match within a sliding time window, grouped by configurable key (agent, IP, PID, etc.).
-
-### Built-in rules
-
-| Rule | Severity | MITRE ATT&CK |
-|------|----------|---------------|
-| Web Server Spawning Shell | HIGH | T1059.004 |
-| Process Injection via ptrace | HIGH | T1055 |
-| Fileless Execution (memfd) | CRITICAL | T1620 |
-| sudoers File Modified | CRITICAL | T1548.003 |
-| Cron Persistence | HIGH | T1053.003 |
-| Outbound High Port | MEDIUM | T1571 |
-| LD_PRELOAD Hijack | CRITICAL | T1574.006 |
-| Reverse Shell Command | CRITICAL | T1059.004 |
-| History Evasion | HIGH | T1070.003 |
-| Port Scanner Executed | HIGH | T1046 |
-| Credential Dumper | CRITICAL | T1003 |
-| Sudo Root Shell Escalation | HIGH | T1548.003 |
-| Port Scan Burst (threshold) | HIGH | T1046 |
-| Brute Force (threshold) | HIGH | T1110 |
-| Beaconing (threshold) | MEDIUM | T1071 |
-| Exec Burst (threshold) | MEDIUM | T1059 |
-| DGA Domain Detection | HIGH | T1568.002 |
-| DNS to Rare TLD | MEDIUM | T1071.004 |
-| Login Brute Force (threshold) | HIGH | T1110.001 |
-| SSH Brute Force from Single IP (threshold) | HIGH | T1110.001 |
-| Sudo to Root Shell | MEDIUM | T1548.003 |
-
-Condition operators: `eq`, `ne`, `gt`, `lt`, `gte`, `lte`, `in`, `startswith`, `contains`, `regex`
-
-Suppression rules filter known-good noise before detection runs.
 
 ---
 
@@ -387,17 +348,6 @@ cd edr-backend && go test -v -race ./internal/api/
 | `EDR_DATABASE_*` | edr-backend | PostgreSQL connection overrides |
 | `EDR_RATE_LIMIT_ENABLED` | edr-backend | Enable/disable rate limiting |
 | `EDR_RATE_LIMIT_REQUESTS_PER_SECOND` | edr-backend | Rate limit RPS |
-
----
-
-## Limitations
-
-- **Agent needs root** — eBPF requires CAP_BPF + CAP_SYS_ADMIN
-- **Linux only** — agent uses Linux eBPF; backend and UI run anywhere
-- **Single backend** — no HA/clustering yet; agents buffer locally during outages
-- **Command monitoring is polling-based** — 2s `/proc` scan interval; very short-lived commands may be missed (history tailing catches most)
-- **No Windows support** — registry monitor is a placeholder
-- **Vulnerability matching requires external CVE data** — backend stores package inventory; CVE matching needs NVD/OSV.dev integration for production use
 
 ---
 
