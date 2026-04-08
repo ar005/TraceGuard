@@ -1,0 +1,10 @@
+version: "3.9"
+
+services:
+  edr-ui:
+    build: ./edr-ui
+    restart: unless-stopped
+    environment:
+      EDR_BACKEND: http://localhost:8080
+    ports:
+      - "5000:5000"
