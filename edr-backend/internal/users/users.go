@@ -238,7 +238,7 @@ func (m *Manager) issueJWT(u *User) (string, error) {
 			Subject:   u.ID,
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(12 * time.Hour)),
-			Issuer:    "oedr",
+			Issuer:    "TraceGuard",
 		},
 		Username: u.Username,
 		Role:     u.Role,

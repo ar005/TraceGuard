@@ -1,4 +1,4 @@
-# OEDR Browser Extensions
+# TraceGuard Browser Extensions
 
 Browser extensions that capture web request metadata (URL, status code, method, redirect chains) and send them to the local EDR agent for phishing and threat detection.
 

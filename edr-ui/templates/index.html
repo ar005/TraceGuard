@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>OEDR — Open EDR</title>
-<meta id="oedr-meta" data-token="{{ token }}" data-backend="{{ backend }}">
+<title>TraceGuard — Open EDR</title>
+<meta id="TraceGuard-meta" data-token="{{ token }}" data-backend="{{ backend }}">
 <meta name="csrf-token" content="{{ csrf_token() }}">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -262,7 +262,7 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
       <polygon points="14,7 21,11 21,19 14,23 7,19 7,11" stroke="#00c8f0" stroke-width="0.8" stroke-dasharray="2,1.5" fill="none" opacity="0.5"/>
       <circle cx="14" cy="14" r="2.5" fill="#00c8f0"/>
     </svg>
-    <span class="brand-name">OEDR</span>
+    <span class="brand-name">TraceGuard</span>
   </div>
   <nav class="nav-tabs">
     <div class="nav-tab active" id="tb-dashboard" onclick="nav('dashboard')">
@@ -3072,7 +3072,7 @@ setInterval(refresh,30000);
 // never expires mid-session. On failure, redirects to /login.
 // Read JWT token and backend URL from server-injected meta tag.
 (function initMeta() {
-  const m = document.getElementById("oedr-meta");
+  const m = document.getElementById("TraceGuard-meta");
   if (m) {
     window._jwtToken    = m.dataset.token   || "";
     window._backendURL  = m.dataset.backend  || "";

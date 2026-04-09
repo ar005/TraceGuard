@@ -1,8 +1,8 @@
-# OEDR Agent for Raspberry Pi — Implementation Plan
+# TraceGuard Agent for Raspberry Pi — Implementation Plan
 
 ## Overview
 
-Port the OEDR agent to Raspberry Pi (ARM/ARM64 Linux). The Pi runs Linux, so most of the agent code works as-is — the main challenges are ARM eBPF compilation, resource constraints, and GPIO/peripheral monitoring unique to Pi deployments.
+Port the TraceGuard agent to Raspberry Pi (ARM/ARM64 Linux). The Pi runs Linux, so most of the agent code works as-is — the main challenges are ARM eBPF compilation, resource constraints, and GPIO/peripheral monitoring unique to Pi deployments.
 
 ## Difficulty: Low-Medium
 
@@ -109,7 +109,7 @@ ssh pi@raspberrypi 'sudo /usr/local/bin/edr-agent --config /etc/edr/agent.yaml'
 ```ini
 # /etc/systemd/system/edr-agent.service
 [Unit]
-Description=OEDR Endpoint Agent
+Description=TraceGuard Endpoint Agent
 After=network-online.target
 Wants=network-online.target
 

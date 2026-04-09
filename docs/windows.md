@@ -1,4 +1,4 @@
-# OEDR Agent for Windows — Implementation Plan
+# TraceGuard Agent for Windows — Implementation Plan
 
 ## Overview
 
@@ -50,8 +50,8 @@ Go compiles natively for Windows. The core framework (config, event bus, transpo
 | Event bus | None — pure Go |
 | gRPC transport | None — Go gRPC works on Windows |
 | Local buffer (SQLite) | None — go-sqlite3 works on Windows |
-| Config loader (Viper) | Change default paths to `C:\ProgramData\OEDR\` |
-| Logger | Change log path to `C:\ProgramData\OEDR\Logs\` |
+| Config loader (Viper) | Change default paths to `C:\ProgramData\TraceGuard\` |
+| Logger | Change log path to `C:\ProgramData\TraceGuard\Logs\` |
 | Browser monitor | None — HTTP server on localhost works |
 
 ### Windows-specific changes
@@ -59,11 +59,11 @@ Go compiles natively for Windows. The core framework (config, event bus, transpo
 ```go
 // config paths
 const (
-    DefaultConfigPath = `C:\ProgramData\OEDR\agent.yaml`
-    DefaultIDFile     = `C:\ProgramData\OEDR\agent.id`
-    DefaultBufferPath = `C:\ProgramData\OEDR\events.db`
-    DefaultLogPath    = `C:\ProgramData\OEDR\Logs\agent.log`
-    QuarantineDir     = `C:\ProgramData\OEDR\Quarantine`
+    DefaultConfigPath = `C:\ProgramData\TraceGuard\agent.yaml`
+    DefaultIDFile     = `C:\ProgramData\TraceGuard\agent.id`
+    DefaultBufferPath = `C:\ProgramData\TraceGuard\events.db`
+    DefaultLogPath    = `C:\ProgramData\TraceGuard\Logs\agent.log`
+    QuarantineDir     = `C:\ProgramData\TraceGuard\Quarantine`
 )
 ```
 
@@ -85,17 +85,17 @@ import (
     "golang.org/x/sys/windows/svc"
 )
 
-type oedrService struct{}
+type TraceGuardService struct{}
 
-func (s *oedrService) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
+func (s *TraceGuardService) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
     // Start agent, handle stop/shutdown signals
 }
 ```
 
 Install:
 ```powershell
-sc.exe create OEDRAgent binpath= "C:\Program Files\OEDR\edr-agent.exe --config C:\ProgramData\OEDR\agent.yaml" start= auto
-sc.exe start OEDRAgent
+sc.exe create TraceGuardAgent binpath= "C:\Program Files\TraceGuard\edr-agent.exe --config C:\ProgramData\TraceGuard\agent.yaml" start= auto
+sc.exe start TraceGuardAgent
 ```
 
 ---
@@ -129,7 +129,7 @@ Use `github.com/Microsoft/go-winio` or `github.com/bi-zone/etw` for Go ETW consu
 ```go
 // monitor/process_windows/monitor.go
 func (m *Monitor) Start(ctx context.Context) error {
-    session, err := etw.NewSession("OEDRProcessMon")
+    session, err := etw.NewSession("TraceGuardProcessMon")
     if err != nil { return err }
 
     session.Subscribe("Microsoft-Windows-Kernel-Process", func(e *etw.Event) {
@@ -309,8 +309,8 @@ Replace iptables with Windows Firewall:
 
 ```go
 // Use netsh or Windows Firewall COM API:
-// netsh advfirewall firewall add rule name="OEDR_BLOCK_1.2.3.4" dir=in action=block remoteip=1.2.3.4
-// netsh advfirewall firewall add rule name="OEDR_BLOCK_1.2.3.4" dir=out action=block remoteip=1.2.3.4
+// netsh advfirewall firewall add rule name="TraceGuard_BLOCK_1.2.3.4" dir=in action=block remoteip=1.2.3.4
+// netsh advfirewall firewall add rule name="TraceGuard_BLOCK_1.2.3.4" dir=out action=block remoteip=1.2.3.4
 
 // Or use WFP API for programmatic firewall control (more robust)
 ```
@@ -320,8 +320,8 @@ Replace iptables with Windows Firewall:
 ```go
 // Same concept: copy to quarantine dir, remove original
 // Additional: use SetFileAttributes to mark as SYSTEM+HIDDEN
-// Additional: set NTFS ACL to deny all access except OEDR service
-// Quarantine dir: C:\ProgramData\OEDR\Quarantine\
+// Additional: set NTFS ACL to deny all access except TraceGuard service
+// Quarantine dir: C:\ProgramData\TraceGuard\Quarantine\
 ```
 
 ---
@@ -365,18 +365,18 @@ Replace iptables with Windows Firewall:
 Build an MSI installer using WiX Toolset:
 
 ```xml
-<!-- OEDR Agent MSI -->
-<Product Name="OEDR Agent" Version="1.0.0" Manufacturer="OEDR">
+<!-- TraceGuard Agent MSI -->
+<Product Name="TraceGuard Agent" Version="1.0.0" Manufacturer="TraceGuard">
   <Package InstallerVersion="500" />
   <Directory Id="TARGETDIR" Name="SourceDir">
     <Directory Id="ProgramFiles64Folder">
-      <Directory Id="INSTALLFOLDER" Name="OEDR">
+      <Directory Id="INSTALLFOLDER" Name="TraceGuard">
         <Component>
           <File Source="edr-agent.exe" />
-          <ServiceInstall Name="OEDRAgent"
-                         DisplayName="OEDR Endpoint Agent"
+          <ServiceInstall Name="TraceGuardAgent"
+                         DisplayName="TraceGuard Endpoint Agent"
                          Start="auto" Type="ownProcess" />
-          <ServiceControl Id="StartService" Name="OEDRAgent"
+          <ServiceControl Id="StartService" Name="TraceGuardAgent"
                          Start="install" Stop="both" Remove="uninstall" />
         </Component>
       </Directory>
@@ -396,7 +396,7 @@ Build an MSI installer using WiX Toolset:
 ### Configuration via registry
 
 ```
-HKLM\SOFTWARE\OEDR\Agent\
+HKLM\SOFTWARE\TraceGuard\Agent\
   BackendURL = "backend.company.com:50051"
   TLSInsecure = 0
   Tags = "windows,domain-controller"

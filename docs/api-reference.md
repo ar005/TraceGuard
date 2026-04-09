@@ -1,4 +1,4 @@
-# OEDR REST API Reference
+# TraceGuard REST API Reference
 
 Base URL: `http://localhost:8080`
 

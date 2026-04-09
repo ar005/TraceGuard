@@ -73,7 +73,7 @@ monitors:
       - /etc/profile.d
 
   browser:
-    enabled: true              # accept events from the OEDR browser extension
+    enabled: true              # accept events from the TraceGuard browser extension
     listen_addr: "127.0.0.1:9999"  # localhost-only HTTP endpoint for extension
 
   kmod:

@@ -1,6 +1,6 @@
 // internal/monitor/browser/monitor.go
 //
-// Browser monitor — receives web request events from the OEDR browser
+// Browser monitor — receives web request events from the TraceGuard browser
 // extension (Chrome/Firefox) via a localhost-only HTTP endpoint.
 //
 // The extension POSTs JSON batches to http://127.0.0.1:9999/browser-events.

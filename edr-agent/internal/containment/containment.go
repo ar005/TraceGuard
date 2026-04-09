@@ -25,9 +25,9 @@ import (
 	"github.com/rs/zerolog"
 )
 
-const chainName = "OEDR_CONTAIN"
+const chainName = "TraceGuard_CONTAIN"
 const quarantineDir = "/var/lib/edr/quarantine"
-const blockChain = "OEDR_BLOCK"
+const blockChain = "TraceGuard_BLOCK"
 
 // QuarantineInfo holds metadata about a quarantined file.
 type QuarantineInfo struct {
@@ -299,7 +299,7 @@ func (m *Manager) BlockIP(ip string) error {
 		return fmt.Errorf("IP %s is already blocked", ip)
 	}
 
-	// Create OEDR_BLOCK chain if it doesn't exist (ignore error if already exists).
+	// Create TraceGuard_BLOCK chain if it doesn't exist (ignore error if already exists).
 	_ = run("iptables", "-N", blockChain)
 
 	// Add DROP rules for source and destination.
@@ -364,7 +364,7 @@ func (m *Manager) ListBlockedIPs() []string {
 	return ips
 }
 
-// ensureBlockChainJumps adds jumps from INPUT and OUTPUT to OEDR_BLOCK if not present.
+// ensureBlockChainJumps adds jumps from INPUT and OUTPUT to TraceGuard_BLOCK if not present.
 func (m *Manager) ensureBlockChainJumps() {
 	// Check if jump already exists by trying to add — iptables -C checks existence.
 	if run("iptables", "-C", "INPUT", "-j", blockChain) != nil {

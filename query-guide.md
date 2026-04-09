@@ -1,6 +1,6 @@
-# OEDR Threat Hunting Query Guide
+# TraceGuard Threat Hunting Query Guide
 
-The Hunt tab lets analysts write SQL-like queries directly against the raw events table. This is the most powerful investigation tool in OEDR — you can search across all telemetry collected from every endpoint.
+The Hunt tab lets analysts write SQL-like queries directly against the raw events table. This is the most powerful investigation tool in TraceGuard — you can search across all telemetry collected from every endpoint.
 
 ---
 
