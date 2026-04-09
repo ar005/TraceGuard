@@ -1,11 +1,14 @@
-const BASE =
-  typeof window !== "undefined"
-    ? (process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8080")
-    : "http://localhost:8080";
+function resolveBase(): string {
+  if (process.env.NEXT_PUBLIC_BACKEND_URL) {
+    return process.env.NEXT_PUBLIC_BACKEND_URL;
+  }
+  if (typeof window !== "undefined") {
+    return `${window.location.protocol}//${window.location.hostname}:8080`;
+  }
+  return "http://localhost:8080";
+}
 
-const baseUrl =
-  process.env.NEXT_PUBLIC_BACKEND_URL ??
-  "https://traceedr.ianimesh.com";
+const BASE = resolveBase();
 
 function getToken(): string | null {
   if (typeof window === "undefined") return null;
