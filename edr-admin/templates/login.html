@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>TraceGuard — Admin Login</title>
+<title>OEDR — Admin Login</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
 :root{
@@ -53,7 +53,7 @@ body::after{content:'';position:fixed;inset:0;background:radial-gradient(ellipse
       <circle cx="14" cy="14" r="2.5" fill="#00c8f0"/>
     </svg>
     <div>
-      <div class="logo-name">TraceGuard</div>
+      <div class="logo-name">OEDR</div>
       <div class="logo-sub">Admin Portal</div>
     </div>
   </div>
@@ -70,38 +70,12 @@ body::after{content:'';position:fixed;inset:0;background:radial-gradient(ellipse
 
     {% if error == "invalid" %}
     <div class="notice notice-err">Invalid username or password</div>
-    {% elif error == "invalid_totp" %}
-    <div class="notice notice-err">Invalid verification code — try again</div>
     {% elif error == "noadmin" %}
     <div class="notice notice-err">This portal is for admin accounts only</div>
     {% elif error == "backend" %}
     <div class="notice notice-warn">⚠ Cannot reach backend{% if backend_url %} at {{ backend_url }}{% endif %}<br>Make sure the EDR backend is running.</div>
     {% endif %}
 
-    {% if mfa_required %}
-    {# ── TOTP verification step ── #}
-    <form method="POST" action="/login">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <input type="hidden" name="mfa_token" value="{{ mfa_token }}">
-      <div style="text-align:center;margin-bottom:16px">
-        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#00c8f0" stroke-width="1.5" style="margin:0 auto 8px">
-          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-          <path d="M9 12l2 2 4-4"/>
-        </svg>
-        <div style="font-family:var(--mono);font-size:9px;color:var(--dim);letter-spacing:1px;text-transform:uppercase">Enter authentication code</div>
-      </div>
-      <div class="field">
-        <label>6-digit code or backup code</label>
-        <input type="text" name="totp_code" maxlength="8" autocomplete="one-time-code" placeholder="000000"
-               style="text-align:center;font-size:18px;letter-spacing:6px" autofocus>
-      </div>
-      <button type="submit" class="btn">Verify</button>
-      <div style="text-align:center;margin-top:12px">
-        <a href="/login" style="font-family:var(--mono);font-size:8px;color:var(--dim);text-decoration:none;letter-spacing:1px;text-transform:uppercase">← Back to login</a>
-      </div>
-    </form>
-    {% else %}
-    {# ── Normal login step ── #}
     <form method="POST" action="/login">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="field">
@@ -114,9 +88,8 @@ body::after{content:'';position:fixed;inset:0;background:radial-gradient(ellipse
       </div>
       <button type="submit" class="btn">Sign In</button>
     </form>
-    {% endif %}
   </div>
-  <div class="footer">TraceGuard Admin Portal · Port 5001</div>
+  <div class="footer">OEDR Admin Portal · Port 5001</div>
 </div>
 </body>
 </html>

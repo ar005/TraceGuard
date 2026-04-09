@@ -3,6 +3,10 @@ const BASE =
     ? (process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8080")
     : "http://localhost:8080";
 
+const baseUrl =
+  process.env.NEXT_PUBLIC_BACKEND_URL ??
+  "https://traceedr.ianimesh.com";
+
 function getToken(): string | null {
   if (typeof window === "undefined") return null;
   return localStorage.getItem("edr_token");

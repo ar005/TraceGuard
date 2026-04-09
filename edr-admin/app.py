@@ -1,5 +1,5 @@
 """
-TraceGuard Admin Portal — Standalone app on port 5001
+OEDR Admin Portal — Standalone app on port 5001
 
 Usage:
   python app.py                   Normal run
@@ -11,8 +11,8 @@ so it works even if you've lost or forgotten the admin password.
 
 Environment variables (all optional):
   EDR_BACKEND        Backend URL        (default: http://localhost:8080)
-  TraceGuard_ADMIN_PORT    Web UI port        (default: 5001)
-  TraceGuard_ADMIN_SECRET  Flask session key  (default: random, changes on restart)
+  OEDR_ADMIN_PORT    Web UI port        (default: 5001)
+  OEDR_ADMIN_SECRET  Flask session key  (default: random, changes on restart)
   DB_HOST            Postgres host      (default: localhost)
   DB_PORT            Postgres port      (default: 5432)
   DB_NAME            Postgres db name   (default: edr)
@@ -26,7 +26,7 @@ from flask_wtf.csrf import CSRFProtect
 from functools import wraps
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("TraceGuard_ADMIN_SECRET") or secrets.token_hex(32)
+app.secret_key = os.environ.get("OEDR_ADMIN_SECRET") or secrets.token_hex(32)
 csrf = CSRFProtect(app)
 BACKEND = os.environ.get("EDR_BACKEND", "http://localhost:8080")
 
@@ -85,7 +85,7 @@ def _force_reset_via_db():
 def _startup(force_setup=False):
     SEP = "─" * 56
     print(f"\n{SEP}")
-    print(f"  TraceGuard Admin Portal")
+    print(f"  OEDR Admin Portal")
     print(f"  Backend : {BACKEND}")
     print(SEP)
 
@@ -285,13 +285,6 @@ def login_page():
 def do_login():
     u = request.form.get("username", "").strip()
     p = request.form.get("password", "")
-
-    # Check if this is a TOTP verification submission.
-    mfa_token = request.form.get("mfa_token", "")
-    totp_code = request.form.get("totp_code", "")
-    if mfa_token and totp_code:
-        return _do_totp_verify(mfa_token, totp_code)
-
     try:
         r = requests.post(
             f"{BACKEND}/api/v1/auth/login",
@@ -306,12 +299,6 @@ def do_login():
         return render_template("login.html", error="backend", backend_url=str(e))
 
     if r.status_code == 200:
-        # Check if MFA is required.
-        if data.get("mfa_required"):
-            return render_template("login.html", mfa_required=True,
-                                   mfa_token=data.get("mfa_token", ""),
-                                   username=u)
-
         user = data.get("user", {})
         if user.get("role") != "admin":
             return render_template("login.html", error="noadmin")
@@ -323,35 +310,6 @@ def do_login():
         session["token"]     = data["token"]
         return redirect(url_for("portal"))
     return render_template("login.html", error="invalid")
-
-def _do_totp_verify(mfa_token, totp_code):
-    """Complete TOTP verification for admin portal login."""
-    try:
-        r = requests.post(
-            f"{BACKEND}/api/v1/auth/totp/verify-login",
-            json={"mfa_token": mfa_token, "code": totp_code},
-            headers={"Content-Type": "application/json"},
-            timeout=8,
-        )
-        data = r.json()
-    except requests.exceptions.ConnectionError:
-        return render_template("login.html", error="backend", backend_url=BACKEND)
-    except Exception as e:
-        return render_template("login.html", error="backend", backend_url=str(e))
-
-    if r.status_code == 200:
-        user = data.get("user", {})
-        if user.get("role") != "admin":
-            return render_template("login.html", error="noadmin")
-        session.permanent    = True
-        session["logged_in"] = True
-        session["username"]  = user["username"]
-        session["role"]      = user["role"]
-        session["user_id"]   = user["id"]
-        session["token"]     = data["token"]
-        return redirect(url_for("portal"))
-    return render_template("login.html", error="invalid_totp", mfa_required=True,
-                           mfa_token=mfa_token)
 
 @app.route("/logout", methods=["POST"])
 def logout():
@@ -410,24 +368,6 @@ def api_reset_password(uid):
     s, d = _backend(f"/api/v1/admin/users/{uid}/reset-password", "POST", request.get_json())
     return jsonify(d), s
 
-@app.route("/api/users/<uid>/totp/setup", methods=["POST"])
-@login_required
-def api_totp_setup(uid):
-    s, d = _backend(f"/api/v1/admin/users/{uid}/totp/setup", "POST")
-    return jsonify(d), s
-
-@app.route("/api/users/<uid>/totp/confirm", methods=["POST"])
-@login_required
-def api_totp_confirm(uid):
-    s, d = _backend(f"/api/v1/admin/users/{uid}/totp/confirm", "POST", request.get_json())
-    return jsonify(d), s
-
-@app.route("/api/users/<uid>/totp", methods=["DELETE"])
-@login_required
-def api_totp_disable(uid):
-    s, d = _backend(f"/api/v1/admin/users/{uid}/totp", "DELETE")
-    return jsonify(d), s
-
 @app.route("/api/keys", methods=["GET"])
 @login_required
 def api_list_keys():
@@ -461,11 +401,11 @@ def api_audit():
 # ── main ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="TraceGuard Admin Portal")
+    parser = argparse.ArgumentParser(description="OEDR Admin Portal")
     parser.add_argument("--force-setup", action="store_true",
                         help="Delete all users via direct DB and force first-run setup")
     parser.add_argument("--port", type=int,
-                        default=int(os.environ.get("TraceGuard_ADMIN_PORT", 5001)))
+                        default=int(os.environ.get("OEDR_ADMIN_PORT", 5001)))
     args = parser.parse_args()
 
     _startup(force_setup=args.force_setup)

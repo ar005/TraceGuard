@@ -1,8 +1,8 @@
-# TraceGuard Agent Documentation
+# OEDR Agent Documentation
 
 ## Overview
 
-The TraceGuard Agent (`edr-agent`) is a lightweight, high-performance endpoint telemetry collector for Linux. It runs on monitored endpoints with root privileges and uses eBPF probes to capture process, network, file, and authentication events in real time. Events are published to an internal event bus, buffered locally in SQLite for offline resilience, and streamed to the TraceGuard backend over gRPC.
+The OEDR Agent (`edr-agent`) is a lightweight, high-performance endpoint telemetry collector for Linux. It runs on monitored endpoints with root privileges and uses eBPF probes to capture process, network, file, and authentication events in real time. Events are published to an internal event bus, buffered locally in SQLite for offline resilience, and streamed to the OEDR backend over gRPC.
 
 The agent is written in Go with eBPF C probes compiled via clang/libbpf. It supports hot-reloadable YAML configuration, self-protection (watchdog + binary immutability), and a browser extension receiver for HTTP request visibility.
 
@@ -80,7 +80,7 @@ Configuration is loaded from a YAML file. Environment variables with the `EDR_` 
 | `agent.id` | string | `""` (auto-generated UUID) | Agent unique identifier. If empty, a UUID is generated and persisted to `id_file`. |
 | `agent.id_file` | string | `/var/lib/edr/agent.id` | Path to persist the auto-generated agent ID. |
 | `agent.hostname` | string | `""` (auto-detected) | Hostname reported to backend. Auto-detected from OS if empty. |
-| `agent.backend_url` | string | `localhost:50051` | gRPC address of the TraceGuard backend. |
+| `agent.backend_url` | string | `localhost:50051` | gRPC address of the OEDR backend. |
 | `agent.tags` | string[] | `[]` | Labels for filtering in the UI (e.g., `[prod, webserver, k8s]`). |
 | `agent.env` | string | `""` | Environment label (e.g., `production`, `staging`, `dev`). |
 | `agent.notes` | string | `""` | Free-text description of this endpoint. |
@@ -129,7 +129,7 @@ Configuration is loaded from a YAML file. Environment variables with the `EDR_` 
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `monitors.browser.enabled` | bool | `false` | Accept events from the TraceGuard browser extension. |
+| `monitors.browser.enabled` | bool | `false` | Accept events from the OEDR browser extension. |
 | `monitors.browser.listen_addr` | string | `127.0.0.1:9999` | Localhost-only HTTP endpoint for the browser extension. |
 
 ### `buffer` -- Local SQLite event buffer
@@ -228,7 +228,7 @@ Periodically inventories installed packages and reports them to the backend:
 
 ### Browser Monitor
 
-Receives web request events from the TraceGuard browser extension (Chrome/Firefox) via a localhost-only HTTP endpoint.
+Receives web request events from the OEDR browser extension (Chrome/Firefox) via a localhost-only HTTP endpoint.
 
 - Listens on `127.0.0.1:9999` (configurable) for POST requests to `/browser-events`
 - Accepts JSON batches from the extension (max 2MB per request)
@@ -485,7 +485,7 @@ Passively extracts TLS Server Name Indication (SNI) from ClientHello messages us
 
 | Event Type | Description |
 |---|---|
-| `BROWSER_REQUEST` | A web request was captured by the TraceGuard browser extension. Includes URL, domain, method, status code, referrer, redirect chain, form submission detection. |
+| `BROWSER_REQUEST` | A web request was captured by the OEDR browser extension. Includes URL, domain, method, status code, referrer, redirect chain, form submission detection. |
 
 ## Event Bus Architecture
 

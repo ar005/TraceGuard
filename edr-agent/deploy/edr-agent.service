@@ -1,0 +1,32 @@
+[Unit]
+Description=EDR Agent
+Documentation=https://github.com/youredr/edr-agent
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/edr-agent --config /etc/edr/agent.yaml
+Restart=on-failure
+RestartSec=3s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=edr-agent
+
+# Security hardening
+User=root
+Group=root
+
+# Allow eBPF operations
+AmbientCapabilities=CAP_BPF CAP_SYS_ADMIN CAP_SYS_PTRACE CAP_NET_ADMIN CAP_IPC_LOCK
+CapabilityBoundingSet=CAP_BPF CAP_SYS_ADMIN CAP_SYS_PTRACE CAP_NET_ADMIN CAP_IPC_LOCK
+
+# Prevent the service from being killed by the OOM killer
+OOMScoreAdjust=-1000
+
+# Resource limits
+LimitNOFILE=65536
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=multi-user.target

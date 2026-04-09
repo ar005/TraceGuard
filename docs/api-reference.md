@@ -1,4 +1,4 @@
-# TraceGuard REST API Reference
+# OEDR REST API Reference
 
 Base URL: `http://localhost:8080`
 
@@ -1072,88 +1072,6 @@ Get the audit log of administrative actions.
     }
   ],
   "total": 1
-}
-```
-
----
-
-## Browser Navigation Tree
-
-### `GET /api/v1/browser/tree`
-
-**Auth:** Bearer token
-
-Returns a hierarchical navigation tree built from BROWSER_REQUEST events. The tree links URLs via referrer/tab_url relationships and expands redirect chains as intermediate nodes. Domain IOC matches are annotated on each node.
-
-**Query parameters:**
-
-| Param | Required | Default | Description |
-|---|---|---|---|
-| `agent_id` | Yes | — | Agent ID to query |
-| `since` | No | 1 hour ago | Start time (RFC3339) |
-| `until` | No | now | End time (RFC3339) |
-| `tab_id` | No | 0 (all) | Filter to a specific browser tab |
-
-**Response:**
-```json
-{
-  "tree": [
-    {
-      "event_id": "evt-xxx",
-      "url": "https://example.com",
-      "domain": "example.com",
-      "path": "/",
-      "method": "GET",
-      "status_code": 200,
-      "resource_type": "main_frame",
-      "tab_id": 1,
-      "is_form_submit": false,
-      "is_redirect": false,
-      "browser_name": "Chrome",
-      "server_ip": "93.184.216.34",
-      "timestamp": "2025-01-15T12:00:00Z",
-      "hostname": "workstation-1",
-      "ioc_match": null,
-      "children": [
-        {
-          "event_id": "evt-yyy",
-          "url": "https://cdn.example.com/app.js",
-          "domain": "cdn.example.com",
-          "resource_type": "script",
-          "status_code": 200,
-          "children": []
-        }
-      ]
-    }
-  ],
-  "agent_id": "agent-xxx"
-}
-```
-
-### `GET /api/v1/browser/tabs`
-
-**Auth:** Bearer token
-
-Returns distinct browser tabs with their most recent URL, for populating a tab selector.
-
-**Query parameters:**
-
-| Param | Required | Default | Description |
-|---|---|---|---|
-| `agent_id` | Yes | — | Agent ID to query |
-| `since` | No | 24 hours ago | Start time (RFC3339) |
-
-**Response:**
-```json
-{
-  "tabs": [
-    {
-      "tab_id": 1,
-      "last_url": "https://example.com/dashboard",
-      "last_seen": "2025-01-15T12:30:00Z",
-      "count": 47
-    }
-  ]
 }
 ```
 

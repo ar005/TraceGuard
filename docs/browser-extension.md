@@ -1,6 +1,6 @@
 # Browser Extension Documentation
 
-The TraceGuard Browser Monitor extension captures web request metadata from analyst browsers and streams it to the local EDR agent for phishing detection and threat analysis.
+The OEDR Browser Monitor extension captures web request metadata from analyst browsers and streams it to the local EDR agent for phishing detection and threat analysis.
 
 ## Purpose
 
@@ -11,7 +11,7 @@ The browser extension adds visibility into web browsing activity by capturing UR
 ### Manifest
 
 - **Manifest Version**: V3
-- **Name**: TraceGuard Browser Monitor
+- **Name**: OEDR Browser Monitor
 - **Version**: 1.0.0
 - **Permissions**: `webRequest`, `storage`
 - **Host Permissions**: `<all_urls>`
@@ -23,7 +23,7 @@ The browser extension adds visibility into web browsing activity by capturing UR
 1. Open Chrome and navigate to `chrome://extensions/`.
 2. Enable "Developer mode" (toggle in the top-right corner).
 3. Click "Load unpacked" and select the `extensions/chrome/` directory.
-4. The TraceGuard Browser Monitor icon appears in the extensions toolbar.
+4. The OEDR Browser Monitor icon appears in the extensions toolbar.
 5. Click the icon to open the popup and verify the agent URL is correct.
 
 ## Firefox Extension
@@ -31,18 +31,18 @@ The browser extension adds visibility into web browsing activity by capturing UR
 ### Manifest
 
 - **Manifest Version**: V2 (WebExtensions)
-- **Name**: TraceGuard Browser Monitor
+- **Name**: OEDR Browser Monitor
 - **Version**: 1.0.0
 - **Permissions**: `webRequest`, `webRequestBlocking`, `storage`, `<all_urls>`
 - **Background**: Script (`background.js`)
 - **Browser Action**: Popup (`popup.html`) with icon set
-- **Gecko Settings**: ID `TraceGuard-browser-monitor@youredr.local`, minimum Firefox 109.0
+- **Gecko Settings**: ID `oedr-browser-monitor@youredr.local`, minimum Firefox 109.0
 
 ### Installation
 
 1. Open Firefox and navigate to `about:debugging#/runtime/this-firefox`.
 2. Click "Load Temporary Add-on" and select the `manifest.json` file in `extensions/firefox/`.
-3. The TraceGuard Browser Monitor icon appears in the toolbar.
+3. The OEDR Browser Monitor icon appears in the toolbar.
 4. For permanent installation, package the extension as an `.xpi` file and sign it through Mozilla's add-on portal.
 
 ### Differences from Chrome

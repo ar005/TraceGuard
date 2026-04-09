@@ -1,14 +1,12 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  allowedDevOrigins: [
+    "0.0.0.0",
+    "100.123.224.3",
+    "100.94.38.92",
+    "traceedr.ianimesh.com",
+  ],
 };
 
 export default nextConfig;
-module.exports = {
-  allowedDevOrigins: ['0.0.0.0']
-}
-
-module.exports = {
-  allowedDevOrigins: ['100.123.224.3'],
-}

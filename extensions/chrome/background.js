@@ -1,4 +1,4 @@
-// TraceGuard Browser Monitor — Chrome Extension (Manifest V3)
+// OEDR Browser Monitor — Chrome Extension (Manifest V3)
 // Captures completed web requests and sends metadata to the local EDR agent.
 
 const DEFAULT_CONFIG = {

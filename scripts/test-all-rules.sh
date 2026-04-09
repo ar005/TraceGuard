@@ -1,6 +1,6 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────────────
-# TraceGuard Rule Trigger Test Script
+# OEDR Rule Trigger Test Script
 # Injects synthetic events via the REST API to trigger every detection
 # rule. Run this after setting up the backend with seeded rules.
 #
@@ -123,7 +123,7 @@ inject_multi() {
 }
 
 echo "═══════════════════════════════════════════════════════════════"
-echo "  TraceGuard Rule Trigger Test — $(date)"
+echo "  OEDR Rule Trigger Test — $(date)"
 echo "  Backend: $URL"
 echo "═══════════════════════════════════════════════════════════════"
 echo ""

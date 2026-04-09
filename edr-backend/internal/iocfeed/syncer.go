@@ -190,7 +190,7 @@ func (s *Syncer) syncFeed(ctx context.Context, feed Feed) error {
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
-	req.Header.Set("User-Agent", "TraceGuard-IOC-Syncer/1.0")
+	req.Header.Set("User-Agent", "OEDR-IOC-Syncer/1.0")
 
 	resp, err := s.client.Do(req)
 	if err != nil {

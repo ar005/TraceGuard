@@ -1,6 +1,6 @@
 # Dashboard (edr-ui3) Documentation
 
-The TraceGuard dashboard is a modern, analyst-facing web application codenamed **TRACEGUARD**. It provides a command-center interface for monitoring endpoints, investigating alerts, hunting for threats, and managing detection rules.
+The OEDR dashboard is a modern, analyst-facing web application codenamed **TRACEGUARD**. It provides a command-center interface for monitoring endpoints, investigating alerts, hunting for threats, and managing detection rules.
 
 ## Tech Stack
 
@@ -20,7 +20,7 @@ The TraceGuard dashboard is a modern, analyst-facing web application codenamed *
 ### Prerequisites
 
 - Node.js 18+
-- A running TraceGuard backend instance on port 8080
+- A running OEDR backend instance on port 8080
 
 ### Install and Build
 
@@ -98,7 +98,7 @@ The dashboard includes 18 authenticated pages plus a login page. The sidebar org
 | Page | Route | Description |
 |---|---|---|
 | **USB Devices** | `/usb` | USB device inventory and activity history. Shows all USB devices detected across agents with vendor/product identification, serial numbers, device type classification (mass storage, HID, etc.), and connect/disconnect timeline. Filterable by agent, device type, and time range. |
-| **Browser Activity** | `/browser` | Browser request monitoring from the TraceGuard browser extension. Two view modes: **Table** view with filters for agent, browser, domain, status code and a timeline of requests with detail panel; **Navigation Tree** view that reconstructs URL navigation flow as a hierarchical tree (like the process tree but for browser sessions). Tree view includes tab selector, time range picker (1h/6h/24h/7d), redirect chain expansion, IOC domain highlighting, form submission badges, and a split-pane detail panel. |
+| **Browser Activity** | `/browser` | Browser request monitoring from the OEDR browser extension. Displays captured HTTP/HTTPS requests with filters for agent, browser, domain, status code, and resource type. Includes a timeline view and detail panel showing full URL, referrer, redirect chain, form submission detection, and server IP. |
 | **Metrics** | `/metrics` | Prometheus metrics visualization. Displays backend health metrics including event ingest rates, alert counts, agent connectivity, gRPC performance, API latency, detection engine timing, SSE connections, and database statistics. |
 
 ### Operations

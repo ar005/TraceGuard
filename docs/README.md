@@ -1,4 +1,4 @@
-# TraceGuard Documentation
+# OEDR Documentation
 
 Complete documentation for the Open Endpoint Detection & Response platform.
 
@@ -9,7 +9,7 @@ Complete documentation for the Open Endpoint Detection & Response platform.
 | [Agent](agent.md) | eBPF endpoint agent — monitors, event types, config, build |
 | [Backend](backend.md) | Go backend — API server, detection engine, database, gRPC ingest |
 | [API Reference](api-reference.md) | Complete REST API — 60+ endpoints with examples |
-| [Dashboard](dashboard.md) | Next.js analyst UI — 18 pages, themes, design system, navigation tree |
+| [Dashboard](dashboard.md) | Next.js analyst UI — 16 pages, themes, design system |
 | [Browser Extension](browser-extension.md) | Chrome + Firefox extensions for URL/phishing monitoring |
 | [Detection Rules](detection-rules.md) | Rule engine, 26+ seeded rules, IOC matching, MITRE ATT&CK |
 | [Deployment](deployment.md) | Production deployment guide — setup, TLS, systemd, Docker |
@@ -20,13 +20,13 @@ Complete documentation for the Open Endpoint Detection & Response platform.
 Endpoint                           Server                          Analyst
 ────────                           ──────                          ───────
 edr-agent (Go + eBPF)  ──gRPC──>  edr-backend (Go)  ──REST──>   edr-ui3 (Next.js)
-  Process monitor                    Event ingest                   18 pages
+  Process monitor                    Event ingest                   16 pages
   Network monitor                    Detection engine               7 themes
   File monitor                       Alert correlation              Live SSE
   Auth monitor                       IOC matching                   AI explain
   Command monitor                    SSE broker                     Process tree
-  Browser monitor ◄──HTTP──         PostgreSQL                     Navigation tree
-       ▲                                                            Threat hunt
+  Browser monitor ◄──HTTP──         PostgreSQL                     Threat hunt
+       ▲
   Browser Extension
   (Chrome / Firefox)
 ```

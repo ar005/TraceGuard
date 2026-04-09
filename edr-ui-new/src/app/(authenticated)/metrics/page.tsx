@@ -174,23 +174,46 @@ export default function MetricsPage() {
   const [lastFetch, setLastFetch] = useState<Date | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
 
-  const fetchMetrics = useCallback(async () => {
-    try {
-      // Fetch raw Prometheus text from backend
-      const baseUrl = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8080";
-      const resp = await fetch(`${baseUrl}/metrics/prometheus`, { signal: AbortSignal.timeout(10000) });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const text = await resp.text();
-      const parsed = parsePrometheusText(text);
-      setMetrics(parsed);
-      setError("");
-      setLastFetch(new Date());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch metrics");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  // const fetchMetrics = useCallback(async () => {
+  //   try {
+  //     // Fetch raw Prometheus text from backend
+  //     const baseUrl = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8080";
+  //     const resp = await fetch(`${baseUrl}/metrics/prometheus`, { signal: AbortSignal.timeout(10000) });
+  //     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  //     const text = await resp.text();
+  //     const parsed = parsePrometheusText(text);
+  //     setMetrics(parsed);
+  //     setError("");
+  //     setLastFetch(new Date());
+  //   } catch (err) {
+  //     setError(err instanceof Error ? err.message : "Failed to fetch metrics");
+  //   } finally {
+  //     setLoading(false);
+  //   }
+  // }, []);
+
+  const BASE = "";
+
+const fetchMetrics = useCallback(async () => {
+  try {
+    const resp = await fetch(`/api/v1/metrics/prometheus`, {
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
+    const text = await resp.text();
+    const parsed = parsePrometheusText(text);
+
+    setMetrics(parsed);
+    setError("");
+    setLastFetch(new Date());
+  } catch (err) {
+    setError(err instanceof Error ? err.message : "Failed to fetch metrics");
+  } finally {
+    setLoading(false);
+  }
+}, []);
 
   useEffect(() => {
     fetchMetrics();
