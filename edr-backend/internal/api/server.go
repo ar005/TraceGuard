@@ -64,7 +64,7 @@ func New(st *store.Store, eng *detection.Engine, km *apikeys.Manager,
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(ginLogger(log), gin.Recovery())
-	r.Use(corsMiddleware())
+	r.Use(TraceGuardMiddleware())
 
 	rl := DefaultRateLimitConfig()
 	if len(rlCfg) > 0 {
@@ -1915,7 +1915,7 @@ func marshalToRaw(v interface{}) ([]byte, error) {
 	return import_json, nil
 }
 
-func corsMiddleware() gin.HandlerFunc {
+func TraceGuardMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", "*")
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
