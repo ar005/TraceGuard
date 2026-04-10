@@ -12,46 +12,6 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-type NetworkNetEventV4 struct {
-	TimestampNs uint64
-	EventType   uint32
-	Pid         uint32
-	Ppid        uint32
-	Uid         uint32
-	Comm        [16]int8
-	SrcIp       uint32
-	DstIp       uint32
-	SrcPort     uint16
-	DstPort     uint16
-	Protocol    uint8
-	Direction   uint8
-	TcpState    uint8
-	Pad         uint8
-	BytesSent   uint64
-	BytesRecv   uint64
-	SockCookie  uint64
-}
-
-type NetworkNetEventV6 struct {
-	TimestampNs uint64
-	EventType   uint32
-	Pid         uint32
-	Ppid        uint32
-	Uid         uint32
-	Comm        [16]int8
-	SrcIp       [16]uint8
-	DstIp       [16]uint8
-	SrcPort     uint16
-	DstPort     uint16
-	Protocol    uint8
-	Direction   uint8
-	TcpState    uint8
-	Pad         uint8
-	BytesSent   uint64
-	BytesRecv   uint64
-	SockCookie  uint64
-}
-
 // LoadNetwork returns the embedded CollectionSpec for Network.
 func LoadNetwork() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_NetworkBytes)
@@ -105,8 +65,6 @@ type NetworkProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type NetworkMapSpecs struct {
-	ActiveConnsV4 *ebpf.MapSpec `ebpf:"active_conns_v4"`
-	ActiveConnsV6 *ebpf.MapSpec `ebpf:"active_conns_v6"`
 	NetworkEvents *ebpf.MapSpec `ebpf:"network_events"`
 }
 
@@ -129,15 +87,11 @@ func (o *NetworkObjects) Close() error {
 //
 // It can be passed to LoadNetworkObjects or ebpf.CollectionSpec.LoadAndAssign.
 type NetworkMaps struct {
-	ActiveConnsV4 *ebpf.Map `ebpf:"active_conns_v4"`
-	ActiveConnsV6 *ebpf.Map `ebpf:"active_conns_v6"`
 	NetworkEvents *ebpf.Map `ebpf:"network_events"`
 }
 
 func (m *NetworkMaps) Close() error {
 	return _NetworkClose(
-		m.ActiveConnsV4,
-		m.ActiveConnsV6,
 		m.NetworkEvents,
 	)
 }

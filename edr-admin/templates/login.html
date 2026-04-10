@@ -74,8 +74,23 @@ body::after{content:'';position:fixed;inset:0;background:radial-gradient(ellipse
     <div class="notice notice-err">This portal is for admin accounts only</div>
     {% elif error == "backend" %}
     <div class="notice notice-warn">⚠ Cannot reach backend{% if backend_url %} at {{ backend_url }}{% endif %}<br>Make sure the EDR backend is running.</div>
+    {% elif error == "invalid_totp" %}
+    <div class="notice notice-err">Invalid authenticator code — try again</div>
+    {% elif error == "code_required" %}
+    <div class="notice notice-err">Please enter your authenticator code</div>
     {% endif %}
 
+    {% if mfa_required %}
+    <form method="POST" action="/login/totp">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="field">
+        <label>Authenticator Code</label>
+        <input type="text" name="totp_code" autocomplete="one-time-code" inputmode="numeric" pattern="[0-9a-fA-F]*" maxlength="8" placeholder="123456" autofocus style="letter-spacing:4px;font-size:16px;text-align:center">
+      </div>
+      <p style="font-family:var(--mono);font-size:8px;color:var(--muted);margin-bottom:12px;letter-spacing:.5px">Enter the 6-digit code from your authenticator app, or a backup code.</p>
+      <button type="submit" class="btn">Verify</button>
+    </form>
+    {% else %}
     <form method="POST" action="/login">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="field">
@@ -88,6 +103,7 @@ body::after{content:'';position:fixed;inset:0;background:radial-gradient(ellipse
       </div>
       <button type="submit" class="btn">Sign In</button>
     </form>
+    {% endif %}
   </div>
   <div class="footer">TraceGuard Admin Portal · Port 5001</div>
 </div>

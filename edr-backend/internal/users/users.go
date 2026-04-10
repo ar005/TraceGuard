@@ -18,6 +18,7 @@ package users
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -25,6 +26,8 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jmoiron/sqlx"
+	"github.com/pquerna/otp"
+	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -245,6 +248,144 @@ func (m *Manager) issueJWT(u *User) (string, error) {
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(m.jwtSecret)
+}
+
+// ─── TOTP / MFA ──────────────────────────────────────────────────────────────
+
+// GenerateTOTP creates a new TOTP secret for a user and returns the OTP key
+// (contains the secret + provisioning URI for QR codes). Does NOT enable TOTP yet.
+func (m *Manager) GenerateTOTP(ctx context.Context, userID string) (*otp.Key, error) {
+	u, err := m.Get(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("user not found: %w", err)
+	}
+
+	key, err := totp.Generate(totp.GenerateOpts{
+		Issuer:      "TraceGuard",
+		AccountName: u.Username,
+		Period:      30,
+		Digits:      otp.DigitsSix,
+		Algorithm:   otp.AlgorithmSHA1,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("generate TOTP: %w", err)
+	}
+
+	// Store secret (not yet enabled — user must verify first)
+	_, err = m.db.ExecContext(ctx,
+		`UPDATE users SET totp_secret=$2 WHERE id=$1`,
+		userID, key.Secret())
+	if err != nil {
+		return nil, fmt.Errorf("store TOTP secret: %w", err)
+	}
+	return key, nil
+}
+
+// VerifyAndEnableTOTP verifies a TOTP code against the stored secret, and if
+// valid, enables TOTP and generates backup codes.
+func (m *Manager) VerifyAndEnableTOTP(ctx context.Context, userID, code string) ([]string, error) {
+	u, err := m.Get(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("user not found: %w", err)
+	}
+	if u.TOTPSecret == "" {
+		return nil, fmt.Errorf("TOTP not initialized — call enable first")
+	}
+
+	if !totp.Validate(code, u.TOTPSecret) {
+		return nil, fmt.Errorf("invalid TOTP code")
+	}
+
+	// Generate 10 backup codes
+	backups := make([]string, 10)
+	for i := range backups {
+		backups[i] = randomHex(4) // 8 hex chars each
+	}
+
+	_, err = m.db.ExecContext(ctx,
+		`UPDATE users SET totp_enabled=TRUE, totp_backup_codes=$2 WHERE id=$1`,
+		userID, strings.Join(backups, ","))
+	if err != nil {
+		return nil, fmt.Errorf("enable TOTP: %w", err)
+	}
+	return backups, nil
+}
+
+// DisableTOTP removes TOTP for a user.
+func (m *Manager) DisableTOTP(ctx context.Context, userID string) error {
+	_, err := m.db.ExecContext(ctx,
+		`UPDATE users SET totp_enabled=FALSE, totp_secret='', totp_backup_codes='' WHERE id=$1`,
+		userID)
+	return err
+}
+
+// ValidateTOTPCode checks a 6-digit TOTP code or a backup code.
+func (m *Manager) ValidateTOTPCode(ctx context.Context, userID, code string) (bool, error) {
+	u, err := m.Get(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	if !u.TOTPEnabled || u.TOTPSecret == "" {
+		return false, fmt.Errorf("TOTP not enabled")
+	}
+
+	// Try TOTP first
+	if totp.Validate(code, u.TOTPSecret) {
+		return true, nil
+	}
+
+	// Try backup codes
+	if u.TOTPBackupCodes != "" {
+		codes := strings.Split(u.TOTPBackupCodes, ",")
+		for i, bc := range codes {
+			if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(bc)), []byte(code)) == 1 {
+				// Consume the backup code
+				codes = append(codes[:i], codes[i+1:]...)
+				_, _ = m.db.ExecContext(ctx,
+					`UPDATE users SET totp_backup_codes=$2 WHERE id=$1`,
+					userID, strings.Join(codes, ","))
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
+}
+
+// IssueMFAToken creates a short-lived JWT (5 min) used between password
+// verification and TOTP verification. It carries the user ID but does NOT
+// grant API access (no role claim).
+func (m *Manager) IssueMFAToken(u *User) (string, error) {
+	claims := Claims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   u.ID,
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(5 * time.Minute)),
+			Issuer:    "TraceGuard-mfa",
+		},
+		Username: u.Username,
+		Role:     "", // empty role = not a full session
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString(m.jwtSecret)
+}
+
+// ValidateMFAToken parses a short-lived MFA token (issuer must be "TraceGuard-mfa").
+func (m *Manager) ValidateMFAToken(tokenString string) (*Claims, error) {
+	claims := &Claims{}
+	token, err := jwt.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method")
+		}
+		return m.jwtSecret, nil
+	})
+	if err != nil || !token.Valid {
+		return nil, fmt.Errorf("invalid MFA token")
+	}
+	if claims.Issuer != "TraceGuard-mfa" {
+		return nil, fmt.Errorf("not an MFA token")
+	}
+	return claims, nil
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

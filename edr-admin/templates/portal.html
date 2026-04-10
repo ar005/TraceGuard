@@ -276,7 +276,7 @@ tr:hover td{background:rgba(0,200,240,.02)}
         <div class="card-head"><h2>All Users</h2><span id="users-count" style="font-family:var(--mono);font-size:9px;color:var(--muted)"></span></div>
         <div class="card-body tbl-wrap">
           <table>
-            <thead><tr><th></th><th>Username</th><th>Email</th><th>Role</th><th>Status</th><th>Last Login</th><th>Created By</th><th>Actions</th></tr></thead>
+            <thead><tr><th></th><th>Username</th><th>Email</th><th>Role</th><th>MFA</th><th>Status</th><th>Last Login</th><th>Created By</th><th>Actions</th></tr></thead>
             <tbody id="users-tbody"></tbody>
           </table>
         </div>
@@ -441,6 +441,51 @@ tr:hover td{background:rgba(0,200,240,.02)}
   </div>
 </div>
 
+<!-- MFA Enrollment -->
+<div class="modal-bg" id="modal-mfa-enroll">
+  <div class="modal" style="max-width:440px">
+    <div class="modal-hd">
+      <h3>Enroll MFA — <span id="mfa-title"></span></h3>
+      <button onclick="closeModal('modal-mfa-enroll')">&#x2715;</button>
+    </div>
+    <div class="alert alert-err" id="mfa-err"></div>
+    <div class="alert alert-ok" id="mfa-ok"></div>
+
+    <!-- Step 1: QR code -->
+    <div id="mfa-step1">
+      <p style="font-family:var(--mono);font-size:9px;color:var(--body);line-height:1.7;margin-bottom:12px">
+        Scan the QR code below with an authenticator app (Authy, Google Authenticator, etc.), then enter the 6-digit code to confirm.
+      </p>
+      <div style="text-align:center;margin:16px 0">
+        <img id="mfa-qr" style="width:200px;height:200px;image-rendering:pixelated;border:1px solid var(--line2);border-radius:4px;background:#fff;padding:8px">
+      </div>
+      <div style="text-align:center;margin-bottom:14px">
+        <span style="font-family:var(--mono);font-size:8px;color:var(--muted);letter-spacing:1px">MANUAL ENTRY KEY</span><br>
+        <code id="mfa-secret" style="font-family:var(--mono);font-size:11px;color:var(--cyan);letter-spacing:2px;user-select:all;cursor:text"></code>
+      </div>
+      <div class="field">
+        <label>Verification Code</label>
+        <input id="mfa-code" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="123456" autocomplete="one-time-code" style="letter-spacing:4px;font-size:16px;text-align:center">
+      </div>
+      <div class="modal-actions">
+        <button class="btn" onclick="closeModal('modal-mfa-enroll')">Cancel</button>
+        <button class="btn btn-primary" onclick="confirmMFAEnroll()">Verify &amp; Enable</button>
+      </div>
+    </div>
+
+    <!-- Step 2: Backup codes -->
+    <div id="mfa-step2" style="display:none">
+      <p style="font-family:var(--mono);font-size:9px;color:var(--body);line-height:1.7;margin-bottom:12px">
+        MFA is now enabled. Save these backup codes securely — each can be used once if you lose access to your authenticator.
+      </p>
+      <div id="mfa-backup-codes" style="display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;background:var(--bg2);border:1px solid var(--line2);border-radius:3px;padding:14px 20px;margin-bottom:14px;font-family:var(--mono);font-size:12px;color:var(--cyan);letter-spacing:1.5px"></div>
+      <div class="modal-actions">
+        <button class="btn btn-primary" onclick="closeModal('modal-mfa-enroll');loadUsers()">Done</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Confirm action -->
 <div class="modal-bg" id="modal-confirm">
   <div class="modal">
@@ -584,7 +629,7 @@ async function loadUsers() {
 function renderUsers() {
   const tbody = document.getElementById('users-tbody');
   if (!_users.length) {
-    tbody.innerHTML = '<tr><td colspan="8" class="empty"><div class="empty-icon">👤</div>No users yet</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" class="empty"><div class="empty-icon">👤</div>No users yet</td></tr>';
     return;
   }
   tbody.innerHTML = _users.map(u => `
@@ -593,12 +638,18 @@ function renderUsers() {
       <td><strong style="color:var(--text)">${u.username}</strong></td>
       <td style="color:var(--dim)">${u.email||'—'}</td>
       <td><span class="badge ${u.role==='admin'?'badge-yellow':'badge-cyan'}">${u.role}</span></td>
+      <td>${u.totp_enabled
+        ? '<span class="badge badge-green">Enabled</span>'
+        : '<span class="badge" style="color:var(--muted);border-color:var(--line2)">Off</span>'}</td>
       <td><span class="badge ${u.enabled?'badge-green':'badge-red'}">${u.enabled?'Active':'Disabled'}</span></td>
       <td style="color:var(--muted)">${u.last_login_at ? fmtDate(u.last_login_at) : 'Never'}</td>
       <td style="color:var(--muted)">${u.created_by}</td>
       <td>
         <div class="td-actions">
           <button class="btn btn-sm" onclick="openEditUser('${u.id}')">Edit</button>
+          ${u.totp_enabled
+            ? `<button class="btn btn-sm btn-danger" onclick="confirmDisableMFA('${u.id}','${u.username}')">Disable MFA</button>`
+            : `<button class="btn btn-sm" onclick="startEnrollMFA('${u.id}','${u.username}')">Enroll MFA</button>`}
           <button class="btn btn-sm btn-danger" onclick="confirmDeleteUser('${u.id}','${u.username}')">Delete</button>
         </div>
       </td>
@@ -678,6 +729,59 @@ function confirmDeleteUser(id, username) {
     closeModal('modal-confirm');
     if (!ok) { showAlert('users-err', data.error||'Delete failed'); return; }
     showAlert('users-ok', `User "${username}" deleted`, 'ok');
+    loadUsers();
+  };
+  openModal('modal-confirm');
+}
+
+// ── MFA enrollment ──────────────────────────────────────────────────────────
+let _mfaUserId = '';
+
+async function startEnrollMFA(id, username) {
+  _mfaUserId = id;
+  document.getElementById('mfa-title').textContent = username;
+  document.getElementById('mfa-err').classList.remove('show');
+  document.getElementById('mfa-ok').classList.remove('show');
+  document.getElementById('mfa-step1').style.display = '';
+  document.getElementById('mfa-step2').style.display = 'none';
+  document.getElementById('mfa-code').value = '';
+
+  const { ok, data } = await api(`/api/users/${id}/totp/enable`, 'POST');
+  if (!ok) { showAlert('users-err', data.error || 'Failed to start MFA enrollment'); return; }
+
+  document.getElementById('mfa-secret').textContent = data.secret;
+  // Generate QR code using a public API-free approach: encode otpauth URL as QR via inline SVG
+  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(data.url)}`;
+  document.getElementById('mfa-qr').src = qrUrl;
+
+  openModal('modal-mfa-enroll');
+  setTimeout(() => document.getElementById('mfa-code').focus(), 100);
+}
+
+async function confirmMFAEnroll() {
+  const code = document.getElementById('mfa-code').value.trim();
+  if (!code || code.length < 6) { showAlert('mfa-err', 'Enter the 6-digit code from your authenticator'); return; }
+
+  const { ok, data } = await api(`/api/users/${_mfaUserId}/totp/confirm`, 'POST', { code });
+  if (!ok) { showAlert('mfa-err', data.error || 'Invalid code — try again'); return; }
+
+  // Show backup codes
+  document.getElementById('mfa-step1').style.display = 'none';
+  document.getElementById('mfa-step2').style.display = '';
+  const container = document.getElementById('mfa-backup-codes');
+  container.innerHTML = (data.backup_codes || []).map((c, i) =>
+    `<span>${i + 1}. ${c}</span>`
+  ).join('');
+}
+
+function confirmDisableMFA(id, username) {
+  document.getElementById('confirm-title').textContent = 'Disable MFA';
+  document.getElementById('confirm-msg').textContent = `Disable multi-factor authentication for "${username}"? They will only need a password to log in.`;
+  document.getElementById('confirm-btn').onclick = async () => {
+    const { ok, data } = await api(`/api/users/${id}/totp/disable`, 'POST');
+    closeModal('modal-confirm');
+    if (!ok) { showAlert('users-err', data.error || 'Failed to disable MFA'); return; }
+    showAlert('users-ok', `MFA disabled for "${username}"`, 'ok');
     loadUsers();
   };
   openModal('modal-confirm');

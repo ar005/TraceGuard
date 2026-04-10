@@ -124,8 +124,9 @@ func (s *Server) registerRoutes() {
 	// ── Public auth endpoints ──────────────────────────────────────────────
 	auth := r.Group("/api/v1/auth")
 	{
-		auth.POST("/login",   s.handleLogin)
-		auth.POST("/refresh", s.handleRefresh)
+		auth.POST("/login",              s.handleLogin)
+		auth.POST("/refresh",            s.handleRefresh)
+		auth.POST("/totp/verify-login",  s.handleTOTPVerifyLogin)
 	}
 
 	// ── Authenticated routes (JWT or API key) ─────────────────────────────
@@ -239,6 +240,9 @@ func (s *Server) registerRoutes() {
 		adm.PATCH("/users/:id",            s.handleAdminUpdateUser)
 		adm.DELETE("/users/:id",              s.handleAdminDeleteUser)
 		adm.POST("/users/:id/reset-password", s.handleAdminResetPassword)
+		adm.POST("/users/:id/totp/enable",    s.handleAdminTOTPEnable)
+		adm.POST("/users/:id/totp/confirm",   s.handleAdminTOTPConfirm)
+		adm.POST("/users/:id/totp/disable",   s.handleAdminTOTPDisable)
 		adm.DELETE("/reset-all-users",        s.handleSetupReset)
 
 		// API Keys (also available under /keys above, duplicated for admin portal convenience)
@@ -421,7 +425,71 @@ func (s *Server) handleLogin(c *gin.Context) {
 		return
 	}
 
+	// If TOTP is enabled, don't issue a full token yet — require TOTP step.
+	if u.TOTPEnabled {
+		mfaToken, mfaErr := s.um.IssueMFAToken(u)
+		if mfaErr != nil {
+			s.jsonError(c, mfaErr)
+			return
+		}
+		s.al.Log(c.Request.Context(), u.ID, u.Username, "login_mfa_pending", "user", u.ID, u.Username, c.ClientIP(), "")
+		c.JSON(http.StatusOK, gin.H{
+			"mfa_required": true,
+			"mfa_token":    mfaToken,
+		})
+		return
+	}
+
 	s.al.Log(c.Request.Context(), u.ID, u.Username, "login", "user", u.ID, u.Username, c.ClientIP(), "")
+	c.JSON(http.StatusOK, gin.H{
+		"token":      token,
+		"expires_at": time.Now().Add(12 * time.Hour),
+		"user":       u,
+	})
+}
+
+// POST /api/v1/auth/totp/verify-login
+// Body: {"mfa_token":"...","code":"123456"}
+func (s *Server) handleTOTPVerifyLogin(c *gin.Context) {
+	var body struct {
+		MFAToken string `json:"mfa_token" binding:"required"`
+		Code     string `json:"code" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	claims, err := s.um.ValidateMFAToken(body.MFAToken)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired MFA token"})
+		return
+	}
+
+	ok, err := s.um.ValidateTOTPCode(c.Request.Context(), claims.Subject, body.Code)
+	if err != nil || !ok {
+		s.al.Log(c.Request.Context(), claims.Subject, claims.Username, "login_mfa_fail", "user", claims.Subject, claims.Username, c.ClientIP(), "")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid TOTP code"})
+		return
+	}
+
+	u, err := s.um.Get(c.Request.Context(), claims.Subject)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+
+	token, err := s.um.IssueToken(u)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+
+	// Update last_login_at
+	now := time.Now()
+	u.LastLoginAt = &now
+
+	s.al.Log(c.Request.Context(), u.ID, u.Username, "login", "user", u.ID, u.Username, c.ClientIP(), "mfa=totp")
 	c.JSON(http.StatusOK, gin.H{
 		"token":      token,
 		"expires_at": time.Now().Add(12 * time.Hour),
@@ -655,6 +723,71 @@ func (s *Server) handleAdminResetPassword(c *gin.Context) {
 
 	actorID, actorName := currentUser(c)
 	s.al.Log(c.Request.Context(), actorID, actorName, "reset_password", "user", id, u.Username, c.ClientIP(), "")
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// ─── Admin: TOTP Management ──────────────────────────────────────────────────
+
+// POST /api/v1/admin/users/:id/totp/enable
+// Generates a TOTP secret and returns the provisioning URI (for QR code).
+func (s *Server) handleAdminTOTPEnable(c *gin.Context) {
+	id := c.Param("id")
+	key, err := s.um.GenerateTOTP(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	actorID, actorName := currentUser(c)
+	u, _ := s.um.Get(c.Request.Context(), id)
+	s.al.Log(c.Request.Context(), actorID, actorName, "totp_init", "user", id, u.Username, c.ClientIP(), "")
+
+	c.JSON(http.StatusOK, gin.H{
+		"secret": key.Secret(),
+		"url":    key.URL(),
+	})
+}
+
+// POST /api/v1/admin/users/:id/totp/confirm
+// Body: {"code":"123456"} — verifies the code and enables TOTP, returns backup codes.
+func (s *Server) handleAdminTOTPConfirm(c *gin.Context) {
+	id := c.Param("id")
+	var body struct {
+		Code string `json:"code" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	backups, err := s.um.VerifyAndEnableTOTP(c.Request.Context(), id, body.Code)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	actorID, actorName := currentUser(c)
+	u, _ := s.um.Get(c.Request.Context(), id)
+	s.al.Log(c.Request.Context(), actorID, actorName, "totp_enable", "user", id, u.Username, c.ClientIP(), "")
+
+	c.JSON(http.StatusOK, gin.H{
+		"ok":           true,
+		"backup_codes": backups,
+	})
+}
+
+// POST /api/v1/admin/users/:id/totp/disable
+func (s *Server) handleAdminTOTPDisable(c *gin.Context) {
+	id := c.Param("id")
+	if err := s.um.DisableTOTP(c.Request.Context(), id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	actorID, actorName := currentUser(c)
+	u, _ := s.um.Get(c.Request.Context(), id)
+	s.al.Log(c.Request.Context(), actorID, actorName, "totp_disable", "user", id, u.Username, c.ClientIP(), "")
+
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 

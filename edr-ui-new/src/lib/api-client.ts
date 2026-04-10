@@ -1,14 +1,4 @@
-function resolveBase(): string {
-  if (process.env.NEXT_PUBLIC_BACKEND_URL) {
-    return process.env.NEXT_PUBLIC_BACKEND_URL;
-  }
-  if (typeof window !== "undefined") {
-    return `${window.location.protocol}//${window.location.hostname}:8080`;
-  }
-  return "http://localhost:8080";
-}
-
-const BASE = resolveBase();
+const BASE = process.env.NEXT_PUBLIC_BACKEND_URL ?? "";
 
 function getToken(): string | null {
   if (typeof window === "undefined") return null;
@@ -27,15 +17,16 @@ function buildHeaders(): HeadersInit {
 }
 
 function buildUrl(path: string, params?: Record<string, string | number | boolean | undefined>): string {
-  const url = new URL(path, BASE);
+  const qs = new URLSearchParams();
   if (params) {
     for (const [key, value] of Object.entries(params)) {
       if (value !== undefined && value !== null && value !== "") {
-        url.searchParams.set(key, String(value));
+        qs.set(key, String(value));
       }
     }
   }
-  return url.toString();
+  const query = qs.toString();
+  return BASE + path + (query ? `?${query}` : "");
 }
 
 async function request<T>(method: string, path: string, body?: unknown, params?: Record<string, string | number | boolean | undefined>): Promise<T> {

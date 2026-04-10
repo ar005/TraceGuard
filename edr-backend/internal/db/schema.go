@@ -749,6 +749,14 @@ var migrations = []struct {
 		CREATE INDEX IF NOT EXISTS cve_cache_fetched_idx ON cve_cache(fetched_at);
 		`,
 	},
+	{
+		name: "add_totp_columns",
+		sql: `
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret       TEXT NOT NULL DEFAULT '';
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled      BOOLEAN NOT NULL DEFAULT FALSE;
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_backup_codes TEXT NOT NULL DEFAULT '';
+		`,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.

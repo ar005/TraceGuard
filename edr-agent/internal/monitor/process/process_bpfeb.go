@@ -53,16 +53,17 @@ type ProcessSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type ProcessProgramSpecs struct {
-	KprobeKernelClone                *ebpf.ProgramSpec `ebpf:"kprobe__kernel_clone"`
-	TracepointSchedSchedProcessFork  *ebpf.ProgramSpec `ebpf:"tracepoint__sched__sched_process_fork"`
-	TracepointSyscallsSysEnterExecve *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_execve"`
-	TracepointSyscallsSysEnterPtrace *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_ptrace"`
+	KprobeKernelClone                *ebpf.ProgramSpec `ebpf:"kprobe_kernel_clone"`
+	TracepointSchedSchedProcessFork  *ebpf.ProgramSpec `ebpf:"tracepoint_sched_sched_process_fork"`
+	TracepointSyscallsSysEnterExecve *ebpf.ProgramSpec `ebpf:"tracepoint_syscalls_sys_enter_execve"`
+	TracepointSyscallsSysEnterPtrace *ebpf.ProgramSpec `ebpf:"tracepoint_syscalls_sys_enter_ptrace"`
 }
 
 // ProcessMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type ProcessMapSpecs struct {
+	CloneFlagsMap *ebpf.MapSpec `ebpf:"clone_flags_map"`
 	ProcessEvents *ebpf.MapSpec `ebpf:"process_events"`
 }
 
@@ -85,11 +86,13 @@ func (o *ProcessObjects) Close() error {
 //
 // It can be passed to LoadProcessObjects or ebpf.CollectionSpec.LoadAndAssign.
 type ProcessMaps struct {
+	CloneFlagsMap *ebpf.Map `ebpf:"clone_flags_map"`
 	ProcessEvents *ebpf.Map `ebpf:"process_events"`
 }
 
 func (m *ProcessMaps) Close() error {
 	return _ProcessClose(
+		m.CloneFlagsMap,
 		m.ProcessEvents,
 	)
 }
@@ -98,10 +101,10 @@ func (m *ProcessMaps) Close() error {
 //
 // It can be passed to LoadProcessObjects or ebpf.CollectionSpec.LoadAndAssign.
 type ProcessPrograms struct {
-	KprobeKernelClone                *ebpf.Program `ebpf:"kprobe__kernel_clone"`
-	TracepointSchedSchedProcessFork  *ebpf.Program `ebpf:"tracepoint__sched__sched_process_fork"`
-	TracepointSyscallsSysEnterExecve *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_execve"`
-	TracepointSyscallsSysEnterPtrace *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_ptrace"`
+	KprobeKernelClone                *ebpf.Program `ebpf:"kprobe_kernel_clone"`
+	TracepointSchedSchedProcessFork  *ebpf.Program `ebpf:"tracepoint_sched_sched_process_fork"`
+	TracepointSyscallsSysEnterExecve *ebpf.Program `ebpf:"tracepoint_syscalls_sys_enter_execve"`
+	TracepointSyscallsSysEnterPtrace *ebpf.Program `ebpf:"tracepoint_syscalls_sys_enter_ptrace"`
 }
 
 func (p *ProcessPrograms) Close() error {
