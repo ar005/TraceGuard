@@ -32,20 +32,20 @@ const SEVERITY_COLORS: Record<string, string> = {
 const SEVERITY_ORDER = ["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"];
 
 const MONITOR_TYPES = [
-  { key: "PROCESS", label: "Process", color: "#22c55e" },
-  { key: "NET", label: "Network", color: "#8b5cf6" },
-  { key: "FILE", label: "File", color: "#3b82f6" },
-  { key: "DNS", label: "DNS", color: "#6366f1" },
-  { key: "BROWSER", label: "Browser", color: "#ec4899" },
-  { key: "KERNEL", label: "Kernel", color: "#ef4444" },
-  { key: "USB", label: "USB", color: "#f97316" },
-  { key: "MEMORY", label: "Memory", color: "#dc2626" },
-  { key: "CRON", label: "Cron", color: "#eab308" },
-  { key: "PIPE", label: "Pipe", color: "#06b6d4" },
-  { key: "SHARE", label: "Share", color: "#14b8a6" },
-  { key: "TLS_SNI", label: "TLS SNI", color: "#6366f1" },
-  { key: "USER", label: "Auth", color: "#f59e0b" },
-  { key: "COMMAND", label: "Commands", color: "#10b981" },
+  { key: "PROCESS", label: "Process", color: "#22c55e", prefixes: ["PROCESS_"] },
+  { key: "NET", label: "Network", color: "#8b5cf6", prefixes: ["NET_CONNECT", "NET_ACCEPT", "NET_CLOSE"] },
+  { key: "FILE", label: "File", color: "#3b82f6", prefixes: ["FILE_"] },
+  { key: "DNS", label: "DNS", color: "#6366f1", prefixes: ["NET_DNS", "DNS_"] },
+  { key: "BROWSER", label: "Browser", color: "#ec4899", prefixes: ["BROWSER_"] },
+  { key: "KERNEL", label: "Kernel", color: "#ef4444", prefixes: ["KMOD_"] },
+  { key: "USB", label: "USB", color: "#f97316", prefixes: ["USB_"] },
+  { key: "MEMORY", label: "Memory", color: "#dc2626", prefixes: ["MEMORY_"] },
+  { key: "CRON", label: "Cron", color: "#eab308", prefixes: ["CRON_"] },
+  { key: "PIPE", label: "Pipe", color: "#06b6d4", prefixes: ["PIPE_"] },
+  { key: "SHARE", label: "Share", color: "#14b8a6", prefixes: ["SHARE_"] },
+  { key: "TLS_SNI", label: "TLS SNI", color: "#6366f1", prefixes: ["TLS_SNI"] },
+  { key: "AUTH", label: "Auth", color: "#f59e0b", prefixes: ["LOGIN_", "SUDO_"] },
+  { key: "CMD", label: "Commands", color: "#10b981", prefixes: ["CMD_"] },
 ];
 
 const EVENT_TYPE_COLORS: Record<string, string> = {
@@ -318,7 +318,7 @@ function detectActiveMonitors(events: Event[]): Set<string> {
     if (new Date(ev.timestamp).getTime() > oneHourAgo) {
       const t = (ev.event_type || "").toUpperCase();
       for (const m of MONITOR_TYPES) {
-        if (t.startsWith(m.key)) {
+        if (m.prefixes.some((p) => t.startsWith(p))) {
           active.add(m.key);
           break;
         }
@@ -367,7 +367,7 @@ export default function DashboardPage() {
   const fetchRecentEvents = useCallback(
     () =>
       api
-        .get<{ events?: Event[] } | Event[]>("/api/v1/events", { limit: 100 })
+        .get<{ events?: Event[] } | Event[]>("/api/v1/events", { limit: 500 })
         .then((r) => (Array.isArray(r) ? r : r.events ?? [])),
     []
   );

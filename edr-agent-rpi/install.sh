@@ -54,6 +54,8 @@ fi
 echo ""
 read -p "Backend URL (e.g. 192.168.1.100:50051) [localhost:50051]: " BACKEND_URL
 BACKEND_URL="${BACKEND_URL:-localhost:50051}"
+# Sanitize input: strip characters that could break sed or YAML.
+BACKEND_URL=$(printf '%s' "$BACKEND_URL" | tr -cd 'a-zA-Z0-9.:/-')
 sed -i "s|backend_url: \"localhost:50051\"|backend_url: \"$BACKEND_URL\"|" "$CONFIG_DIR/agent.yaml"
 echo "  Backend: $BACKEND_URL"
 

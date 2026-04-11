@@ -229,7 +229,8 @@ func (m *Monitor) Stop() {
 	if m.reader != nil {
 		m.reader.Close()
 	}
-	// Drain hash channel so workers exit cleanly.
+	// Close hashCh to unblock hash workers, then wait for all goroutines.
+	// The producer (readLoop/inotifyLoop) checks stopCh before sending.
 	close(m.hashCh)
 	m.wg.Wait()
 	m.closeObjs()
@@ -399,6 +400,13 @@ func (m *Monitor) scheduleHashOrPublish(ev *types.FileEvent) {
 	if !m.cfg.HashOnWrite {
 		m.publishAndLog(ev)
 		return
+	}
+	// Guard against sending on closed hashCh during shutdown.
+	select {
+	case <-m.stopCh:
+		m.publishAndLog(ev)
+		return
+	default:
 	}
 	select {
 	case m.hashCh <- hashReq{

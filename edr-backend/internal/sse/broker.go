@@ -104,7 +104,7 @@ func (b *Broker) Handler() gin.HandlerFunc {
 		c.Header("Cache-Control",               "no-cache")
 		c.Header("Connection",                  "keep-alive")
 		c.Header("X-Accel-Buffering",           "no") // disable nginx buffering
-		c.Header("Access-Control-Allow-Origin", "*")
+		// CORS is handled by TraceGuardMiddleware; don't override with wildcard.
 
 		// Send a comment immediately so the browser knows the stream is alive.
 		fmt.Fprintf(c.Writer, ": connected\n\n")
@@ -131,9 +131,12 @@ func (b *Broker) Handler() gin.HandlerFunc {
 				// Apply filters if specified.
 				if filterType != "" || filterAgent != "" {
 					var ev models.Event
-					// msg is "data: {...}\n\n" — strip prefix to get JSON
-					if len(msg) > 6 {
-						if err := json.Unmarshal(msg[6:len(msg)-2], &ev); err == nil {
+					// msg is "data: <json>\n\n" — extract the JSON portion.
+					prefix := []byte("data: ")
+					suffix := []byte("\n\n")
+					if len(msg) > len(prefix)+len(suffix) {
+						jsonBytes := msg[len(prefix) : len(msg)-len(suffix)]
+						if err := json.Unmarshal(jsonBytes, &ev); err == nil {
 							if filterType != "" && ev.EventType != filterType { continue }
 							if filterAgent != "" && ev.AgentID != filterAgent  { continue }
 						}

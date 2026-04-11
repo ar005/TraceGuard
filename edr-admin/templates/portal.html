@@ -563,6 +563,11 @@ function initials(name) {
   return (name || '?')[0].toUpperCase();
 }
 
+// Escape a string for safe embedding in an HTML attribute (onclick, etc.).
+function escAttr(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/'/g,'&#39;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
 function actionClass(action) {
   if (!action) return '';
   if (action.includes('login')) return 'act-login';
@@ -634,8 +639,8 @@ function renderUsers() {
   }
   tbody.innerHTML = _users.map(u => `
     <tr>
-      <td><div class="avatar">${initials(u.username)}</div></td>
-      <td><strong style="color:var(--text)">${u.username}</strong></td>
+      <td><div class="avatar">${initials(escAttr(u.username))}</div></td>
+      <td><strong style="color:var(--text)">${escAttr(u.username)}</strong></td>
       <td style="color:var(--dim)">${u.email||'—'}</td>
       <td><span class="badge ${u.role==='admin'?'badge-yellow':'badge-cyan'}">${u.role}</span></td>
       <td>${u.totp_enabled
@@ -646,11 +651,11 @@ function renderUsers() {
       <td style="color:var(--muted)">${u.created_by}</td>
       <td>
         <div class="td-actions">
-          <button class="btn btn-sm" onclick="openEditUser('${u.id}')">Edit</button>
+          <button class="btn btn-sm" onclick="openEditUser('${escAttr(u.id)}')">Edit</button>
           ${u.totp_enabled
-            ? `<button class="btn btn-sm btn-danger" onclick="confirmDisableMFA('${u.id}','${u.username}')">Disable MFA</button>`
-            : `<button class="btn btn-sm" onclick="startEnrollMFA('${u.id}','${u.username}')">Enroll MFA</button>`}
-          <button class="btn btn-sm btn-danger" onclick="confirmDeleteUser('${u.id}','${u.username}')">Delete</button>
+            ? `<button class="btn btn-sm btn-danger" onclick="confirmDisableMFA('${escAttr(u.id)}','${escAttr(u.username)}')">Disable MFA</button>`
+            : `<button class="btn btn-sm" onclick="startEnrollMFA('${escAttr(u.id)}','${escAttr(u.username)}')">Enroll MFA</button>`}
+          <button class="btn btn-sm btn-danger" onclick="confirmDeleteUser('${escAttr(u.id)}','${escAttr(u.username)}')">Delete</button>
         </div>
       </td>
     </tr>`).join('');
@@ -805,8 +810,8 @@ function renderKeys() {
   }
   tbody.innerHTML = _keys.map(k => `
     <tr>
-      <td style="color:var(--text)">${k.name}</td>
-      <td><code style="color:var(--cyan);font-size:11px;letter-spacing:1px">${k.prefix}…</code></td>
+      <td style="color:var(--text)">${escAttr(k.name)}</td>
+      <td><code style="color:var(--cyan);font-size:11px;letter-spacing:1px">${escAttr(k.prefix)}…</code></td>
       <td style="color:var(--muted)">${k.created_by}</td>
       <td style="color:var(--muted);white-space:nowrap">${fmtDate(k.created_at)}</td>
       <td style="color:${k.expires_at&&new Date(k.expires_at)<new Date()?'var(--red)':'var(--muted)'}">${k.expires_at?fmtDate(k.expires_at):'No expiry'}</td>
@@ -814,8 +819,8 @@ function renderKeys() {
       <td><span class="badge ${k.enabled?'badge-green':'badge-red'}">${k.enabled?'Active':'Revoked'}</span></td>
       <td>
         <div class="td-actions">
-          ${k.enabled?`<button class="btn btn-sm btn-warn" onclick="confirmRevokeKey('${k.id}','${k.name}')">Revoke</button>`:''}
-          <button class="btn btn-sm btn-danger" onclick="confirmDeleteKey('${k.id}','${k.name}')">Delete</button>
+          ${k.enabled?`<button class="btn btn-sm btn-warn" onclick="confirmRevokeKey('${escAttr(k.id)}','${escAttr(k.name)}')">Revoke</button>`:''}
+          <button class="btn btn-sm btn-danger" onclick="confirmDeleteKey('${escAttr(k.id)}','${escAttr(k.name)}')">Delete</button>
         </div>
       </td>
     </tr>`).join('');

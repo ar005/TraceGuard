@@ -27,6 +27,9 @@ from functools import wraps
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("TraceGuard_ADMIN_SECRET") or secrets.token_hex(32)
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = os.environ.get("TraceGuard_COOKIE_SECURE", "").lower() == "true"
 csrf = CSRFProtect(app)
 BACKEND = os.environ.get("EDR_BACKEND", "http://localhost:8080")
 

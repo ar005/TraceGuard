@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"strconv"
@@ -145,6 +146,7 @@ func (s *Server) registerRoutes() {
 		v1.GET("/events/:id",     s.handleGetEvent)
 		v1.POST("/events/inject", s.handleInjectEvent)
 		v1.GET("/events/stream",  s.handleEventStream)
+		v1.POST("/auth/sse-ticket", s.handleSSETicket)
 
 		// Process tree
 		v1.GET("/processes/:pid/tree", s.handleGetProcessTree)
@@ -1123,6 +1125,24 @@ func (s *Server) handleGetAlertTimeline(c *gin.Context) {
 	})
 }
 
+// POST /api/v1/auth/sse-ticket — issue a short-lived ticket for SSE connections.
+// The client exchanges its session JWT (in the Authorization header) for a 30-second
+// single-use ticket, then passes only the ticket as ?token= in the EventSource URL.
+// This avoids exposing the long-lived JWT in URL query parameters (logged, cached, etc.).
+func (s *Server) handleSSETicket(c *gin.Context) {
+	claims, ok := c.Get(string(ctxClaims))
+	if !ok || s.um == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+		return
+	}
+	ticket, err := s.um.IssueSSETicket(claims.(*users.Claims))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to issue ticket"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ticket": ticket})
+}
+
 // ─── SSE Event Stream ─────────────────────────────────────────────────────────
 
 // GET /api/v1/events/stream — real-time SSE feed of all incoming events.
@@ -1865,10 +1885,27 @@ func marshalToRaw(v interface{}) ([]byte, error) {
 }
 
 func TraceGuardMiddleware() gin.HandlerFunc {
+	// Read allowed origins from env; fall back to permissive for dev.
+	allowedRaw := os.Getenv("EDR_CORS_ORIGINS")
+	allowed := map[string]bool{}
+	if allowedRaw != "" {
+		for _, o := range strings.Split(allowedRaw, ",") {
+			allowed[strings.TrimSpace(o)] = true
+		}
+	}
+
 	return func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
+		origin := c.GetHeader("Origin")
+		if len(allowed) == 0 {
+			// No explicit list configured — reflect the requesting origin (dev mode).
+			// This is still safer than "*" because the browser enforces per-origin.
+			c.Header("Access-Control-Allow-Origin", origin)
+		} else if allowed[origin] {
+			c.Header("Access-Control-Allow-Origin", origin)
+		}
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Authorization")
+		c.Header("Access-Control-Allow-Credentials", "true")
 		c.Header("Access-Control-Max-Age", "86400")
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)

@@ -154,8 +154,7 @@ export default function SearchPage() {
         offset,
       })
       .then((r) => (Array.isArray(r) ? r : r.events ?? []));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchTrigger, offset]);
+  }, [searchTrigger, offset, hasSearched, search, eventType, agentId, hostname, since, until]);
 
   const { data: fetchedEvents, loading, error } = useApi(fetchEvents);
 

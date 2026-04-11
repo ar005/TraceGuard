@@ -76,7 +76,8 @@ func New(st *store.Store, eng *detection.Engine, sb *sse.Broker, lr *liverespons
 		log:       log.With().Str("component", "ingest").Logger(),
 	}
 
-	s.grpc = grpc.NewServer(
+	// Build common gRPC server options.
+	commonOpts := []grpc.ServerOption{
 		grpc.KeepaliveParams(keepalive.ServerParameters{
 			MaxConnectionIdle:     5 * time.Minute,
 			MaxConnectionAge:      2 * time.Hour,
@@ -88,29 +89,19 @@ func New(st *store.Store, eng *detection.Engine, sb *sse.Broker, lr *liverespons
 			MinTime:             10 * time.Second,
 			PermitWithoutStream: true,
 		}),
-		grpc.MaxRecvMsgSize(8*1024*1024),  // 8 MB
-		grpc.MaxSendMsgSize(1*1024*1024),  // 1 MB
+		grpc.MaxRecvMsgSize(8 * 1024 * 1024), // 8 MB
+		grpc.MaxSendMsgSize(1 * 1024 * 1024), // 1 MB
 		grpc.ChainUnaryInterceptor(loggingInterceptor(log)),
-	)
+	}
 	if tls.Enabled {
 		creds, err := loadServerTLS(tls.CertFile, tls.KeyFile, tls.CAFile, log)
 		if err != nil {
 			log.Fatal().Err(err).Msg("load gRPC TLS credentials")
 		}
-		s.grpc = grpc.NewServer(
-			grpc.Creds(creds),
-			grpc.KeepaliveParams(keepalive.ServerParameters{
-				MaxConnectionIdle: 5 * time.Minute, MaxConnectionAge: 2 * time.Hour,
-				MaxConnectionAgeGrace: 30 * time.Second, Time: 30 * time.Second, Timeout: 10 * time.Second,
-			}),
-			grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{MinTime: 10 * time.Second, PermitWithoutStream: true}),
-			grpc.MaxRecvMsgSize(8*1024*1024), grpc.MaxSendMsgSize(1*1024*1024),
-			grpc.ChainUnaryInterceptor(loggingInterceptor(log)),
-		)
-		pb.RegisterEventServiceServer(s.grpc, s)
+		commonOpts = append([]grpc.ServerOption{grpc.Creds(creds)}, commonOpts...)
 		log.Info().Str("cert", tls.CertFile).Msg("gRPC TLS enabled")
 	}
-
+	s.grpc = grpc.NewServer(commonOpts...)
 	pb.RegisterEventServiceServer(s.grpc, s)
 	return s
 }

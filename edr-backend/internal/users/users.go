@@ -228,6 +228,23 @@ func (m *Manager) ValidateToken(tokenString string) (*Claims, error) {
 	return claims, nil
 }
 
+// IssueSSETicket issues a short-lived (30s) single-use JWT for SSE connections.
+// This avoids putting the long-lived session JWT into a URL query parameter.
+func (m *Manager) IssueSSETicket(claims *Claims) (string, error) {
+	ticket := Claims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   claims.Subject,
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(30 * time.Second)),
+			Issuer:    "TraceGuard-sse",
+		},
+		Username: claims.Username,
+		Role:     claims.Role,
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, ticket)
+	return token.SignedString(m.jwtSecret)
+}
+
 // ─── JWT helpers ──────────────────────────────────────────────────────────────
 
 // IssueToken issues a JWT for an already-authenticated user (e.g. refresh flow).

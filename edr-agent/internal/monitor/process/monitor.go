@@ -275,21 +275,23 @@ func (m *Monitor) attachProbes() error {
 	// sched_process_exit removed — eBPF program removed (verifier issue on this kernel)
 	// Exit events are synthesized by the procWatcher goroutine below.
 
-	// sched_process_fork
+	// sched_process_fork — may fail with restrictive perf_event_paranoid; non-fatal.
 	l, err = link.Tracepoint("sched", "sched_process_fork",
 		m.objs.TracepointSchedSchedProcessFork, nil)
 	if err != nil {
-		return fmt.Errorf("attach fork tracepoint: %w", err)
+		m.logger.Warn().Err(err).Msg("fork tracepoint unavailable (perf_event_paranoid?), fork events disabled")
+	} else {
+		m.links = append(m.links, l)
 	}
-	m.links = append(m.links, l)
 
-	// sys_enter_ptrace
+	// sys_enter_ptrace — may fail on restrictive kernels; non-fatal.
 	l, err = link.Tracepoint("syscalls", "sys_enter_ptrace",
 		m.objs.TracepointSyscallsSysEnterPtrace, nil)
 	if err != nil {
-		return fmt.Errorf("attach ptrace tracepoint: %w", err)
+		m.logger.Warn().Err(err).Msg("ptrace tracepoint unavailable, ptrace events disabled")
+	} else {
+		m.links = append(m.links, l)
 	}
-	m.links = append(m.links, l)
 
 	// kprobe/kernel_clone for clone flags
 	l, err = link.Kprobe("kernel_clone", m.objs.KprobeKernelClone, nil)

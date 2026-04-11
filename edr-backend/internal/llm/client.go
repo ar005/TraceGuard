@@ -85,6 +85,11 @@ func (c *Client) ExplainAlert(ctx context.Context, alert *models.Alert, events [
 // The provider is always created (even if Enabled is false) so that
 // the Test endpoint can verify connectivity before enabling.
 func (c *Client) Configure(cfg Config) error {
+	// Normalize base URL: ensure it has a scheme.
+	if cfg.BaseURL != "" && !strings.Contains(cfg.BaseURL, "://") {
+		cfg.BaseURL = "http://" + cfg.BaseURL
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

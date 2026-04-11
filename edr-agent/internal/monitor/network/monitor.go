@@ -407,6 +407,16 @@ func (m *Monitor) Stop() {
 		m.reader.Close()
 	}
 	m.wg.Wait()
+	// Drain any events left in the enrichQueue so they aren't silently lost.
+	for {
+		select {
+		case ev := <-m.enrichQueue:
+			m.bus.Publish(ev)
+		default:
+			goto drained
+		}
+	}
+drained:
 	m.closeObjs()
 	m.logger.Info().Msg("network monitor stopped")
 }
@@ -597,6 +607,7 @@ func (m *Monitor) handleV4(r rawNetEventV4) error {
 		case m.enrichQueue <- ev:
 			// enrichWorker will log after DNS resolves.
 		default:
+			m.logger.Debug().Str("dst_ip", dstIP).Msg("enrich queue full, publishing without DNS")
 			m.bus.Publish(ev) // queue full — publish without domain
 			m.logEvent(ev)
 		}

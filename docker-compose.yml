@@ -6,15 +6,14 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: edr
-      POSTGRES_USER: edr
-      POSTGRES_PASSWORD: edrpass
+      POSTGRES_DB: ${EDR_DB_NAME:-edr}
+      POSTGRES_USER: ${EDR_DB_USER:-edr}
+      POSTGRES_PASSWORD: ${EDR_DB_PASSWORD:?Set EDR_DB_PASSWORD in .env}
     volumes:
       - pgdata:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
+    # DB is internal-only — no host port mapping. Use `docker exec` for admin access.
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U edr"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER}"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -29,13 +28,19 @@ services:
     environment:
       EDR_DATABASE_HOST: postgres
       EDR_DATABASE_PORT: "5432"
-      EDR_DATABASE_USER: edr
-      EDR_DATABASE_PASSWORD: edrpass
-      EDR_DATABASE_NAME: edr
-      EDR_JWT_SECRET: change-me-in-production
+      EDR_DATABASE_USER: ${EDR_DB_USER:-edr}
+      EDR_DATABASE_PASSWORD: ${EDR_DB_PASSWORD:?Set EDR_DB_PASSWORD in .env}
+      EDR_DATABASE_NAME: ${EDR_DB_NAME:-edr}
+      EDR_JWT_SECRET: ${EDR_JWT_SECRET:?Set EDR_JWT_SECRET in .env}
+      EDR_CORS_ORIGINS: ${EDR_CORS_ORIGINS:-}
     ports:
       - "8080:8080"
       - "50051:50051"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/api/v1/setup/status || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   # ── Dashboard (edr-ui3 — Next.js) ──────────────────────────
   edr-ui3:

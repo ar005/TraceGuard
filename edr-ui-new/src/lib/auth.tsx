@@ -78,12 +78,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       "/api/v1/auth/totp/verify-login",
       { mfa_token: mfaToken, code }
     );
-    if (res.token && res.user) {
-      localStorage.setItem("edr_token", res.token);
-      localStorage.setItem("edr_user", JSON.stringify(res.user));
-      setToken(res.token);
-      setUser(res.user);
+    if (!res.token || !res.user) {
+      throw new Error("TOTP verification failed");
     }
+    localStorage.setItem("edr_token", res.token);
+    localStorage.setItem("edr_user", JSON.stringify(res.user));
+    setToken(res.token);
+    setUser(res.user);
   }, []);
 
   const logout = useCallback(() => {

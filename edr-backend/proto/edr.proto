@@ -65,6 +65,27 @@ message RegisterResponse {
   string config_version = 3;
 }
 
+// ─── Live Response ────────────────────────────────────────────────────────────
+
+// LiveCommand is sent from backend to agent (e.g. run a shell command).
+message LiveCommand {
+  string          command_id = 1;
+  string          action     = 2; // exec, kill, ls, cat, upload, download, netstat, ps
+  repeated string args       = 3;
+  int32           timeout    = 4; // seconds (0 = default 30s)
+}
+
+// LiveResult is sent from agent back to backend.
+message LiveResult {
+  string command_id = 1;
+  string agent_id   = 2;
+  string status     = 3; // running, completed, error, timeout
+  int32  exit_code  = 4;
+  string stdout     = 5;
+  string stderr     = 6;
+  string error      = 7;
+}
+
 // ─── EventService ─────────────────────────────────────────────────────────────
 service EventService {
   // Register is called once when the agent starts.
@@ -75,4 +96,7 @@ service EventService {
 
   // Heartbeat is a unary RPC called every N seconds.
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+
+  // LiveResponse is a bidirectional stream for interactive agent control.
+  rpc LiveResponse(stream LiveResult) returns (stream LiveCommand);
 }
