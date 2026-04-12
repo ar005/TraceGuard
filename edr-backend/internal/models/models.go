@@ -22,9 +22,10 @@ type Agent struct {
 	LastSeen  time.Time      `db:"last_seen"  json:"last_seen"`
 	IsOnline  bool           `db:"is_online"  json:"is_online"`
 	ConfigVer string         `db:"config_ver" json:"config_ver"`
-	Tags      pq.StringArray `db:"tags"       json:"tags"`
-	Env       string         `db:"env"        json:"env"`
-	Notes     string         `db:"notes"      json:"notes"`
+	Tags           pq.StringArray  `db:"tags"             json:"tags"`
+	Env            string          `db:"env"              json:"env"`
+	Notes          string          `db:"notes"            json:"notes"`
+	WinEventConfig json.RawMessage `db:"winevent_config"  json:"winevent_config,omitempty"`
 }
 
 // Event represents a stored security event.

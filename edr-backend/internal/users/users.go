@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -66,10 +67,28 @@ type Claims struct {
 type Manager struct {
 	db        *sqlx.DB
 	jwtSecret []byte
+
+	// usedSSETickets tracks consumed SSE ticket JTIs to enforce single-use.
+	sseTicketMu   sync.Mutex
+	usedSSETickets map[string]time.Time
 }
 
 func New(db *sqlx.DB, jwtSecret []byte) *Manager {
-	return &Manager{db: db, jwtSecret: jwtSecret}
+	m := &Manager{db: db, jwtSecret: jwtSecret, usedSSETickets: make(map[string]time.Time)}
+	// Periodically purge expired entries from the single-use ticket set.
+	go func() {
+		for range time.Tick(2 * time.Minute) {
+			m.sseTicketMu.Lock()
+			cutoff := time.Now().Add(-1 * time.Minute)
+			for jti, t := range m.usedSSETickets {
+				if t.Before(cutoff) {
+					delete(m.usedSSETickets, jti)
+				}
+			}
+			m.sseTicketMu.Unlock()
+		}
+	}()
+	return m
 }
 
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
@@ -228,21 +247,49 @@ func (m *Manager) ValidateToken(tokenString string) (*Claims, error) {
 	return claims, nil
 }
 
-// IssueSSETicket issues a short-lived (30s) single-use JWT for SSE connections.
+// IssueSSETicket issues a short-lived (15s) single-use JWT for SSE connections.
 // This avoids putting the long-lived session JWT into a URL query parameter.
+// Each ticket includes a unique JTI that is consumed on first use.
 func (m *Manager) IssueSSETicket(claims *Claims) (string, error) {
+	jti := randomHex(16) // unique ticket ID
 	ticket := Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   claims.Subject,
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(30 * time.Second)),
-			Issuer:    "oedr-sse",
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(15 * time.Second)),
+			Issuer:    "TraceGuard-sse",
+			ID:        jti,
 		},
 		Username: claims.Username,
 		Role:     claims.Role,
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, ticket)
 	return token.SignedString(m.jwtSecret)
+}
+
+// ConsumeSSETicket validates an SSE ticket and marks it as used.
+// Returns the claims if valid and unused, or an error if already consumed/expired.
+func (m *Manager) ConsumeSSETicket(tokenStr string) (*Claims, error) {
+	claims, err := m.ValidateToken(tokenStr)
+	if err != nil {
+		return nil, err
+	}
+	if claims.Issuer != "TraceGuard-sse" {
+		return nil, fmt.Errorf("not an SSE ticket")
+	}
+	jti := claims.ID
+	if jti == "" {
+		return nil, fmt.Errorf("SSE ticket missing JTI")
+	}
+
+	m.sseTicketMu.Lock()
+	defer m.sseTicketMu.Unlock()
+
+	if _, used := m.usedSSETickets[jti]; used {
+		return nil, fmt.Errorf("SSE ticket already consumed")
+	}
+	m.usedSSETickets[jti] = time.Now()
+	return claims, nil
 }
 
 // ─── JWT helpers ──────────────────────────────────────────────────────────────
@@ -258,7 +305,7 @@ func (m *Manager) issueJWT(u *User) (string, error) {
 			Subject:   u.ID,
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(12 * time.Hour)),
-			Issuer:    "oedr",
+			Issuer:    "TraceGuard",
 		},
 		Username: u.Username,
 		Role:     u.Role,
@@ -313,10 +360,10 @@ func (m *Manager) VerifyAndEnableTOTP(ctx context.Context, userID, code string) 
 		return nil, fmt.Errorf("invalid TOTP code")
 	}
 
-	// Generate 10 backup codes
+	// Generate 10 backup codes (128-bit entropy each)
 	backups := make([]string, 10)
 	for i := range backups {
-		backups[i] = randomHex(4) // 8 hex chars each
+		backups[i] = randomHex(16) // 32 hex chars = 128 bits
 	}
 
 	_, err = m.db.ExecContext(ctx,
@@ -378,7 +425,7 @@ func (m *Manager) IssueMFAToken(u *User) (string, error) {
 			Subject:   u.ID,
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(5 * time.Minute)),
-			Issuer:    "oedr-mfa",
+			Issuer:    "TraceGuard-mfa",
 		},
 		Username: u.Username,
 		Role:     "", // empty role = not a full session
@@ -387,7 +434,7 @@ func (m *Manager) IssueMFAToken(u *User) (string, error) {
 	return token.SignedString(m.jwtSecret)
 }
 
-// ValidateMFAToken parses a short-lived MFA token (issuer must be "oedr-mfa").
+// ValidateMFAToken parses a short-lived MFA token (issuer must be "TraceGuard-mfa").
 func (m *Manager) ValidateMFAToken(tokenString string) (*Claims, error) {
 	claims := &Claims{}
 	token, err := jwt.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (interface{}, error) {
@@ -399,7 +446,7 @@ func (m *Manager) ValidateMFAToken(tokenString string) (*Claims, error) {
 	if err != nil || !token.Valid {
 		return nil, fmt.Errorf("invalid MFA token")
 	}
-	if claims.Issuer != "oedr-mfa" {
+	if claims.Issuer != "TraceGuard-mfa" {
 		return nil, fmt.Errorf("not an MFA token")
 	}
 	return claims, nil

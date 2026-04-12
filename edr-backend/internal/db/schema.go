@@ -750,6 +750,12 @@ var migrations = []struct {
 		`,
 	},
 	{
+		name: "add_agent_winevent_config",
+		sql: `
+		ALTER TABLE agents ADD COLUMN IF NOT EXISTS winevent_config JSONB NOT NULL DEFAULT '{}';
+		`,
+	},
+	{
 		name: "add_totp_columns",
 		sql: `
 		ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret       TEXT NOT NULL DEFAULT '';

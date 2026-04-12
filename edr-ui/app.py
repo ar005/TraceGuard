@@ -1,5 +1,5 @@
 """
-OEDR Web UI
+TraceGuard Web UI
 Run:  pip install flask requests && python app.py
 Open: http://localhost:5000
 """
@@ -367,6 +367,6 @@ def delete_iocs_by_source(source): return proxy(f"/api/v1/iocs/source/{source}",
 
 if __name__ == "__main__":
     port = int(os.environ.get("EDR_UI_PORT", 5000))
-    print(f"  OEDR UI  \u2192  http://localhost:{port}")
+    print(f"  TraceGuard UI  \u2192  http://localhost:{port}")
     print(f"  Proxying to      \u2192  {BACKEND}")
     app.run(host="0.0.0.0", port=port, debug=True, threaded=True)

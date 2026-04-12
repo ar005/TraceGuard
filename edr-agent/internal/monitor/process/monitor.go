@@ -393,6 +393,7 @@ func (m *Monitor) handleExecEvent(raw []byte) error {
 
 	// Detect interpreter-based execution (python, perl, bash -c, etc.).
 	interpreter, scriptPath := detectInterpreter(proc)
+	scriptContent := captureScriptContent(proc, interpreter, scriptPath)
 
 	// Build ancestry chain.
 	ancestry := m.buildAncestry(r.PPID, m.cfg.MaxAncestryDepth)
@@ -421,6 +422,7 @@ func (m *Monitor) handleExecEvent(raw []byte) error {
 		IsMemFD:       isMemFD,
 		Interpreter:   interpreter,
 		ScriptPath:    scriptPath,
+		ScriptContent: scriptContent,
 		Ancestry:      ancestry,
 	}
 
@@ -1027,6 +1029,57 @@ func detectInterpreter(proc types.ProcessContext) (string, string) {
 		}
 	}
 	return name, ""
+}
+
+// captureScriptContent reads the script file or extracts inline script content.
+// Content is capped at maxScriptSize bytes to prevent memory issues.
+const maxScriptSize = 64 * 1024 // 64 KB
+
+func captureScriptContent(proc types.ProcessContext, interpreter, scriptPath string) string {
+	if interpreter == "" {
+		return ""
+	}
+
+	// Case 1: Inline script via -c flag (bash -c 'code', python -c 'code', perl -e 'code')
+	inlineFlags := map[string]string{
+		"bash": "-c", "sh": "-c", "zsh": "-c", "ksh": "-c", "dash": "-c",
+		"fish": "-c", "tcsh": "-c", "csh": "-c",
+		"python": "-c", "python2": "-c", "python3": "-c",
+		"perl": "-e", "ruby": "-e",
+		"node": "-e", "nodejs": "-e", "deno": "eval",
+		"php": "-r", "lua": "-e",
+	}
+	flag, hasFlag := inlineFlags[interpreter]
+	if hasFlag && len(proc.Args) >= 3 {
+		for i, arg := range proc.Args[1:] {
+			if arg == flag && i+2 < len(proc.Args) {
+				content := proc.Args[i+2]
+				if len(content) > maxScriptSize {
+					content = content[:maxScriptSize] + "\n... (truncated)"
+				}
+				return content
+			}
+		}
+	}
+
+	// Case 2: Script file — read from disk
+	if scriptPath == "" {
+		return ""
+	}
+	// Only read regular files, skip special files
+	info, err := os.Stat(scriptPath)
+	if err != nil || info.IsDir() || info.Size() == 0 || info.Size() > int64(maxScriptSize*2) {
+		return ""
+	}
+	data, err := os.ReadFile(scriptPath)
+	if err != nil {
+		return ""
+	}
+	content := string(data)
+	if len(content) > maxScriptSize {
+		content = content[:maxScriptSize] + "\n... (truncated)"
+	}
+	return content
 }
 
 func ptraceRequestName(req uint32) string {

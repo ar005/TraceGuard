@@ -37,8 +37,10 @@ type liveResult struct {
 }
 
 // allowedActions defines the safe set of commands the agent will execute.
+// NOTE: "exec" (arbitrary command execution) is intentionally excluded —
+// all permitted operations are explicitly mapped in executeCommand().
 var allowedActions = map[string]bool{
-	"exec": true, "ps": true, "ls": true, "cat": true,
+	"ps": true, "ls": true, "cat": true,
 	"kill": true, "netstat": true, "df": true, "who": true,
 	"id": true, "uname": true, "uptime": true, "stat": true,
 	"find": true, "md5sum": true, "sha256sum": true,
@@ -291,14 +293,6 @@ func (t *GRPCTransport) executeCommand(cmd *liveCommand) *liveResult {
 			result.Error = "no supported package manager found (dpkg-query or rpm)"
 			return result
 		}
-	case "exec":
-		if len(cmd.Args) == 0 {
-			result.Status = "error"
-			result.Error = "exec requires at least one argument"
-			return result
-		}
-		cmdName = cmd.Args[0]
-		cmdArgs = cmd.Args[1:]
 	case "ps":
 		cmdName = "ps"
 		cmdArgs = append([]string{"aux"}, cmd.Args...)

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, useEffect } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -15,6 +15,10 @@ import {
   Activity,
   Info,
   Search,
+  Plus,
+  X,
+  BookOpen,
+  Settings2,
 } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { useApi } from "@/hooks/use-api";
@@ -29,7 +33,7 @@ interface PackageInfo {
   architecture: string;
 }
 
-type TabId = "overview" | "events" | "packages" | "vulnerabilities";
+type TabId = "overview" | "events" | "packages" | "vulnerabilities" | "winevent-config" | "event-reference";
 
 /* ── Tab Button ─────────────────────────────────────────────── */
 
@@ -659,6 +663,433 @@ function VulnerabilitiesTab({ agentId }: { agentId: string }) {
   );
 }
 
+/* ── WinEvent Config Tab ───────────────────────────────────── */
+
+const CHANNEL_PRESETS = [
+  "Security",
+  "System",
+  "Application",
+  "Microsoft-Windows-Sysmon/Operational",
+  "Microsoft-Windows-PowerShell/Operational",
+  "Microsoft-Windows-Windows Defender/Operational",
+];
+
+interface ChannelConfig {
+  name: string;
+  event_ids: number[];
+}
+
+function WinEventConfigTab({ agentId }: { agentId: string }) {
+  const [channels, setChannels] = useState<ChannelConfig[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLoading(true);
+    api
+      .get<{ channels?: ChannelConfig[] }>(`/api/v1/agents/${agentId}/winevent-config`)
+      .then((r) => {
+        setChannels(r.channels ?? []);
+      })
+      .catch(() => {
+        setChannels([]);
+      })
+      .finally(() => setLoading(false));
+  }, [agentId]);
+
+  function addChannel() {
+    setChannels((prev) => [...prev, { name: "", event_ids: [] }]);
+  }
+
+  function removeChannel(idx: number) {
+    setChannels((prev) => prev.filter((_, i) => i !== idx));
+  }
+
+  function updateChannelName(idx: number, name: string) {
+    setChannels((prev) => prev.map((ch, i) => (i === idx ? { ...ch, name } : ch)));
+  }
+
+  function updateEventIds(idx: number, raw: string) {
+    const ids = raw
+      .split(",")
+      .map((s) => parseInt(s.trim(), 10))
+      .filter((n) => !isNaN(n));
+    setChannels((prev) => prev.map((ch, i) => (i === idx ? { ...ch, event_ids: ids } : ch)));
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    setSaveMsg(null);
+    try {
+      await api.patch(`/api/v1/agents/${agentId}/winevent-config`, { channels });
+      setSaveMsg("Saved");
+      setTimeout(() => setSaveMsg(null), 3000);
+    } catch (err) {
+      setSaveMsg(err instanceof Error ? err.message : "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) return <Skeleton rows={4} />;
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h3
+          className="text-xs font-semibold font-heading mb-3 uppercase tracking-wider"
+          style={{ color: "var(--muted)" }}
+        >
+          Channel Configuration
+        </h3>
+
+        <div className="space-y-3">
+          {channels.map((ch, idx) => (
+            <div
+              key={idx}
+              className="rounded border p-3 space-y-2"
+              style={{ borderColor: "var(--border)", background: "var(--surface-1)" }}
+            >
+              <div className="flex items-center gap-2">
+                <div className="flex-1">
+                  <label className="block text-[10px] mb-1 uppercase tracking-wider" style={{ color: "var(--muted)" }}>
+                    Channel Name
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      value={ch.name}
+                      onChange={(e) => updateChannelName(idx, e.target.value)}
+                      list={`channel-presets-${idx}`}
+                      placeholder="Select or type a channel name"
+                      className="flex-1 rounded border px-3 py-1.5 text-xs font-mono outline-none transition-colors"
+                      style={{ background: "var(--surface-0)", borderColor: "var(--border)", color: "var(--fg)" }}
+                    />
+                    <datalist id={`channel-presets-${idx}`}>
+                      {CHANNEL_PRESETS.map((p) => (
+                        <option key={p} value={p} />
+                      ))}
+                    </datalist>
+                  </div>
+                </div>
+                <button
+                  onClick={() => removeChannel(idx)}
+                  className="mt-4 p-1.5 rounded hover:bg-red-500/10 transition-colors"
+                  style={{ color: "#ef4444" }}
+                  title="Remove channel"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+              <div>
+                <label className="block text-[10px] mb-1 uppercase tracking-wider" style={{ color: "var(--muted)" }}>
+                  Event IDs (comma-separated, empty = all events)
+                </label>
+                <input
+                  value={ch.event_ids.join(", ")}
+                  onChange={(e) => updateEventIds(idx, e.target.value)}
+                  placeholder="e.g. 4624, 4625, 4688"
+                  className="w-full rounded border px-3 py-1.5 text-xs font-mono outline-none transition-colors"
+                  style={{ background: "var(--surface-0)", borderColor: "var(--border)", color: "var(--fg)" }}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <button
+          onClick={addChannel}
+          className="mt-3 flex items-center gap-1.5 rounded border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-[var(--surface-1)]"
+          style={{ borderColor: "var(--border)", color: "var(--primary)" }}
+        >
+          <Plus size={12} />
+          Add Channel
+        </button>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="flex items-center gap-1.5 rounded border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-[var(--primary)]/10 disabled:opacity-50"
+          style={{ borderColor: "var(--primary)", color: "var(--primary)" }}
+        >
+          {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+          {saving ? "Saving..." : "Save Configuration"}
+        </button>
+        {saveMsg && (
+          <span className="text-xs" style={{ color: saveMsg === "Saved" ? "#22c55e" : "var(--destructive)" }}>
+            {saveMsg}
+          </span>
+        )}
+      </div>
+
+      <div
+        className="rounded border px-3 py-2 text-[10px] leading-relaxed"
+        style={{ borderColor: "var(--border)", background: "var(--surface-1)", color: "var(--muted)" }}
+      >
+        Changes take effect on next agent config sync (within 60 seconds).
+      </div>
+    </div>
+  );
+}
+
+/* ── Event Reference Data ──────────────────────────────────── */
+
+interface EventRefEntry {
+  id: number;
+  channel: string;
+  category: string;
+  description: string;
+  severity: "critical" | "high" | "medium" | "low" | "info";
+}
+
+const EVENT_REFERENCE: EventRefEntry[] = [
+  // Security Log
+  { id: 4624, channel: "Security", category: "Authentication", description: "Successful logon", severity: "info" },
+  { id: 4625, channel: "Security", category: "Authentication", description: "Failed logon", severity: "medium" },
+  { id: 4634, channel: "Security", category: "Authentication", description: "Logoff", severity: "info" },
+  { id: 4648, channel: "Security", category: "Authentication", description: "Logon using explicit credentials (runas)", severity: "medium" },
+  { id: 4672, channel: "Security", category: "Authentication", description: "Special privileges assigned to new logon", severity: "medium" },
+  { id: 4688, channel: "Security", category: "Process", description: "New process created", severity: "info" },
+  { id: 4689, channel: "Security", category: "Process", description: "Process terminated", severity: "info" },
+  { id: 4697, channel: "Security", category: "Service", description: "Service installed", severity: "high" },
+  { id: 4698, channel: "Security", category: "Scheduled Task", description: "Scheduled task created", severity: "high" },
+  { id: 4699, channel: "Security", category: "Scheduled Task", description: "Scheduled task deleted", severity: "medium" },
+  { id: 4700, channel: "Security", category: "Scheduled Task", description: "Scheduled task enabled", severity: "medium" },
+  { id: 4701, channel: "Security", category: "Scheduled Task", description: "Scheduled task disabled", severity: "low" },
+  { id: 4702, channel: "Security", category: "Scheduled Task", description: "Scheduled task updated", severity: "medium" },
+  { id: 4720, channel: "Security", category: "Account Mgmt", description: "User account created", severity: "high" },
+  { id: 4722, channel: "Security", category: "Account Mgmt", description: "User account enabled", severity: "medium" },
+  { id: 4723, channel: "Security", category: "Account Mgmt", description: "Password change attempted", severity: "medium" },
+  { id: 4724, channel: "Security", category: "Account Mgmt", description: "Password reset attempted", severity: "medium" },
+  { id: 4725, channel: "Security", category: "Account Mgmt", description: "User account disabled", severity: "medium" },
+  { id: 4726, channel: "Security", category: "Account Mgmt", description: "User account deleted", severity: "high" },
+  { id: 4728, channel: "Security", category: "Group Mgmt", description: "Member added to security-enabled global group", severity: "high" },
+  { id: 4732, channel: "Security", category: "Group Mgmt", description: "Member added to security-enabled local group", severity: "high" },
+  { id: 4733, channel: "Security", category: "Group Mgmt", description: "Member removed from security-enabled local group", severity: "medium" },
+  { id: 4738, channel: "Security", category: "Account Mgmt", description: "User account changed", severity: "medium" },
+  { id: 4740, channel: "Security", category: "Account Mgmt", description: "User account locked out", severity: "high" },
+  { id: 4756, channel: "Security", category: "Group Mgmt", description: "Member added to universal group", severity: "high" },
+  { id: 4757, channel: "Security", category: "Group Mgmt", description: "Member removed from universal group", severity: "medium" },
+  { id: 4768, channel: "Security", category: "Kerberos", description: "Kerberos TGT requested", severity: "info" },
+  { id: 4769, channel: "Security", category: "Kerberos", description: "Kerberos service ticket requested", severity: "info" },
+  { id: 4771, channel: "Security", category: "Kerberos", description: "Kerberos pre-authentication failed", severity: "medium" },
+  { id: 4776, channel: "Security", category: "Authentication", description: "NTLM authentication attempted", severity: "medium" },
+  { id: 5140, channel: "Security", category: "File Share", description: "Network share accessed", severity: "low" },
+  { id: 5145, channel: "Security", category: "File Share", description: "Network share object access checked", severity: "low" },
+  { id: 5156, channel: "Security", category: "Firewall", description: "Windows Filtering Platform allowed connection", severity: "info" },
+  { id: 5157, channel: "Security", category: "Firewall", description: "Windows Filtering Platform blocked connection", severity: "medium" },
+  // System Log
+  { id: 1074, channel: "System", category: "System", description: "System shutdown/restart initiated", severity: "medium" },
+  { id: 6005, channel: "System", category: "System", description: "Event Log service started (system boot)", severity: "info" },
+  { id: 6006, channel: "System", category: "System", description: "Event Log service stopped (system shutdown)", severity: "info" },
+  { id: 6008, channel: "System", category: "System", description: "Unexpected shutdown", severity: "high" },
+  { id: 7034, channel: "System", category: "Service", description: "Service crashed unexpectedly", severity: "high" },
+  { id: 7036, channel: "System", category: "Service", description: "Service entered running/stopped state", severity: "info" },
+  { id: 7040, channel: "System", category: "Service", description: "Service start type changed", severity: "medium" },
+  { id: 7045, channel: "System", category: "Service", description: "New service installed", severity: "high" },
+  // Sysmon
+  { id: 1, channel: "Microsoft-Windows-Sysmon/Operational", category: "Process", description: "Process creation with full command line", severity: "info" },
+  { id: 2, channel: "Microsoft-Windows-Sysmon/Operational", category: "File", description: "File creation time changed", severity: "medium" },
+  { id: 3, channel: "Microsoft-Windows-Sysmon/Operational", category: "Network", description: "Network connection", severity: "info" },
+  { id: 5, channel: "Microsoft-Windows-Sysmon/Operational", category: "Process", description: "Process terminated", severity: "info" },
+  { id: 6, channel: "Microsoft-Windows-Sysmon/Operational", category: "Driver", description: "Driver loaded", severity: "medium" },
+  { id: 7, channel: "Microsoft-Windows-Sysmon/Operational", category: "Module", description: "Image loaded (DLL)", severity: "info" },
+  { id: 8, channel: "Microsoft-Windows-Sysmon/Operational", category: "Process", description: "CreateRemoteThread detected", severity: "high" },
+  { id: 10, channel: "Microsoft-Windows-Sysmon/Operational", category: "Process", description: "Process accessed (OpenProcess)", severity: "high" },
+  { id: 11, channel: "Microsoft-Windows-Sysmon/Operational", category: "File", description: "File created", severity: "info" },
+  { id: 12, channel: "Microsoft-Windows-Sysmon/Operational", category: "Registry", description: "Registry object added/deleted", severity: "medium" },
+  { id: 13, channel: "Microsoft-Windows-Sysmon/Operational", category: "Registry", description: "Registry value set", severity: "medium" },
+  { id: 15, channel: "Microsoft-Windows-Sysmon/Operational", category: "File", description: "Alternate data stream created", severity: "high" },
+  { id: 22, channel: "Microsoft-Windows-Sysmon/Operational", category: "DNS", description: "DNS query", severity: "info" },
+  { id: 23, channel: "Microsoft-Windows-Sysmon/Operational", category: "File", description: "File delete archived", severity: "low" },
+  { id: 25, channel: "Microsoft-Windows-Sysmon/Operational", category: "Process", description: "Process tampering", severity: "critical" },
+  { id: 26, channel: "Microsoft-Windows-Sysmon/Operational", category: "File", description: "File delete logged", severity: "low" },
+  // PowerShell
+  { id: 4103, channel: "Microsoft-Windows-PowerShell/Operational", category: "PowerShell", description: "Module logging", severity: "low" },
+  { id: 4104, channel: "Microsoft-Windows-PowerShell/Operational", category: "PowerShell", description: "Script block logging", severity: "medium" },
+  { id: 4105, channel: "Microsoft-Windows-PowerShell/Operational", category: "PowerShell", description: "Command started", severity: "info" },
+  { id: 4106, channel: "Microsoft-Windows-PowerShell/Operational", category: "PowerShell", description: "Command completed", severity: "info" },
+  // Windows Defender
+  { id: 1006, channel: "Microsoft-Windows-Windows Defender/Operational", category: "Defender", description: "Malware or unwanted software detected", severity: "critical" },
+  { id: 1007, channel: "Microsoft-Windows-Windows Defender/Operational", category: "Defender", description: "Action taken to protect system", severity: "high" },
+  { id: 1008, channel: "Microsoft-Windows-Windows Defender/Operational", category: "Defender", description: "Failed to take action on malware", severity: "critical" },
+  { id: 1116, channel: "Microsoft-Windows-Windows Defender/Operational", category: "Defender", description: "Real-time protection detected malware", severity: "critical" },
+  { id: 1117, channel: "Microsoft-Windows-Windows Defender/Operational", category: "Defender", description: "Real-time protection took action", severity: "high" },
+  { id: 5001, channel: "Microsoft-Windows-Windows Defender/Operational", category: "Defender", description: "Real-time protection disabled", severity: "critical" },
+];
+
+/* ── Event Reference Tab ───────────────────────────────────── */
+
+function EventReferenceTab({ agentId, agentOs }: { agentId: string; agentOs: string }) {
+  const [search, setSearch] = useState("");
+  const [addedMsg, setAddedMsg] = useState<string | null>(null);
+
+  const filtered = useMemo(() => {
+    if (!search.trim()) return EVENT_REFERENCE;
+    const q = search.toLowerCase();
+    return EVENT_REFERENCE.filter(
+      (e) =>
+        String(e.id).includes(q) ||
+        e.channel.toLowerCase().includes(q) ||
+        e.category.toLowerCase().includes(q) ||
+        e.description.toLowerCase().includes(q)
+    );
+  }, [search]);
+
+  async function handleQuickAdd(entry: EventRefEntry) {
+    try {
+      const res = await api.get<{ channels?: ChannelConfig[] }>(`/api/v1/agents/${agentId}/winevent-config`);
+      const channels = res.channels ?? [];
+      const existing = channels.find((ch) => ch.name === entry.channel);
+      let updatedChannels: ChannelConfig[];
+      if (existing) {
+        if (existing.event_ids.length === 0) {
+          // "all events" - no need to add
+          setAddedMsg(`Channel "${entry.channel}" already monitors all events`);
+          setTimeout(() => setAddedMsg(null), 3000);
+          return;
+        }
+        if (existing.event_ids.includes(entry.id)) {
+          setAddedMsg(`Event ${entry.id} already in "${entry.channel}"`);
+          setTimeout(() => setAddedMsg(null), 3000);
+          return;
+        }
+        updatedChannels = channels.map((ch) =>
+          ch.name === entry.channel ? { ...ch, event_ids: [...ch.event_ids, entry.id] } : ch
+        );
+      } else {
+        updatedChannels = [...channels, { name: entry.channel, event_ids: [entry.id] }];
+      }
+      await api.patch(`/api/v1/agents/${agentId}/winevent-config`, { channels: updatedChannels });
+      setAddedMsg(`Added event ${entry.id} to "${entry.channel}"`);
+      setTimeout(() => setAddedMsg(null), 3000);
+    } catch (err) {
+      setAddedMsg(err instanceof Error ? err.message : "Failed to add");
+      setTimeout(() => setAddedMsg(null), 3000);
+    }
+  }
+
+  const sevColor = (sev: string) => {
+    switch (sev) {
+      case "critical": return "bg-red-600/15 text-red-400";
+      case "high": return "bg-orange-500/15 text-orange-400";
+      case "medium": return "bg-amber-500/15 text-amber-400";
+      case "low": return "bg-blue-500/15 text-blue-400";
+      default: return "bg-neutral-500/15 text-neutral-400";
+    }
+  };
+
+  const isWindows = agentOs.toLowerCase() === "windows";
+
+  return (
+    <div className="space-y-3">
+      {!isWindows && (
+        <div
+          className="rounded border px-3 py-2 text-xs"
+          style={{ borderColor: "var(--border)", background: "var(--surface-1)", color: "var(--muted)" }}
+        >
+          This agent runs {agentOs}. The event reference below documents Windows Event IDs for cross-reference purposes.
+        </div>
+      )}
+
+      {/* Search */}
+      <div className="relative">
+        <Search
+          size={14}
+          className="absolute left-3 top-1/2 -translate-y-1/2"
+          style={{ color: "var(--muted)" }}
+        />
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search by event ID, channel, category, or description..."
+          className="w-full rounded border pl-8 pr-3 py-1.5 text-xs outline-none transition-colors"
+          style={{ background: "var(--surface-1)", borderColor: "var(--border)", color: "var(--fg)" }}
+        />
+      </div>
+
+      {addedMsg && (
+        <div
+          className="rounded border px-3 py-1.5 text-xs"
+          style={{
+            borderColor: addedMsg.includes("Failed") || addedMsg.includes("failed") ? "var(--destructive)" : "oklch(0.55 0.15 145 / 0.3)",
+            background: addedMsg.includes("Failed") || addedMsg.includes("failed") ? "oklch(0.45 0.15 25 / 0.1)" : "oklch(0.55 0.15 145 / 0.1)",
+            color: addedMsg.includes("Failed") || addedMsg.includes("failed") ? "var(--destructive)" : "#22c55e",
+          }}
+        >
+          {addedMsg}
+        </div>
+      )}
+
+      {/* Table */}
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr
+              className="text-left text-[10px] uppercase tracking-wider border-b"
+              style={{ color: "var(--muted)", borderColor: "var(--border)" }}
+            >
+              <th className="pb-2 pr-4">Event ID</th>
+              <th className="pb-2 pr-4">Channel</th>
+              <th className="pb-2 pr-4">Category</th>
+              <th className="pb-2 pr-4">Description</th>
+              <th className="pb-2 pr-4">Severity</th>
+              {isWindows && <th className="pb-2">Action</th>}
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((e) => (
+              <tr
+                key={`${e.channel}-${e.id}`}
+                className="border-b transition-colors hover:bg-[var(--surface-1)]"
+                style={{ borderColor: "var(--border)" }}
+              >
+                <td className="py-2 pr-4 text-xs font-mono font-medium" style={{ color: "var(--fg)" }}>
+                  {e.id}
+                </td>
+                <td className="py-2 pr-4 text-xs" style={{ color: "var(--muted)" }}>
+                  {e.channel}
+                </td>
+                <td className="py-2 pr-4 text-xs" style={{ color: "var(--fg)" }}>
+                  {e.category}
+                </td>
+                <td className="py-2 pr-4 text-xs" style={{ color: "var(--fg)" }}>
+                  {e.description}
+                </td>
+                <td className="py-2 pr-4">
+                  <span className={cn("inline-block rounded-full px-2 py-0.5 text-[10px] font-medium", sevColor(e.severity))}>
+                    {e.severity}
+                  </span>
+                </td>
+                {isWindows && (
+                  <td className="py-2">
+                    <button
+                      onClick={() => handleQuickAdd(e)}
+                      className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-medium transition-colors hover:bg-[var(--primary)]/10"
+                      style={{ color: "var(--primary)" }}
+                      title="Add to WinEvent config"
+                    >
+                      <Plus size={10} />
+                      Add
+                    </button>
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {filtered.length === 0 && (
+          <div className="py-12 text-center text-xs" style={{ color: "var(--muted)" }}>
+            No events match your search
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ── Main Page ──────────────────────────────────────────────── */
 
 export default function AgentDetailPage() {
@@ -764,7 +1195,7 @@ export default function AgentDetailPage() {
       </div>
 
       {/* Tab navigation */}
-      <div className="flex border-b" style={{ borderColor: "var(--border)" }}>
+      <div className="flex flex-wrap border-b" style={{ borderColor: "var(--border)" }}>
         <TabButton
           id="overview"
           label="Overview"
@@ -793,6 +1224,22 @@ export default function AgentDetailPage() {
           active={activeTab === "vulnerabilities"}
           onClick={setActiveTab}
         />
+        {agent.os?.toLowerCase() === "windows" && (
+          <TabButton
+            id="winevent-config"
+            label="WinEvent Config"
+            icon={<Settings2 size={13} />}
+            active={activeTab === "winevent-config"}
+            onClick={setActiveTab}
+          />
+        )}
+        <TabButton
+          id="event-reference"
+          label="Event Reference"
+          icon={<BookOpen size={13} />}
+          active={activeTab === "event-reference"}
+          onClick={setActiveTab}
+        />
       </div>
 
       {/* Tab content */}
@@ -801,6 +1248,8 @@ export default function AgentDetailPage() {
         {activeTab === "events" && <EventsTab agentId={agentId} />}
         {activeTab === "packages" && <PackagesTab agentId={agentId} />}
         {activeTab === "vulnerabilities" && <VulnerabilitiesTab agentId={agentId} />}
+        {activeTab === "winevent-config" && <WinEventConfigTab agentId={agentId} />}
+        {activeTab === "event-reference" && <EventReferenceTab agentId={agentId} agentOs={agent.os ?? ""} />}
       </div>
     </div>
   );

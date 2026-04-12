@@ -1,6 +1,6 @@
 # Deployment Guide
 
-This guide covers deploying the full OEDR platform: backend, dashboard, agents, and browser extensions.
+This guide covers deploying the full TraceGuard platform: backend, dashboard, agents, and browser extensions.
 
 ## System Requirements
 
@@ -106,7 +106,7 @@ docker compose up -d
 The provided `docker-compose.yml` starts both PostgreSQL and the backend. Services defined:
 
 - **postgres**: PostgreSQL 16 Alpine with health check, persistent volume `postgres_data`.
-- **backend**: OEDR backend built from `deploy/Dockerfile`, depends on healthy Postgres. Exposes ports 8080 and 50051.
+- **backend**: TraceGuard backend built from `deploy/Dockerfile`, depends on healthy Postgres. Exposes ports 8080 and 50051.
 
 #### TLS Certificates
 
@@ -250,7 +250,7 @@ Important: Disable proxy buffering for SSE endpoints (`/api/v1/events/stream`).
 ```ini
 # /etc/systemd/system/edr-backend.service
 [Unit]
-Description=OEDR Backend
+Description=TraceGuard Backend
 After=network.target postgresql.service
 Requires=postgresql.service
 
@@ -273,7 +273,7 @@ WantedBy=multi-user.target
 ```ini
 # /etc/systemd/system/edr-dashboard.service
 [Unit]
-Description=OEDR Dashboard (Next.js)
+Description=TraceGuard Dashboard (Next.js)
 After=network.target edr-backend.service
 
 [Service]
@@ -295,7 +295,7 @@ WantedBy=multi-user.target
 ```ini
 # /etc/systemd/system/edr-agent.service
 [Unit]
-Description=OEDR Agent
+Description=TraceGuard Agent
 After=network.target
 
 [Service]

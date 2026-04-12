@@ -54,6 +54,7 @@ type MonitorsConfig struct {
 	TLSSNI   TLSSNIConfig          `mapstructure:"tlssni"`
 	FIM      FIMConfig             `mapstructure:"fim"`
 	Vuln     VulnMonitorConfig     `mapstructure:"vuln"`
+	WinEvent WinEventMonitorConfig `mapstructure:"winevent"`
 }
 
 type ProcessMonitorConfig struct {
@@ -144,6 +145,18 @@ type VulnMonitorConfig struct {
 	Enabled bool `mapstructure:"enabled"`
 }
 
+type WinEventChannelConfig struct {
+	Name     string `mapstructure:"name"`
+	EventIDs []int  `mapstructure:"event_ids"`
+}
+
+type WinEventMonitorConfig struct {
+	Enabled          bool                    `mapstructure:"enabled"`
+	PollIntervalS    int                     `mapstructure:"poll_interval_s"`
+	Channels         []WinEventChannelConfig `mapstructure:"channels"`
+	MaxEventsPerPoll int                     `mapstructure:"max_events_per_poll"`
+}
+
 type BufferConfig struct {
 	Path           string `mapstructure:"path"`
 	MaxSizeMB      int    `mapstructure:"max_size_mb"`
@@ -222,6 +235,23 @@ func Load(path string) (*Config, error) {
 		`C:\Windows\System32\utilman.exe`,
 		`C:\Windows\System32\cmd.exe`,
 		`C:\Windows\System32\osk.exe`,
+	})
+	v.SetDefault("monitors.winevent.enabled", true)
+	v.SetDefault("monitors.winevent.poll_interval_s", 15)
+	v.SetDefault("monitors.winevent.max_events_per_poll", 100)
+	v.SetDefault("monitors.winevent.channels", []map[string]interface{}{
+		{
+			"name":      "Security",
+			"event_ids": []int{4688, 4689, 4624, 4625, 4648, 4672, 4720, 4722, 4723, 4724, 4725, 4726, 4732, 4733, 4756, 4757},
+		},
+		{
+			"name":      "System",
+			"event_ids": []int{7045, 7040, 7036, 1074, 6005, 6006},
+		},
+		{
+			"name":      "Application",
+			"event_ids": []int{},
+		},
 	})
 
 	v.SetDefault("buffer.path", `C:\ProgramData\TraceGuard\events.db`)

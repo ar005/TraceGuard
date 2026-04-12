@@ -5,8 +5,15 @@ package store
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -33,9 +40,13 @@ func (s *Store) DB() *sqlx.DB {
 // ─── Agents ───────────────────────────────────────────────────────────────────
 
 func (s *Store) UpsertAgent(ctx context.Context, a *models.Agent) error {
+	winCfg := a.WinEventConfig
+	if len(winCfg) == 0 {
+		winCfg = json.RawMessage(`{}`)
+	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO agents (id, hostname, os, os_version, ip, agent_ver, first_seen, last_seen, is_online, config_ver, tags, env, notes)
-		VALUES ($1,$2,$3,$4,$5,$6,NOW(),NOW(),TRUE,$7,$8,$9,$10)
+		INSERT INTO agents (id, hostname, os, os_version, ip, agent_ver, first_seen, last_seen, is_online, config_ver, tags, env, notes, winevent_config)
+		VALUES ($1,$2,$3,$4,$5,$6,NOW(),NOW(),TRUE,$7,$8,$9,$10,$11)
 		ON CONFLICT (id) DO UPDATE SET
 			hostname   = EXCLUDED.hostname,
 			os         = EXCLUDED.os,
@@ -46,9 +57,10 @@ func (s *Store) UpsertAgent(ctx context.Context, a *models.Agent) error {
 			is_online  = TRUE,
 			tags  = CASE WHEN array_length(EXCLUDED.tags,1) > 0 THEN EXCLUDED.tags ELSE agents.tags END,
 			env   = CASE WHEN EXCLUDED.env   != '' THEN EXCLUDED.env   ELSE agents.env   END,
-			notes = CASE WHEN EXCLUDED.notes != '' THEN EXCLUDED.notes ELSE agents.notes END
+			notes = CASE WHEN EXCLUDED.notes != '' THEN EXCLUDED.notes ELSE agents.notes END,
+			winevent_config = CASE WHEN EXCLUDED.winevent_config != '{}'::jsonb THEN EXCLUDED.winevent_config ELSE agents.winevent_config END
 	`, a.ID, a.Hostname, a.OS, a.OSVersion, a.IP, a.AgentVer, a.ConfigVer,
-		pq.Array(coalesceStringSlice(a.Tags)), a.Env, a.Notes)
+		pq.Array(coalesceStringSlice(a.Tags)), a.Env, a.Notes, winCfg)
 	return err
 }
 
@@ -597,100 +609,488 @@ func (s *Store) UpdateAgentTags(ctx context.Context, id, env, notes string, tags
 		id, pq.Array(tags), env, notes)
 	return err
 }
+
+// UpdateAgentWinEventConfig sets the Windows Event Log channel configuration for an agent.
+func (s *Store) UpdateAgentWinEventConfig(ctx context.Context, id string, config json.RawMessage) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE agents SET winevent_config=$2 WHERE id=$1`,
+		id, config)
+	return err
+}
+
+// GetAgentWinEventConfig returns the Windows Event Log configuration for an agent.
+func (s *Store) GetAgentWinEventConfig(ctx context.Context, id string) (json.RawMessage, error) {
+	var config json.RawMessage
+	err := s.db.GetContext(ctx, &config,
+		`SELECT winevent_config FROM agents WHERE id=$1`, id)
+	return config, err
+}
 // ─── Threat Hunting ───────────────────────────────────────────────────────────
 
-// HuntQuery executes a safe, sanitized query against the events table.
-// It supports a simple query language:
+// allowedHuntColumns is the whitelist of columns users may filter on.
+// JSONB paths like payload->>'exe_path' are handled separately.
+var allowedHuntColumns = map[string]bool{
+	"id":          true,
+	"agent_id":    true,
+	"hostname":    true,
+	"event_type":  true,
+	"timestamp":   true,
+	"received_at": true,
+	"severity":    true,
+	"rule_id":     true,
+	"alert_id":    true,
+}
+
+// allowedHuntOps is the whitelist of comparison operators.
+var allowedHuntOps = map[string]bool{
+	"=": true, "!=": true, "<>": true,
+	"<": true, ">": true, "<=": true, ">=": true,
+	"LIKE": true, "ILIKE": true, "NOT LIKE": true, "NOT ILIKE": true,
+	"IS NULL": true, "IS NOT NULL": true,
+	"IN": true, "NOT IN": true,
+}
+
+// huntFilter represents a single parsed predicate.
+type huntFilter struct {
+	Column   string   // e.g. "hostname" or "payload->>'exe_path'"
+	Op       string   // e.g. "=", "LIKE", "IS NULL", "IN"
+	Values   []string // bound parameter values (empty for IS NULL / IS NOT NULL)
+	Negate   bool     // NOT prefix
+	JSONPath string   // raw JSONB path for payload fields
+}
+
+// HuntQuery executes a parameterized query against the events table.
+// It parses a structured filter language into safe, parameterized SQL.
 //
-//	event_type = 'PROCESS_EXEC' AND hostname = 'web01' AND payload->>'exe_path' LIKE '%bash%'
+// Supported syntax (filters joined by AND/OR):
 //
-// The query is inserted into a fixed WHERE clause template:
+//	event_type = 'PROCESS_EXEC' AND hostname = 'web01'
+//	payload->>'exe_path' LIKE '%bash%'
+//	severity >= 3
+//	event_type IN ('PROCESS_EXEC', 'CMD_EXEC')
+//	hostname IS NOT NULL
 //
-//	SELECT * FROM events WHERE (<user_query>) ORDER BY timestamp DESC LIMIT $1
-//
-// Security: Only allows SELECT-like predicates. Rejects any DDL/DML keywords.
+// All user-supplied values are parameterized — no raw SQL is ever interpolated.
 func (s *Store) HuntQuery(ctx context.Context, query string, limit int) ([]models.Event, int, error) {
+	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, 0, fmt.Errorf("empty query")
 	}
 
-	// Reject semicolons.
-	if strings.Contains(query, ";") {
-		return nil, 0, fmt.Errorf("invalid query: semicolons are not allowed")
-	}
-
-	// Reject dangerous SQL keywords (case-insensitive).
-	upper := strings.ToUpper(query)
-	blocked := []string{
-		"DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "TRUNCATE",
-		"CREATE", "GRANT", "EXEC", "UNION",
-	}
-	for _, kw := range blocked {
-		// Use word-boundary matching: check that the keyword is surrounded by
-		// non-alphanumeric characters (or is at the start/end of the string).
-		idx := 0
-		for idx <= len(upper)-len(kw) {
-			pos := strings.Index(upper[idx:], kw)
-			if pos < 0 {
-				break
-			}
-			absPos := idx + pos
-			before := absPos == 0 || !isAlphaNum(upper[absPos-1])
-			after := absPos+len(kw) >= len(upper) || !isAlphaNum(upper[absPos+len(kw)])
-			if before && after {
-				return nil, 0, fmt.Errorf("invalid query: forbidden keyword %q", kw)
-			}
-			idx = absPos + len(kw)
-		}
-	}
-
-	// If the user sent a full SELECT statement, extract just the WHERE predicate.
-	normalized := strings.TrimSpace(query)
-	upperNorm := strings.ToUpper(normalized)
-
-	// Strip "SELECT * FROM events WHERE " prefix if present.
+	// Strip "SELECT * FROM events WHERE" prefix if the user included it.
+	upperQ := strings.ToUpper(query)
 	for _, prefix := range []string{
 		"SELECT * FROM EVENTS WHERE ",
 		"SELECT * FROM EVENTS\nWHERE ",
-		"SELECT * FROM EVENTS  WHERE ",
 	} {
-		if strings.HasPrefix(upperNorm, prefix) {
-			normalized = strings.TrimSpace(normalized[len(prefix):])
-			upperNorm = strings.ToUpper(normalized)
+		if strings.HasPrefix(upperQ, prefix) {
+			query = strings.TrimSpace(query[len(prefix):])
 			break
 		}
 	}
 
-	// Strip trailing ORDER BY / LIMIT clauses (backend applies its own).
-	for _, suffix := range []string{"ORDER BY", "LIMIT"} {
-		if idx := strings.LastIndex(upperNorm, suffix); idx > 0 {
-			normalized = strings.TrimSpace(normalized[:idx])
-			upperNorm = strings.ToUpper(normalized)
+	// Strip trailing ORDER BY / LIMIT (we apply our own).
+	upperQ = strings.ToUpper(query)
+	for _, kw := range []string{" ORDER BY", " LIMIT"} {
+		if idx := strings.LastIndex(upperQ, kw); idx > 0 {
+			query = strings.TrimSpace(query[:idx])
+			upperQ = strings.ToUpper(query)
 		}
 	}
 
-	query = normalized
+	whereClause, args, err := parseHuntQuery(query)
+	if err != nil {
+		return nil, 0, fmt.Errorf("invalid query: %w", err)
+	}
 
-	// Build the SQL.
-	dataSQL := fmt.Sprintf(`SELECT * FROM events WHERE (%s) ORDER BY timestamp DESC LIMIT $1`, query)
-	countSQL := fmt.Sprintf(`SELECT COUNT(*) FROM events WHERE (%s)`, query)
+	limitParam := len(args) + 1
+	dataSQL := fmt.Sprintf(`SELECT * FROM events WHERE %s ORDER BY timestamp DESC LIMIT $%d`, whereClause, limitParam)
+	countSQL := fmt.Sprintf(`SELECT COUNT(*) FROM events WHERE %s`, whereClause)
+
+	allArgs := append(args, limit)
 
 	var events []models.Event
-	if err := s.db.SelectContext(ctx, &events, dataSQL, limit); err != nil {
+	if err := s.db.SelectContext(ctx, &events, dataSQL, allArgs...); err != nil {
 		return nil, 0, fmt.Errorf("hunt query failed: %w", err)
 	}
 
 	var total int
-	if err := s.db.QueryRowContext(ctx, countSQL).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("hunt count failed: %w", err)
 	}
 
 	return events, total, nil
 }
 
-// isAlphaNum returns true if b is A-Z, a-z, 0-9, or underscore.
-func isAlphaNum(b byte) bool {
-	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_'
+// parseHuntQuery parses the user query string into parameterized SQL.
+// Returns the WHERE clause with $N placeholders and the corresponding args slice.
+func parseHuntQuery(query string) (string, []interface{}, error) {
+	// Reject obviously dangerous characters.
+	if strings.Contains(query, ";") {
+		return "", nil, fmt.Errorf("semicolons are not allowed")
+	}
+	if strings.Contains(query, "--") {
+		return "", nil, fmt.Errorf("SQL comments are not allowed")
+	}
+	if strings.Contains(query, "/*") {
+		return "", nil, fmt.Errorf("SQL comments are not allowed")
+	}
+
+	// Split on AND/OR while preserving the conjunction.
+	parts, conjunctions := splitOnConjunctions(query)
+	if len(parts) == 0 {
+		return "", nil, fmt.Errorf("no filter conditions found")
+	}
+
+	var clauses []string
+	var args []interface{}
+	paramIdx := 1
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		clause, partArgs, nextIdx, err := parseFilterPart(part, paramIdx)
+		if err != nil {
+			return "", nil, err
+		}
+		clauses = append(clauses, clause)
+		args = append(args, partArgs...)
+		paramIdx = nextIdx
+	}
+
+	// Rebuild with conjunctions.
+	var sb strings.Builder
+	for i, clause := range clauses {
+		if i > 0 {
+			sb.WriteString(" ")
+			if i-1 < len(conjunctions) {
+				sb.WriteString(conjunctions[i-1])
+			} else {
+				sb.WriteString("AND")
+			}
+			sb.WriteString(" ")
+		}
+		sb.WriteString(clause)
+	}
+
+	return sb.String(), args, nil
+}
+
+// splitOnConjunctions splits a query on AND/OR keywords (not inside quotes).
+func splitOnConjunctions(query string) ([]string, []string) {
+	var parts []string
+	var conjunctions []string
+
+	upper := strings.ToUpper(query)
+	inQuote := false
+	quoteChar := byte(0)
+	parenDepth := 0
+	start := 0
+
+	for i := 0; i < len(query); i++ {
+		ch := query[i]
+		if inQuote {
+			if ch == quoteChar {
+				inQuote = false
+			}
+			continue
+		}
+		if ch == '\'' {
+			inQuote = true
+			quoteChar = ch
+			continue
+		}
+		if ch == '(' {
+			parenDepth++
+			continue
+		}
+		if ch == ')' {
+			parenDepth--
+			continue
+		}
+		if parenDepth > 0 {
+			continue
+		}
+
+		// Check for AND / OR at word boundaries.
+		for _, conj := range []string{" AND ", " OR "} {
+			if i+len(conj) <= len(upper) && upper[i:i+len(conj)] == conj {
+				parts = append(parts, query[start:i])
+				conjunctions = append(conjunctions, strings.TrimSpace(conj))
+				i += len(conj) - 1
+				start = i + 1
+				break
+			}
+		}
+	}
+	parts = append(parts, query[start:])
+	return parts, conjunctions
+}
+
+// parseFilterPart parses a single filter expression like "hostname = 'web01'"
+// and returns parameterized SQL.
+func parseFilterPart(part string, paramIdx int) (string, []interface{}, int, error) {
+	part = strings.TrimSpace(part)
+
+	// Handle parenthesized groups: (expr)
+	if strings.HasPrefix(part, "(") && strings.HasSuffix(part, ")") {
+		inner := part[1 : len(part)-1]
+		clause, args, nextIdx, err := parseFilterGroup(inner, paramIdx)
+		if err != nil {
+			return "", nil, 0, err
+		}
+		return "(" + clause + ")", args, nextIdx, nil
+	}
+
+	upperPart := strings.ToUpper(strings.TrimSpace(part))
+
+	// IS NULL / IS NOT NULL
+	if strings.HasSuffix(upperPart, " IS NOT NULL") {
+		col := strings.TrimSpace(part[:len(part)-len(" IS NOT NULL")])
+		safeCol, err := validateColumn(col)
+		if err != nil {
+			return "", nil, 0, err
+		}
+		return safeCol + " IS NOT NULL", nil, paramIdx, nil
+	}
+	if strings.HasSuffix(upperPart, " IS NULL") {
+		col := strings.TrimSpace(part[:len(part)-len(" IS NULL")])
+		safeCol, err := validateColumn(col)
+		if err != nil {
+			return "", nil, 0, err
+		}
+		return safeCol + " IS NULL", nil, paramIdx, nil
+	}
+
+	// IN / NOT IN: column IN ('val1', 'val2')
+	for _, inOp := range []string{" NOT IN ", " IN "} {
+		if idx := strings.Index(upperPart, inOp); idx > 0 {
+			col := strings.TrimSpace(part[:idx])
+			safeCol, err := validateColumn(col)
+			if err != nil {
+				return "", nil, 0, err
+			}
+			valsPart := strings.TrimSpace(part[idx+len(inOp):])
+			vals, err := parseINValues(valsPart)
+			if err != nil {
+				return "", nil, 0, err
+			}
+			var placeholders []string
+			var args []interface{}
+			for _, v := range vals {
+				placeholders = append(placeholders, fmt.Sprintf("$%d", paramIdx))
+				args = append(args, v)
+				paramIdx++
+			}
+			opStr := strings.TrimSpace(inOp)
+			return fmt.Sprintf("%s %s (%s)", safeCol, opStr, strings.Join(placeholders, ", ")), args, paramIdx, nil
+		}
+	}
+
+	// Standard comparison: column OP 'value'
+	// Try multi-char ops first, then single-char.
+	for _, op := range []string{"NOT ILIKE", "NOT LIKE", "ILIKE", "LIKE", "!=", "<>", "<=", ">=", "=", "<", ">"} {
+		opUpper := strings.ToUpper(op)
+		var idx int
+		if len(op) > 1 && (op[0] >= 'A' && op[0] <= 'Z' || op[0] >= 'a' && op[0] <= 'z') {
+			// Word operators: need space boundaries.
+			search := " " + opUpper + " "
+			idx = strings.Index(upperPart, search)
+			if idx >= 0 {
+				col := strings.TrimSpace(part[:idx])
+				val := strings.TrimSpace(part[idx+len(search):])
+				return buildComparison(col, op, val, paramIdx)
+			}
+		} else {
+			idx = strings.Index(part, op)
+			if idx > 0 {
+				col := strings.TrimSpace(part[:idx])
+				val := strings.TrimSpace(part[idx+len(op):])
+				return buildComparison(col, op, val, paramIdx)
+			}
+		}
+	}
+
+	return "", nil, 0, fmt.Errorf("cannot parse filter: %q", part)
+}
+
+// parseFilterGroup handles inner content of parenthesized groups.
+func parseFilterGroup(inner string, paramIdx int) (string, []interface{}, int, error) {
+	parts, conjunctions := splitOnConjunctions(inner)
+	var clauses []string
+	var allArgs []interface{}
+
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		clause, args, nextIdx, err := parseFilterPart(p, paramIdx)
+		if err != nil {
+			return "", nil, 0, err
+		}
+		clauses = append(clauses, clause)
+		allArgs = append(allArgs, args...)
+		paramIdx = nextIdx
+	}
+
+	var sb strings.Builder
+	for i, clause := range clauses {
+		if i > 0 {
+			sb.WriteString(" ")
+			if i-1 < len(conjunctions) {
+				sb.WriteString(conjunctions[i-1])
+			} else {
+				sb.WriteString("AND")
+			}
+			sb.WriteString(" ")
+		}
+		sb.WriteString(clause)
+	}
+	return sb.String(), allArgs, paramIdx, nil
+}
+
+// buildComparison builds a parameterized comparison clause.
+func buildComparison(col, op, rawVal string, paramIdx int) (string, []interface{}, int, error) {
+	safeCol, err := validateColumn(col)
+	if err != nil {
+		return "", nil, 0, err
+	}
+	val := stripQuotes(rawVal)
+	clause := fmt.Sprintf("%s %s $%d", safeCol, op, paramIdx)
+	return clause, []interface{}{val}, paramIdx + 1, nil
+}
+
+// validateColumn checks that a column reference is allowed.
+// Supports plain columns and payload JSONB paths like payload->>'field'.
+func validateColumn(col string) (string, error) {
+	col = strings.TrimSpace(col)
+	lower := strings.ToLower(col)
+
+	// Allow payload JSONB access: payload->>'key' or payload->'obj'->>'key'
+	if strings.HasPrefix(lower, "payload") {
+		return validateJSONBPath(col)
+	}
+
+	if !allowedHuntColumns[lower] {
+		return "", fmt.Errorf("unknown column: %q (allowed: %s)", col, huntColumnList())
+	}
+	return lower, nil
+}
+
+// validateJSONBPath validates a JSONB access path like payload->>'exe_path'
+// or payload->'process'->>'name'. Only allows alphanumeric keys.
+func validateJSONBPath(path string) (string, error) {
+	// Must start with "payload"
+	rest := strings.TrimSpace(path[len("payload"):])
+
+	var result strings.Builder
+	result.WriteString("payload")
+
+	for len(rest) > 0 {
+		// Expect ->> or ->
+		if strings.HasPrefix(rest, "->>") {
+			result.WriteString("->>")
+			rest = rest[3:]
+		} else if strings.HasPrefix(rest, "->") {
+			result.WriteString("->")
+			rest = rest[2:]
+		} else {
+			return "", fmt.Errorf("invalid JSONB path: %q", path)
+		}
+
+		rest = strings.TrimSpace(rest)
+
+		// Expect 'key' (quoted) or unquoted alphanumeric key.
+		if len(rest) > 0 && rest[0] == '\'' {
+			end := strings.IndexByte(rest[1:], '\'')
+			if end < 0 {
+				return "", fmt.Errorf("unterminated JSONB key in: %q", path)
+			}
+			key := rest[1 : end+1]
+			if !isAlphaNumDotUnderscore(key) {
+				return "", fmt.Errorf("invalid JSONB key: %q", key)
+			}
+			result.WriteString("'")
+			result.WriteString(key)
+			result.WriteString("'")
+			rest = rest[end+2:]
+		} else {
+			// Unquoted key: read until space, -, or end.
+			end := 0
+			for end < len(rest) && rest[end] != ' ' && rest[end] != '-' {
+				end++
+			}
+			if end == 0 {
+				return "", fmt.Errorf("empty JSONB key in: %q", path)
+			}
+			key := rest[:end]
+			if !isAlphaNumDotUnderscore(key) {
+				return "", fmt.Errorf("invalid JSONB key: %q", key)
+			}
+			result.WriteString("'")
+			result.WriteString(key)
+			result.WriteString("'")
+			rest = rest[end:]
+		}
+
+		rest = strings.TrimSpace(rest)
+	}
+
+	return result.String(), nil
+}
+
+// parseINValues parses ('val1', 'val2', ...) into a slice of strings.
+func parseINValues(s string) ([]string, error) {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "(") || !strings.HasSuffix(s, ")") {
+		return nil, fmt.Errorf("IN values must be enclosed in parentheses")
+	}
+	inner := s[1 : len(s)-1]
+	parts := strings.Split(inner, ",")
+	var vals []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		vals = append(vals, stripQuotes(p))
+	}
+	if len(vals) == 0 {
+		return nil, fmt.Errorf("IN clause requires at least one value")
+	}
+	return vals, nil
+}
+
+// stripQuotes removes surrounding single quotes from a value.
+func stripQuotes(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'' {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
+
+// isAlphaNumDotUnderscore checks a string contains only safe identifier characters.
+func isAlphaNumDotUnderscore(s string) bool {
+	for _, c := range s {
+		if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '.') {
+			return false
+		}
+	}
+	return len(s) > 0
+}
+
+// huntColumnList returns a comma-separated list of allowed columns for error messages.
+func huntColumnList() string {
+	cols := make([]string, 0, len(allowedHuntColumns))
+	for c := range allowedHuntColumns {
+		cols = append(cols, c)
+	}
+	return strings.Join(cols, ", ")
 }
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
@@ -712,6 +1112,82 @@ func (s *Store) SetSetting(ctx context.Context, key, value string) error {
 		ON CONFLICT (key) DO UPDATE SET value=$2, updated_at=NOW()`,
 		key, value)
 	return err
+}
+
+// SetSecretSetting encrypts a value with AES-GCM before storing it.
+// The encryption key is derived from EDR_JWT_SECRET.
+func (s *Store) SetSecretSetting(ctx context.Context, key, plaintext string) error {
+	encrypted, err := encryptAESGCM(plaintext)
+	if err != nil {
+		return fmt.Errorf("encrypt setting: %w", err)
+	}
+	return s.SetSetting(ctx, key, "enc:"+encrypted)
+}
+
+// GetSecretSetting retrieves and decrypts an AES-GCM encrypted setting.
+// Falls back to reading plaintext for backward compatibility with existing values.
+func (s *Store) GetSecretSetting(ctx context.Context, key, defaultVal string) string {
+	raw := s.GetSetting(ctx, key, "")
+	if raw == "" {
+		return defaultVal
+	}
+	if strings.HasPrefix(raw, "enc:") {
+		decrypted, err := decryptAESGCM(raw[4:])
+		if err != nil {
+			return defaultVal
+		}
+		return decrypted
+	}
+	// Backward-compat: plaintext value from before encryption was added.
+	return raw
+}
+
+// deriveKey produces a 32-byte AES key from EDR_JWT_SECRET via SHA-256.
+func deriveKey() []byte {
+	secret := os.Getenv("EDR_JWT_SECRET")
+	h := sha256.Sum256([]byte(secret))
+	return h[:]
+}
+
+func encryptAESGCM(plaintext string) (string, error) {
+	block, err := aes.NewCipher(deriveKey())
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+	ciphertext := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
+	return base64.StdEncoding.EncodeToString(ciphertext), nil
+}
+
+func decryptAESGCM(encoded string) (string, error) {
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", err
+	}
+	block, err := aes.NewCipher(deriveKey())
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonceSize := gcm.NonceSize()
+	if len(data) < nonceSize {
+		return "", fmt.Errorf("ciphertext too short")
+	}
+	plaintext, err := gcm.Open(nil, data[:nonceSize], data[nonceSize:], nil)
+	if err != nil {
+		return "", err
+	}
+	return string(plaintext), nil
 }
 
 // GetRetentionDays returns (eventDays, alertDays) from settings.

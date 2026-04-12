@@ -1,12 +1,12 @@
 import type { NextConfig } from "next";
 
+// Dev origins should be set via EDR_DEV_ORIGINS env var (comma-separated), not hardcoded.
+const devOrigins = process.env.EDR_DEV_ORIGINS
+  ? process.env.EDR_DEV_ORIGINS.split(",").map((s) => s.trim())
+  : [];
+
 const nextConfig: NextConfig = {
-  allowedDevOrigins: [
-    "0.0.0.0",
-    "100.123.224.3",
-    "100.94.38.92",
-    "trace.ianimesh.com",
-  ],
+  ...(devOrigins.length > 0 ? { allowedDevOrigins: devOrigins } : {}),
   async rewrites() {
     return [
       {

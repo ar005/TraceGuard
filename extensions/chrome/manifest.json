@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "OEDR Browser Monitor",
+  "name": "TraceGuard Browser Monitor",
   "version": "1.0.0",
   "description": "Captures web request metadata (URL, status code, method) and sends to the local EDR agent for phishing and threat detection.",
   "permissions": [

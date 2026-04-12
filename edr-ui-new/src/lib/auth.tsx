@@ -36,20 +36,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Hydrate from localStorage on mount
+  // Hydrate session on mount by calling /me with the httpOnly cookie.
+  // The JWT is never stored client-side — the browser sends it
+  // automatically via the httpOnly cookie set by the backend.
   useEffect(() => {
-    try {
-      const savedToken = localStorage.getItem("edr_token");
-      const savedUser = localStorage.getItem("edr_user");
-      if (savedToken && savedUser) {
-        setToken(savedToken);
-        setUser(JSON.parse(savedUser));
+    let cancelled = false;
+    async function hydrate() {
+      try {
+        const res = await api.get<{ user?: User } & Partial<User>>("/api/v1/me");
+        if (!cancelled) {
+          const u = res.user ?? (res as unknown as User);
+          if (u && u.id) {
+            setUser(u);
+            setToken("cookie"); // sentinel — actual JWT is in httpOnly cookie
+          }
+        }
+      } catch {
+        // No valid session — stay logged out.
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-    } catch {
-      // Corrupt storage — ignore
-    } finally {
-      setLoading(false);
     }
+    hydrate();
+    return () => { cancelled = true; };
   }, []);
 
   const login = useCallback(async (username: string, password: string): Promise<LoginResponse> => {
@@ -63,11 +72,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return res;
     }
 
-    // Normal login — store token and user.
-    if (res.token && res.user) {
-      localStorage.setItem("edr_token", res.token);
-      localStorage.setItem("edr_user", JSON.stringify(res.user));
-      setToken(res.token);
+    // Normal login — backend has set the httpOnly cookie.
+    // Store user profile in memory only (not localStorage).
+    if (res.user) {
+      setToken("cookie");
       setUser(res.user);
     }
     return res;
@@ -78,18 +86,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       "/api/v1/auth/totp/verify-login",
       { mfa_token: mfaToken, code }
     );
-    if (!res.token || !res.user) {
+    if (!res.user) {
       throw new Error("TOTP verification failed");
     }
-    localStorage.setItem("edr_token", res.token);
-    localStorage.setItem("edr_user", JSON.stringify(res.user));
-    setToken(res.token);
+    // Backend has set the httpOnly cookie.
+    setToken("cookie");
     setUser(res.user);
   }, []);
 
-  const logout = useCallback(() => {
-    localStorage.removeItem("edr_token");
-    localStorage.removeItem("edr_user");
+  const logout = useCallback(async () => {
+    try {
+      await api.post("/api/v1/auth/logout");
+    } catch {
+      // Best-effort — clear local state anyway.
+    }
     setToken(null);
     setUser(null);
     window.location.href = "/login";

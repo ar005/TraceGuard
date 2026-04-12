@@ -36,6 +36,7 @@ import (
 	"github.com/youredr/edr-agent-win/internal/monitor/share"
 	"github.com/youredr/edr-agent-win/internal/monitor/usb"
 	"github.com/youredr/edr-agent-win/internal/monitor/vuln"
+	"github.com/youredr/edr-agent-win/internal/monitor/winevent"
 	"github.com/youredr/edr-agent-win/internal/transport"
 	"github.com/youredr/edr-agent-win/internal/version"
 	"github.com/youredr/edr-agent-win/pkg/types"
@@ -67,6 +68,7 @@ type Agent struct {
 	memMonitor      *memmon.Monitor
 	schtaskMonitor  *schtask.Monitor
 	fimMonitor      *fim.Monitor
+	wineventMonitor *winevent.Monitor
 }
 
 func New(cfg *config.Config) (*Agent, error) {
@@ -226,6 +228,28 @@ func New(cfg *config.Config) (*Agent, error) {
 			AutoBaseline:  cfg.Monitors.FIM.AutoBaseline,
 		}, bus, log)
 	}
+	if cfg.Monitors.WinEvent.Enabled {
+		pollInterval := cfg.Monitors.WinEvent.PollIntervalS
+		if pollInterval <= 0 {
+			pollInterval = 15
+		}
+		maxEvents := cfg.Monitors.WinEvent.MaxEventsPerPoll
+		if maxEvents <= 0 {
+			maxEvents = 100
+		}
+		var channels []winevent.ChannelConfig
+		for _, ch := range cfg.Monitors.WinEvent.Channels {
+			channels = append(channels, winevent.ChannelConfig{
+				Name:     ch.Name,
+				EventIDs: ch.EventIDs,
+			})
+		}
+		a.wineventMonitor = winevent.New(winevent.Config{
+			PollIntervalS:    pollInterval,
+			Channels:         channels,
+			MaxEventsPerPoll: maxEvents,
+		}, bus, log)
+	}
 
 	return a, nil
 }
@@ -263,6 +287,7 @@ func (a *Agent) Start(ctx context.Context) error {
 		{"memmon", a.startMonitor(a.memMonitor), a.memMonitor != nil},
 		{"schtask", a.startMonitor(a.schtaskMonitor), a.schtaskMonitor != nil},
 		{"FIM", a.startMonitor(a.fimMonitor), a.fimMonitor != nil},
+		{"winevent (EventLog)", a.startMonitor(a.wineventMonitor), a.wineventMonitor != nil},
 	}
 
 	for _, m := range monitors {
@@ -335,7 +360,7 @@ func (a *Agent) shutdown() error {
 
 	// Stop monitors in reverse order.
 	stoppers := []monitor{
-		a.fimMonitor, a.schtaskMonitor, a.memMonitor, a.shareMonitor,
+		a.wineventMonitor, a.fimMonitor, a.schtaskMonitor, a.memMonitor, a.shareMonitor,
 		a.pipeMonitor, a.usbMonitor, a.driverMonitor, a.browserMonitor,
 		a.vulnMonitor, a.commandMonitor, a.authMonitor, a.dnsMonitor,
 		a.registryMonitor, a.fileMonitor, a.networkMonitor, a.processMonitor,

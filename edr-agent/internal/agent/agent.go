@@ -168,7 +168,7 @@ func New(cfg *config.Config) (*Agent, error) {
 	// Package inventory / vulnerability monitor.
 	a.vulnMonitor = vuln.New(vuln.DefaultConfig(), bus, log)
 
-	// Browser monitor (receives events from OEDR browser extension).
+	// Browser monitor (receives events from TraceGuard browser extension).
 	if cfg.Monitors.Browser.Enabled {
 		listenAddr := cfg.Monitors.Browser.ListenAddr
 		if listenAddr == "" {

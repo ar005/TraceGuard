@@ -81,21 +81,9 @@ func newRateLimiterStore(rps float64, burst int, cleanupInterval, maxAge time.Du
 
 // getLimiter returns the rate limiter for an IP, creating one if needed.
 func (s *rateLimiterStore) getLimiter(ip string) *rate.Limiter {
-	s.mu.RLock()
-	entry, ok := s.limiters[ip]
-	s.mu.RUnlock()
-
-	if ok {
-		s.mu.Lock()
-		entry.lastSeen = time.Now()
-		s.mu.Unlock()
-		return entry.limiter
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Double-check after acquiring write lock.
 	if entry, ok := s.limiters[ip]; ok {
 		entry.lastSeen = time.Now()
 		return entry.limiter
@@ -151,6 +139,27 @@ func rateLimitMiddleware(cfg RateLimitConfig) gin.HandlerFunc {
 			return
 		}
 
+		c.Next()
+	}
+}
+
+// strictRateLimitMiddleware applies a much tighter per-IP limit for expensive
+// or dangerous endpoints (bulk imports, event injection, threat hunting, etc.).
+// Default: 2 requests/second, burst of 5.
+func strictRateLimitMiddleware() gin.HandlerFunc {
+	store := newRateLimiterStore(2, 5, 5*time.Minute, 10*time.Minute)
+
+	return func(c *gin.Context) {
+		ip := c.ClientIP()
+		limiter := store.getLimiter(ip)
+
+		if !limiter.Allow() {
+			c.Header("Retry-After", "5")
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+				"error": "rate limit exceeded for this endpoint — try again shortly",
+			})
+			return
+		}
 		c.Next()
 	}
 }

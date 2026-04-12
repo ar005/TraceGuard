@@ -11,10 +11,13 @@ package process
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -196,7 +199,17 @@ func (m *Monitor) emitExec(info *procInfo) {
 		}
 	}
 
-	// Compute SHA-256 hash asynchronously.
+	// Capture command line via WMI.
+	cmdline := getCmdline(info.PID)
+	args := splitArgs(cmdline)
+
+	// Detect interpreter and script path.
+	interpreter, scriptPath := detectInterpreter(info.ExePath, args)
+
+	// Capture script content (inline or from file).
+	scriptContent := captureScriptContent(args, interpreter, scriptPath)
+
+	// Compute SHA-256 hash.
 	var exeHash string
 	var exeSize int64
 	if info.ExePath != "" {
@@ -219,11 +232,16 @@ func (m *Monitor) emitExec(info *procInfo) {
 				PPID:    info.PPID,
 				ExePath: info.ExePath,
 				Comm:    extractComm(info.ExePath),
+				Cmdline: cmdline,
+				Args:    args,
 			},
 		},
-		ExeHash:  exeHash,
-		ExeSize:  exeSize,
-		Ancestry: ancestry,
+		ExeHash:       exeHash,
+		ExeSize:       exeSize,
+		Interpreter:   interpreter,
+		ScriptPath:    scriptPath,
+		ScriptContent: scriptContent,
+		Ancestry:      ancestry,
 	}
 
 	m.bus.Publish(ev)
@@ -336,6 +354,158 @@ func hashFile(path string) (string, int64) {
 		return "", stat.Size()
 	}
 	return hex.EncodeToString(h.Sum(nil)), stat.Size()
+}
+
+// getCmdline retrieves the command line for a process using WMI.
+func getCmdline(pid uint32) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "wmic", "process", "where",
+		fmt.Sprintf("ProcessId=%d", pid), "get", "CommandLine", "/format:list")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "CommandLine=") {
+			return strings.TrimPrefix(line, "CommandLine=")
+		}
+	}
+	return ""
+}
+
+// splitArgs splits a command line string into arguments, respecting double quotes.
+func splitArgs(cmdline string) []string {
+	var args []string
+	var current strings.Builder
+	inQuote := false
+	for _, r := range cmdline {
+		switch {
+		case r == '"':
+			inQuote = !inQuote
+		case r == ' ' && !inQuote:
+			if current.Len() > 0 {
+				args = append(args, current.String())
+				current.Reset()
+			}
+		default:
+			current.WriteRune(r)
+		}
+	}
+	if current.Len() > 0 {
+		args = append(args, current.String())
+	}
+	return args
+}
+
+// detectInterpreter checks if the executable is a known script interpreter
+// and returns the interpreter name and the script path argument.
+func detectInterpreter(exePath string, args []string) (string, string) {
+	name := strings.ToLower(filepath.Base(exePath))
+	name = strings.TrimSuffix(name, ".exe")
+
+	interpreters := map[string]bool{
+		"python": true, "python3": true, "python2": true,
+		"perl": true, "ruby": true, "php": true, "lua": true,
+		"bash": true, "sh": true, "zsh": true,
+		"node": true, "nodejs": true, "deno": true,
+		"powershell": true, "pwsh": true,
+		"cmd": true,
+		"wscript": true, "cscript": true,
+		"mshta": true,
+	}
+	if !interpreters[name] {
+		return "", ""
+	}
+	if len(args) < 2 {
+		return name, ""
+	}
+	for _, arg := range args[1:] {
+		if !strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "/") {
+			return name, arg
+		}
+	}
+	return name, ""
+}
+
+const maxScriptSize = 64 * 1024
+
+// captureScriptContent captures the script content either from an inline
+// command argument or by reading the script file from disk.
+func captureScriptContent(args []string, interpreter, scriptPath string) string {
+	if interpreter == "" {
+		return ""
+	}
+
+	// Inline script flags by interpreter.
+	inlineFlags := map[string][]string{
+		"powershell": {"-Command", "-c", "-EncodedCommand", "-enc", "-e"},
+		"pwsh":       {"-Command", "-c", "-EncodedCommand", "-enc", "-e"},
+		"cmd":        {"/c", "/C"},
+		"python":     {"-c"}, "python3": {"-c"}, "python2": {"-c"},
+		"perl":       {"-e"}, "ruby": {"-e"},
+		"node":       {"-e"}, "nodejs": {"-e"},
+		"bash":       {"-c"}, "sh": {"-c"}, "zsh": {"-c"},
+	}
+
+	if flags, ok := inlineFlags[interpreter]; ok && len(args) > 1 {
+		for i, arg := range args[1:] {
+			for _, flag := range flags {
+				if strings.EqualFold(arg, flag) && i+2 < len(args) {
+					content := args[i+2]
+					// Decode base64 for PowerShell -EncodedCommand.
+					if strings.EqualFold(flag, "-EncodedCommand") ||
+						strings.EqualFold(flag, "-enc") ||
+						strings.EqualFold(flag, "-e") {
+						if interpreter == "powershell" || interpreter == "pwsh" {
+							if decoded, err := decodeBase64Unicode(content); err == nil {
+								content = decoded
+							}
+						}
+					}
+					if len(content) > maxScriptSize {
+						content = content[:maxScriptSize] + "\n... (truncated)"
+					}
+					return content
+				}
+			}
+		}
+	}
+
+	// Read script file from disk.
+	if scriptPath == "" {
+		return ""
+	}
+	fi, err := os.Stat(scriptPath)
+	if err != nil || fi.IsDir() || fi.Size() == 0 || fi.Size() > int64(maxScriptSize*2) {
+		return ""
+	}
+	data, err := os.ReadFile(scriptPath)
+	if err != nil {
+		return ""
+	}
+	content := string(data)
+	if len(content) > maxScriptSize {
+		content = content[:maxScriptSize] + "\n... (truncated)"
+	}
+	return content
+}
+
+// decodeBase64Unicode decodes PowerShell's -EncodedCommand (UTF-16LE base64).
+func decodeBase64Unicode(s string) (string, error) {
+	raw, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return "", err
+	}
+	if len(raw)%2 != 0 {
+		return string(raw), nil
+	}
+	runes := make([]rune, 0, len(raw)/2)
+	for i := 0; i < len(raw)-1; i += 2 {
+		runes = append(runes, rune(raw[i])|rune(raw[i+1])<<8)
+	}
+	return string(runes), nil
 }
 
 func extractComm(exePath string) string {

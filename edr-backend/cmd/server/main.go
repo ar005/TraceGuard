@@ -217,7 +217,7 @@ func main() {
 			Provider: provider,
 			Model:    st.GetSetting(context.Background(), "llm_model", ""),
 			BaseURL:  st.GetSetting(context.Background(), "llm_base_url", ""),
-			APIKey:   st.GetSetting(context.Background(), "llm_api_key", ""),
+			APIKey:   st.GetSecretSetting(context.Background(), "llm_api_key", ""),
 			Enabled:  st.GetSetting(context.Background(), "llm_enabled", "false") == "true",
 		})
 	}

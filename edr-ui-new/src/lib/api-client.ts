@@ -1,18 +1,9 @@
 const BASE = process.env.NEXT_PUBLIC_BACKEND_URL ?? "";
 
-function getToken(): string | null {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem("edr_token");
-}
-
 function buildHeaders(): HeadersInit {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
-  const token = getToken();
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
   return headers;
 }
 
@@ -39,12 +30,11 @@ async function request<T>(method: string, path: string, body?: unknown, params?:
       headers: buildHeaders(),
       body: body ? JSON.stringify(body) : undefined,
       signal: controller.signal,
+      credentials: "include", // send httpOnly cookie
     });
 
     if (res.status === 401) {
       if (typeof window !== "undefined") {
-        localStorage.removeItem("edr_token");
-        localStorage.removeItem("edr_user");
         window.location.href = "/login";
       }
       throw new Error("Unauthorized");

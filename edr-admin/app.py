@@ -1,5 +1,5 @@
 """
-OEDR Admin Portal — Standalone app on port 5001
+TraceGuard Admin Portal — Standalone app on port 5001
 
 Usage:
   python app.py                   Normal run
@@ -11,8 +11,8 @@ so it works even if you've lost or forgotten the admin password.
 
 Environment variables (all optional):
   EDR_BACKEND        Backend URL        (default: http://localhost:8080)
-  OEDR_ADMIN_PORT    Web UI port        (default: 5001)
-  OEDR_ADMIN_SECRET  Flask session key  (default: random, changes on restart)
+  TraceGuard_ADMIN_PORT    Web UI port        (default: 5001)
+  TraceGuard_ADMIN_SECRET  Flask session key  (default: random, changes on restart)
   DB_HOST            Postgres host      (default: localhost)
   DB_PORT            Postgres port      (default: 5432)
   DB_NAME            Postgres db name   (default: edr)
@@ -26,12 +26,17 @@ from flask_wtf.csrf import CSRFProtect
 from functools import wraps
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("OEDR_ADMIN_SECRET") or secrets.token_hex(32)
+app.secret_key = os.environ.get("TraceGuard_ADMIN_SECRET") or secrets.token_hex(32)
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-app.config["SESSION_COOKIE_SECURE"] = os.environ.get("OEDR_COOKIE_SECURE", "").lower() == "true"
+# Secure by default — set TraceGuard_COOKIE_SECURE=false only for plain-HTTP dev environments.
+app.config["SESSION_COOKIE_SECURE"] = os.environ.get("TraceGuard_COOKIE_SECURE", "true").lower() != "false"
 csrf = CSRFProtect(app)
-BACKEND = os.environ.get("EDR_BACKEND", "http://localhost:8080")
+_raw_backend = os.environ.get("EDR_BACKEND", "http://localhost:8080")
+# Validate scheme to prevent javascript:/data: URI injection in templates.
+if not _raw_backend.startswith(("http://", "https://")):
+    _raw_backend = "http://localhost:8080"
+BACKEND = _raw_backend
 
 # ── DB config (for --force-setup only) ───────────────────────────────────────
 
@@ -88,7 +93,7 @@ def _force_reset_via_db():
 def _startup(force_setup=False):
     SEP = "─" * 56
     print(f"\n{SEP}")
-    print(f"  OEDR Admin Portal")
+    print(f"  TraceGuard Admin Portal")
     print(f"  Backend : {BACKEND}")
     print(SEP)
 
@@ -260,15 +265,23 @@ def do_setup():
         data = r.json()
     except requests.exceptions.ConnectionError:
         return render_template("setup.html",
-                               error=f"Cannot reach backend at {BACKEND}.",
+                               error="Cannot reach backend. Make sure it is running.",
                                username=username)
-    except Exception as e:
-        return render_template("setup.html", error=str(e), username=username)
+    except Exception:
+        return render_template("setup.html",
+                               error="Cannot reach backend. Make sure it is running.",
+                               username=username)
 
     if r.status_code not in (200, 201):
-        return render_template("setup.html",
-                               error=data.get("error", f"Backend error {r.status_code}"),
-                               username=username)
+        # Only pass safe, known error keys — never raw backend responses.
+        be_error = data.get("error", "")
+        safe_errors = {
+            "user already exists": "A user account already exists.",
+            "username is required": "Username is required.",
+            "password too short": "Password must be at least 8 characters.",
+        }
+        msg = safe_errors.get(be_error.lower(), f"Setup failed (HTTP {r.status_code}). Check backend logs.")
+        return render_template("setup.html", error=msg, username=username)
     return redirect(url_for("login_page", setup="1"))
 
 @app.route("/login", methods=["GET"])
@@ -298,8 +311,8 @@ def do_login():
         data = r.json()
     except requests.exceptions.ConnectionError:
         return render_template("login.html", error="backend", backend_url=BACKEND)
-    except Exception as e:
-        return render_template("login.html", error="backend", backend_url=str(e))
+    except Exception:
+        return render_template("login.html", error="backend", backend_url=BACKEND)
 
     if r.status_code == 200:
         # MFA required — store temp state and show TOTP form
@@ -466,11 +479,11 @@ def api_audit():
 # ── main ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="OEDR Admin Portal")
+    parser = argparse.ArgumentParser(description="TraceGuard Admin Portal")
     parser.add_argument("--force-setup", action="store_true",
                         help="Delete all users via direct DB and force first-run setup")
     parser.add_argument("--port", type=int,
-                        default=int(os.environ.get("OEDR_ADMIN_PORT", 5001)))
+                        default=int(os.environ.get("TraceGuard_ADMIN_PORT", 5001)))
     args = parser.parse_args()
 
     _startup(force_setup=args.force_setup)

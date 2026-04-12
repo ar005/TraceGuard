@@ -34,7 +34,7 @@ type TLSConfig struct {
 	Cert     string `mapstructure:"cert"`
 	Key      string `mapstructure:"key"`
 	CA       string `mapstructure:"ca"`
-	Insecure bool   `mapstructure:"insecure"` // skip verify — dev only
+	Insecure bool   `mapstructure:"insecure"` // skip TLS verify — must be explicitly set to true for dev
 }
 
 type MonitorsConfig struct {
@@ -143,7 +143,7 @@ func Load(path string) (*Config, error) {
 
 	// Defaults.
 	v.SetDefault("agent.backend_url", "localhost:50051")
-	v.SetDefault("agent.tls.insecure", true) // dev default — override in production config
+	v.SetDefault("agent.tls.insecure", false) // secure by default — set to true only for dev
 	v.SetDefault("agent.id_file", "/var/lib/edr/agent.id")
 	v.SetDefault("monitors.process.enabled", true)
 	v.SetDefault("monitors.process.max_ancestry_depth", 5)

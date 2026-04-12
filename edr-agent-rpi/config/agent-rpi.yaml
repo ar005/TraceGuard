@@ -1,4 +1,4 @@
-# OEDR Agent Configuration — Raspberry Pi
+# TraceGuard Agent Configuration — Raspberry Pi
 # Optimized for Pi 4 (ARM64, no BTF/eBPF)
 
 agent:

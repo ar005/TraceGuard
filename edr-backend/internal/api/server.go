@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"regexp"
@@ -126,6 +127,7 @@ func (s *Server) registerRoutes() {
 	auth := r.Group("/api/v1/auth")
 	{
 		auth.POST("/login",              s.handleLogin)
+		auth.POST("/logout",             s.handleLogout)
 		auth.POST("/refresh",            s.handleRefresh)
 		auth.POST("/totp/verify-login",  s.handleTOTPVerifyLogin)
 	}
@@ -136,90 +138,115 @@ func (s *Server) registerRoutes() {
 		v1.GET("/dashboard", s.handleDashboard)
 		v1.GET("/me",        s.handleMe)
 
+		// ── Read-only routes (all authenticated users) ──────────────
+
 		// Agents
 		v1.GET("/agents",          s.handleListAgents)
 		v1.GET("/agents/:id",      s.handleGetAgent)
-		v1.PATCH("/agents/:id",    s.handleUpdateAgent)
+		v1.GET("/agents/:id/winevent-config", s.handleGetAgentWinEventConfig)
 
 		// Events
 		v1.GET("/events",         s.handleListEvents)
 		v1.GET("/events/:id",     s.handleGetEvent)
-		v1.POST("/events/inject", s.handleInjectEvent)
 		v1.GET("/events/stream",  s.handleEventStream)
 		v1.POST("/auth/sse-ticket", s.handleSSETicket)
 
 		// Process tree
 		v1.GET("/processes/:pid/tree", s.handleGetProcessTree)
 
-		// Alerts
+		// Alerts (read)
 		v1.GET("/alerts",             s.handleListAlerts)
 		v1.GET("/alerts/:id",         s.handleGetAlert)
 		v1.GET("/alerts/:id/events",   s.handleGetAlertEvents)
 		v1.GET("/alerts/:id/timeline", s.handleGetAlertTimeline)
-		v1.POST("/alerts/:id/explain",  s.handleExplainAlert)
-		v1.PATCH("/alerts/:id",        s.handleUpdateAlert)
 
-		// Live Response
+		// Live Response (read)
 		v1.GET("/liveresponse/agents",          s.handleLRAgents)
-		v1.POST("/liveresponse/command",        s.handleLRCommand)
 
-		// Incidents
+		// Incidents (read)
 		v1.GET("/incidents",             s.handleListIncidents)
 		v1.GET("/incidents/:id",         s.handleGetIncident)
-		v1.PATCH("/incidents/:id",       s.handleUpdateIncident)
 		v1.GET("/incidents/:id/alerts",  s.handleGetIncidentAlerts)
 
-		// Rules
+		// Rules (read)
 		v1.GET("/rules",              s.handleListRules)
 		v1.GET("/rules/:id",          s.handleGetRule)
-		v1.POST("/rules",             s.handleCreateRule)
-		v1.PUT("/rules/:id",          s.handleUpdateRule)
-		v1.DELETE("/rules/:id",       s.handleDeleteRule)
-		v1.POST("/rules/reload",      s.handleReloadRules)
-		v1.POST("/rules/:id/backtest", s.handleBacktestRule)
 
-		// Suppression rules
+		// Suppression rules (read)
 		v1.GET("/suppressions",        s.handleListSuppressions)
-		v1.POST("/suppressions",       s.handleCreateSuppression)
-		v1.PUT("/suppressions/:id",    s.handleUpdateSuppression)
-		v1.DELETE("/suppressions/:id", s.handleDeleteSuppression)
 
-		// Package inventory & vulnerabilities
+		// Package inventory & vulnerabilities (read)
 		v1.GET("/agents/:id/packages",        s.handleListAgentPackages)
-		v1.POST("/agents/:id/scan-packages",  s.handleScanPackages)
 		v1.GET("/agents/:id/vulnerabilities", s.handleListAgentVulns)
 		v1.GET("/vulnerabilities",            s.handleListVulnerabilities)
 		v1.GET("/cve/:id",                    s.handleGetCVE)
 
-		// IOC / Threat Intelligence
+		// IOC / Threat Intelligence (read)
 		v1.GET("/iocs",           s.handleListIOCs)
 		v1.GET("/iocs/stats",     s.handleIOCStats)
 		v1.GET("/iocs/:id",       s.handleGetIOC)
-		v1.POST("/iocs",          s.handleCreateIOC)
-		v1.POST("/iocs/bulk",     s.handleBulkImportIOCs)
-		v1.DELETE("/iocs/:id",    s.handleDeleteIOC)
-		v1.DELETE("/iocs/source/:source", s.handleDeleteIOCsBySource)
-		v1.GET("/iocs/feeds",            s.handleListFeeds)
-		v1.POST("/iocs/feeds/sync",      s.handleSyncFeeds)
-		v1.GET("/iocs/sources",          s.handleIOCSourceStats)
+		v1.GET("/iocs/feeds",     s.handleListFeeds)
+		v1.GET("/iocs/sources",   s.handleIOCSourceStats)
 
-		// Threat Hunting
-		v1.POST("/hunt", s.handleHunt)
+		// Threat Hunting (read — parameterized queries only, strict rate limit)
+		v1.POST("/hunt", strictRateLimitMiddleware(), s.handleHunt)
 
-		// Settings / Retention
+		// Settings (read)
 		v1.GET("/settings/retention",   s.handleGetRetention)
-		v1.POST("/settings/retention",  s.handleSetRetention)
+		v1.GET("/settings/llm",         s.handleGetLLMSettings)
+		v1.GET("/me",                   s.handleMe)
+		v1.GET("/dashboard",            s.handleDashboard)
 
-		// LLM / AI settings
-		v1.GET("/settings/llm",        s.handleGetLLMSettings)
-		v1.POST("/settings/llm",       s.handleSetLLMSettings)
-		v1.POST("/settings/llm/test",  s.handleTestLLM)
-
-		// Migration
-		mig := v1.Group("/migrate")
+		// ── Admin-only write routes ──────────────────────────────
+		w := v1.Group("", s.adminOnly())
 		{
-			mig.POST("/export", s.handleMigrateExport)
-			mig.POST("/import", s.handleMigrateImport)
+			// Agents (write)
+			w.PATCH("/agents/:id",    s.handleUpdateAgent)
+			w.PATCH("/agents/:id/winevent-config", s.handleUpdateAgentWinEventConfig)
+
+			// Events (write — strict rate limit)
+			w.POST("/events/inject", strictRateLimitMiddleware(), s.handleInjectEvent)
+
+			// Alerts (write)
+			w.PATCH("/alerts/:id",        s.handleUpdateAlert)
+			w.POST("/alerts/:id/explain", s.handleExplainAlert)
+
+			// Live Response (write)
+			w.POST("/liveresponse/command", s.handleLRCommand)
+
+			// Incidents (write)
+			w.PATCH("/incidents/:id", s.handleUpdateIncident)
+
+			// Rules (write)
+			w.POST("/rules",              s.handleCreateRule)
+			w.PUT("/rules/:id",           s.handleUpdateRule)
+			w.DELETE("/rules/:id",        s.handleDeleteRule)
+			w.POST("/rules/reload",       s.handleReloadRules)
+			w.POST("/rules/:id/backtest", s.handleBacktestRule)
+
+			// Suppression rules (write)
+			w.POST("/suppressions",       s.handleCreateSuppression)
+			w.PUT("/suppressions/:id",    s.handleUpdateSuppression)
+			w.DELETE("/suppressions/:id", s.handleDeleteSuppression)
+
+			// Package scanning (write)
+			w.POST("/agents/:id/scan-packages", s.handleScanPackages)
+
+			// IOC / Threat Intelligence (write — bulk ops have strict rate limit)
+			w.POST("/iocs",          s.handleCreateIOC)
+			w.POST("/iocs/bulk",     strictRateLimitMiddleware(), s.handleBulkImportIOCs)
+			w.DELETE("/iocs/:id",    s.handleDeleteIOC)
+			w.DELETE("/iocs/source/:source", s.handleDeleteIOCsBySource)
+			w.POST("/iocs/feeds/sync",       strictRateLimitMiddleware(), s.handleSyncFeeds)
+
+			// Settings (write)
+			w.POST("/settings/retention",  s.handleSetRetention)
+			w.POST("/settings/llm",        s.handleSetLLMSettings)
+			w.POST("/settings/llm/test",   s.handleTestLLM)
+
+			// Migration (write — strict rate limit)
+			w.POST("/migrate/export", strictRateLimitMiddleware(), s.handleMigrateExport)
+			w.POST("/migrate/import", strictRateLimitMiddleware(), s.handleMigrateImport)
 		}
 
 		// API key management (admin only)
@@ -276,6 +303,23 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.http.Shutdown(ctx)
 }
 
+// ─── Auth cookie ─────────────────────────────────────────────────────────────
+
+const authCookieName = "edr_session"
+
+// setAuthCookie writes the JWT as an httpOnly, SameSite=Strict cookie.
+func setAuthCookie(c *gin.Context, token string) {
+	secure := c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https"
+	c.SetCookie(authCookieName, token, 12*60*60, "/", "", secure, true) // httpOnly=true
+	c.SetSameSite(http.SameSiteStrictMode)
+}
+
+// clearAuthCookie removes the session cookie.
+func clearAuthCookie(c *gin.Context) {
+	secure := c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https"
+	c.SetCookie(authCookieName, "", -1, "/", "", secure, true)
+}
+
 // ─── Context keys ─────────────────────────────────────────────────────────────
 
 type ctxKey string
@@ -287,13 +331,27 @@ const (
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 
-// authMiddleware accepts a Bearer JWT (from login) OR a Bearer API key.
+// authMiddleware accepts a Bearer JWT, an httpOnly session cookie, or a Bearer API key.
 func (s *Server) authMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		raw := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
+		// Try httpOnly cookie (preferred for browser clients).
+		if raw == "" || raw == c.GetHeader("Authorization") {
+			if cookie, err := c.Cookie(authCookieName); err == nil && cookie != "" {
+				raw = cookie
+			}
+		}
 		// SSE clients cannot set headers, so also accept ?token= query param.
-		if raw == "" {
-			raw = c.Query("token")
+		// These are short-lived, single-use tickets consumed on first use.
+		sseToken := c.Query("token")
+		if raw == "" && sseToken != "" {
+			if s.um != nil {
+				if claims, err := s.um.ConsumeSSETicket(sseToken); err == nil {
+					c.Set(string(ctxClaims), claims)
+					c.Next()
+					return
+				}
+			}
 		}
 
 		// ── Try JWT first ──────────────────────────────────────────────────
@@ -443,11 +501,18 @@ func (s *Server) handleLogin(c *gin.Context) {
 	}
 
 	s.al.Log(c.Request.Context(), u.ID, u.Username, "login", "user", u.ID, u.Username, c.ClientIP(), "")
+	setAuthCookie(c, token)
 	c.JSON(http.StatusOK, gin.H{
 		"token":      token,
 		"expires_at": time.Now().Add(12 * time.Hour),
 		"user":       u,
 	})
+}
+
+// POST /api/v1/auth/logout — clears the session cookie.
+func (s *Server) handleLogout(c *gin.Context) {
+	clearAuthCookie(c)
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 // POST /api/v1/auth/totp/verify-login
@@ -492,6 +557,7 @@ func (s *Server) handleTOTPVerifyLogin(c *gin.Context) {
 	u.LastLoginAt = &now
 
 	s.al.Log(c.Request.Context(), u.ID, u.Username, "login", "user", u.ID, u.Username, c.ClientIP(), "mfa=totp")
+	setAuthCookie(c, token)
 	c.JSON(http.StatusOK, gin.H{
 		"token":      token,
 		"expires_at": time.Now().Add(12 * time.Hour),
@@ -906,6 +972,34 @@ func (s *Server) handleUpdateAgent(c *gin.Context) {
 	}
 	if err := s.store.UpdateAgentTags(c.Request.Context(),
 		c.Param("id"), body.Env, body.Notes, body.Tags); err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// GET /api/v1/agents/:id/winevent-config
+func (s *Server) handleGetAgentWinEventConfig(c *gin.Context) {
+	config, err := s.store.GetAgentWinEventConfig(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.Data(http.StatusOK, "application/json", config)
+}
+
+// PATCH /api/v1/agents/:id/winevent-config — update Windows Event Log channel config
+func (s *Server) handleUpdateAgentWinEventConfig(c *gin.Context) {
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
+		return
+	}
+	if !json.Valid(body) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON"})
+		return
+	}
+	if err := s.store.UpdateAgentWinEventConfig(c.Request.Context(), c.Param("id"), body); err != nil {
 		s.jsonError(c, err)
 		return
 	}
@@ -1804,7 +1898,7 @@ func (s *Server) handleSetLLMSettings(c *gin.Context) {
 	s.store.SetSetting(ctx, "llm_model", body.Model)
 	s.store.SetSetting(ctx, "llm_base_url", body.BaseURL)
 	if body.APIKey != "" && body.APIKey != "••••" {
-		s.store.SetSetting(ctx, "llm_api_key", body.APIKey)
+		s.store.SetSecretSetting(ctx, "llm_api_key", body.APIKey)
 	}
 	if body.Enabled {
 		s.store.SetSetting(ctx, "llm_enabled", "true")
@@ -1823,7 +1917,7 @@ func (s *Server) handleSetLLMSettings(c *gin.Context) {
 
 	// If API key wasn't sent (masked), reload from DB
 	if body.APIKey == "" || body.APIKey == "••••" {
-		apiKey := s.store.GetSetting(ctx, "llm_api_key", "")
+		apiKey := s.store.GetSecretSetting(ctx, "llm_api_key", "")
 		s.llm.Configure(llm.Config{
 			Provider: body.Provider,
 			Model:    body.Model,
@@ -1866,7 +1960,7 @@ func (s *Server) handleTestLLM(c *gin.Context) {
 
 func (s *Server) jsonError(c *gin.Context, err error) {
 	s.log.Error().Err(err).Str("path", c.Request.URL.Path).Msg("api error")
-	c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 }
 
 func intQuery(c *gin.Context, key string, def int) int {
@@ -1898,17 +1992,27 @@ func TraceGuardMiddleware() gin.HandlerFunc {
 
 	return func(c *gin.Context) {
 		origin := c.GetHeader("Origin")
+
 		if len(allowed) == 0 {
-			// No explicit list configured — reflect the requesting origin (dev mode).
-			// This is still safer than "*" because the browser enforces per-origin.
-			c.Header("Access-Control-Allow-Origin", origin)
-		} else if allowed[origin] {
-			c.Header("Access-Control-Allow-Origin", origin)
+			// No explicit CORS origins configured — do NOT reflect arbitrary
+			// origins. Only allow same-origin requests (no CORS header set).
+			// Set EDR_CORS_ORIGINS to enable cross-origin access.
+			if c.Request.Method == "OPTIONS" {
+				c.AbortWithStatus(204)
+				return
+			}
+			c.Next()
+			return
 		}
-		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Authorization")
-		c.Header("Access-Control-Allow-Credentials", "true")
-		c.Header("Access-Control-Max-Age", "86400")
+
+		if allowed[origin] {
+			c.Header("Access-Control-Allow-Origin", origin)
+			c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+			c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Authorization")
+			c.Header("Access-Control-Allow-Credentials", "true")
+			c.Header("Access-Control-Max-Age", "86400")
+		}
+
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
 			return

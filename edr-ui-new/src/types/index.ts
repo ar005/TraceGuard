@@ -12,6 +12,12 @@ export interface Agent {
   tags: string[];
   env: string;
   notes: string;
+  winevent_config?: {
+    channels?: Array<{
+      name: string;
+      event_ids: number[];
+    }>;
+  };
 }
 
 export interface Event {
