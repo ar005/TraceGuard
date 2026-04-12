@@ -63,7 +63,7 @@ func (f *Fetcher) fetchFromNVD(ctx context.Context, cveID string) (*models.CVEDe
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "TraceGuard-CVECache/1.0")
+	req.Header.Set("User-Agent", "OEDR-CVECache/1.0")
 
 	resp, err := f.client.Do(req)
 	if err != nil {

@@ -383,6 +383,7 @@ function BlockTab({ agent }: { agent: Agent }) {
 
 export default function AgentsPage() {
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
+  const [search, setSearch] = useState("");
 
   const fetchAgents = useCallback(
     () =>
@@ -392,6 +393,20 @@ export default function AgentsPage() {
     []
   );
   const { data: agents, loading } = useApi(fetchAgents);
+
+  const displayAgents = (agents ?? []).filter((a) => {
+    if (!search) return true;
+    const q = search.toLowerCase();
+    return (
+      a.hostname?.toLowerCase().includes(q) ||
+      a.ip?.toLowerCase().includes(q) ||
+      a.os?.toLowerCase().includes(q) ||
+      a.os_version?.toLowerCase().includes(q) ||
+      a.agent_ver?.toLowerCase().includes(q) ||
+      a.env?.toLowerCase().includes(q) ||
+      a.tags?.some((t) => t.toLowerCase().includes(q))
+    );
+  });
 
   return (
     <div className="space-y-4">
@@ -404,6 +419,16 @@ export default function AgentsPage() {
           {(agents ?? []).filter((a) => a.is_online).length} online / {(agents ?? []).length} total
         </span>
       </div>
+
+      {/* Search */}
+      <input
+        type="text"
+        placeholder="Search agents by hostname, IP, OS, or tags..."
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        className="rounded-md border px-3 py-1.5 text-xs w-full max-w-md outline-none focus-ring"
+        style={{ background: "var(--surface-0)", borderColor: "var(--border)", color: "var(--fg)" }}
+      />
 
       {loading && (
         <div className="space-y-2">
@@ -431,7 +456,7 @@ export default function AgentsPage() {
               </tr>
             </thead>
             <tbody>
-              {(agents ?? []).map((a) => {
+              {displayAgents.map((a) => {
                 const isSelected = selectedAgent?.id === a.id;
                 return (
                   <tr
@@ -483,7 +508,7 @@ export default function AgentsPage() {
               })}
             </tbody>
           </table>
-          {(agents ?? []).length === 0 && (
+          {displayAgents.length === 0 && (
             <div className="py-12 text-center text-sm" style={{ color: "var(--muted)" }}>
               No agents registered
             </div>

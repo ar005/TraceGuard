@@ -236,7 +236,7 @@ func (m *Manager) IssueSSETicket(claims *Claims) (string, error) {
 			Subject:   claims.Subject,
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(30 * time.Second)),
-			Issuer:    "TraceGuard-sse",
+			Issuer:    "oedr-sse",
 		},
 		Username: claims.Username,
 		Role:     claims.Role,
@@ -258,7 +258,7 @@ func (m *Manager) issueJWT(u *User) (string, error) {
 			Subject:   u.ID,
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(12 * time.Hour)),
-			Issuer:    "TraceGuard",
+			Issuer:    "oedr",
 		},
 		Username: u.Username,
 		Role:     u.Role,
@@ -378,7 +378,7 @@ func (m *Manager) IssueMFAToken(u *User) (string, error) {
 			Subject:   u.ID,
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(5 * time.Minute)),
-			Issuer:    "TraceGuard-mfa",
+			Issuer:    "oedr-mfa",
 		},
 		Username: u.Username,
 		Role:     "", // empty role = not a full session
@@ -387,7 +387,7 @@ func (m *Manager) IssueMFAToken(u *User) (string, error) {
 	return token.SignedString(m.jwtSecret)
 }
 
-// ValidateMFAToken parses a short-lived MFA token (issuer must be "TraceGuard-mfa").
+// ValidateMFAToken parses a short-lived MFA token (issuer must be "oedr-mfa").
 func (m *Manager) ValidateMFAToken(tokenString string) (*Claims, error) {
 	claims := &Claims{}
 	token, err := jwt.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (interface{}, error) {
@@ -399,7 +399,7 @@ func (m *Manager) ValidateMFAToken(tokenString string) (*Claims, error) {
 	if err != nil || !token.Valid {
 		return nil, fmt.Errorf("invalid MFA token")
 	}
-	if claims.Issuer != "TraceGuard-mfa" {
+	if claims.Issuer != "oedr-mfa" {
 		return nil, fmt.Errorf("not an MFA token")
 	}
 	return claims, nil

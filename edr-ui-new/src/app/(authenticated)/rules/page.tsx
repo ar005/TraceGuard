@@ -674,6 +674,7 @@ export default function RulesPage() {
   const [togglingIds, setTogglingIds] = useState<Set<string>>(new Set());
   const [reloading, setReloading] = useState(false);
   const [showBuilder, setShowBuilder] = useState(false);
+  const [search, setSearch] = useState("");
 
   const fetchRules = useCallback(
     () =>
@@ -727,7 +728,11 @@ export default function RulesPage() {
     }
   }
 
-  const displayRules = rules ?? [];
+  const displayRules = (rules ?? []).filter((r) => {
+    if (!search) return true;
+    const q = search.toLowerCase();
+    return r.name?.toLowerCase().includes(q) || r.description?.toLowerCase().includes(q) || r.event_types?.some((t: string) => t.toLowerCase().includes(q));
+  });
 
   return (
     <div className="animate-fade-in space-y-4">
@@ -762,6 +767,16 @@ export default function RulesPage() {
           </button>
         </div>
       </div>
+
+      {/* Search */}
+      <input
+        type="text"
+        placeholder="Search rules by name, description, or event type..."
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        className="rounded-md border px-3 py-1.5 text-xs w-full max-w-md outline-none focus-ring"
+        style={{ background: "var(--surface-0)", borderColor: "var(--border)", color: "var(--fg)" }}
+      />
 
       {/* Rule Builder */}
       {showBuilder && (

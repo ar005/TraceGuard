@@ -212,6 +212,7 @@ function BulkImportForm({ onSubmit, onCancel }: { onSubmit: (iocs: Record<string
 /* ---------- IOCs Page ---------- */
 export default function IOCsPage() {
   const [typeFilter, setTypeFilter] = useState("");
+  const [search, setSearch] = useState("");
   const [showAddForm, setShowAddForm] = useState(false);
   const [showBulkForm, setShowBulkForm] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -232,9 +233,10 @@ export default function IOCsPage() {
       api
         .get<{ iocs?: IOC[] } | IOC[]>("/api/v1/iocs", {
           type: typeFilter || undefined,
+          search: search || undefined,
         })
         .then((r) => (Array.isArray(r) ? r : r.iocs ?? [])),
-    [typeFilter]
+    [typeFilter, search]
   );
   const { data: iocs, loading, error, refetch } = useApi(fetchIOCs);
 
@@ -343,6 +345,16 @@ export default function IOCsPage() {
           ))}
         </div>
       )}
+
+      {/* Search */}
+      <input
+        type="text"
+        placeholder="Search IOCs by value or source..."
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        className="rounded-md border px-3 py-1.5 text-xs w-full max-w-md outline-none focus-ring"
+        style={{ background: "var(--surface-0)", borderColor: "var(--border)", color: "var(--fg)" }}
+      />
 
       {/* Filter pills */}
       <div className="flex flex-wrap items-center gap-2">

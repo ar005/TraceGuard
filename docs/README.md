@@ -1,4 +1,4 @@
-# TraceGuard Documentation
+# OEDR Documentation
 
 Complete documentation for the Open Endpoint Detection & Response platform.
 

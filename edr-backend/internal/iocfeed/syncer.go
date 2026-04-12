@@ -137,7 +137,7 @@ func (s *Syncer) testFeed(ctx context.Context, feed Feed) FeedSyncResult {
 		return r
 	}
 	// Get count from DB for this source.
-	iocs, _ := s.store.ListIOCs(ctx, "", feed.Name, false, 0, 0)
+	iocs, _ := s.store.ListIOCs(ctx, "", feed.Name, "", false, 0, 0)
 	r.Upserted = len(iocs)
 	r.Parsed = r.Upserted // best approximation after upsert
 	return r
@@ -190,7 +190,7 @@ func (s *Syncer) syncFeed(ctx context.Context, feed Feed) error {
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
-	req.Header.Set("User-Agent", "TraceGuard-IOC-Syncer/1.0")
+	req.Header.Set("User-Agent", "OEDR-IOC-Syncer/1.0")
 
 	resp, err := s.client.Do(req)
 	if err != nil {

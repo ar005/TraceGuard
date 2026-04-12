@@ -1,4 +1,4 @@
-// TraceGuard Browser Monitor — Firefox Extension (WebExtensions / Manifest V2)
+// OEDR Browser Monitor — Firefox Extension (WebExtensions / Manifest V2)
 // Captures completed web requests and sends metadata to the local EDR agent.
 // Nearly identical to the Chrome version with Firefox API adaptations.
 

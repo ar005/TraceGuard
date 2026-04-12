@@ -162,6 +162,7 @@ function CreateForm({ onSubmit, onCancel }: { onSubmit: (body: Record<string, un
 export default function SuppressionsPage() {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
 
   /* Fetch suppressions */
   const fetchSuppressions = useCallback(
@@ -194,7 +195,16 @@ export default function SuppressionsPage() {
     refetch();
   };
 
-  const displayRules = suppressions ?? [];
+  const displayRules = (suppressions ?? []).filter((rule) => {
+    if (!search) return true;
+    const q = search.toLowerCase();
+    return (
+      rule.name?.toLowerCase().includes(q) ||
+      rule.description?.toLowerCase().includes(q) ||
+      rule.event_types?.some((t) => t.toLowerCase().includes(q)) ||
+      rule.author?.toLowerCase().includes(q)
+    );
+  });
 
   return (
     <div className="animate-fade-in space-y-4">
@@ -214,6 +224,16 @@ export default function SuppressionsPage() {
           Create Suppression
         </button>
       </div>
+
+      {/* Search */}
+      <input
+        type="text"
+        placeholder="Search suppressions by name, description, or event type..."
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        className="rounded-md border px-3 py-1.5 text-xs w-full max-w-md outline-none focus-ring"
+        style={{ background: "var(--surface-0)", borderColor: "var(--border)", color: "var(--fg)" }}
+      />
 
       {/* Create form */}
       {showCreateForm && (

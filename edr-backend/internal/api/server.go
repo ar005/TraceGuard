@@ -992,6 +992,7 @@ func (s *Server) handleListAlerts(c *gin.Context) {
 		AgentID: c.Query("agent_id"),
 		Status:  c.Query("status"),
 		RuleID:  c.Query("rule_id"),
+		Search:  c.Query("search"),
 		Limit:   intQuery(c, "limit", 50),
 		Offset:  intQuery(c, "offset", 0),
 	}
@@ -1425,6 +1426,7 @@ func (s *Server) handleLRCommand(c *gin.Context) {
 func (s *Server) handleListIncidents(c *gin.Context) {
 	sev, _ := strconv.Atoi(c.Query("min_severity"))
 	incidents, err := s.store.QueryIncidents(c.Request.Context(), store.QueryIncidentsParams{
+		Search:   c.Query("search"),
 		Status:   c.Query("status"),
 		Severity: int16(sev),
 		AgentID:  c.Query("agent_id"),
@@ -2096,11 +2098,12 @@ func (s *Server) handleGetCVE(c *gin.Context) {
 func (s *Server) handleListIOCs(c *gin.Context) {
 	iocType := c.Query("type")
 	source := c.Query("source")
+	search := c.Query("search")
 	enabledOnly := c.Query("enabled") == "true"
 	limit := intQuery(c, "limit", 100)
 	offset := intQuery(c, "offset", 0)
 
-	iocs, err := s.store.ListIOCs(c.Request.Context(), iocType, source, enabledOnly, limit, offset)
+	iocs, err := s.store.ListIOCs(c.Request.Context(), iocType, source, search, enabledOnly, limit, offset)
 	if err != nil {
 		s.jsonError(c, err)
 		return

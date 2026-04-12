@@ -287,6 +287,7 @@ type QueryAlertsParams struct {
 	Status   string
 	Severity int16
 	RuleID   string
+	Search   string
 	Limit    int
 	Offset   int
 }
@@ -318,6 +319,11 @@ func (s *Store) QueryAlerts(ctx context.Context, p QueryAlertsParams) ([]models.
 	if p.RuleID != "" {
 		query += fmt.Sprintf(` AND rule_id = $%d`, argN)
 		args = append(args, p.RuleID)
+		argN++
+	}
+	if p.Search != "" {
+		query += fmt.Sprintf(` AND (title ILIKE $%d OR rule_name ILIKE $%d OR hostname ILIKE $%d)`, argN, argN, argN)
+		args = append(args, "%"+p.Search+"%")
 		argN++
 	}
 
@@ -913,6 +919,7 @@ func (s *Store) InsertIncident(ctx context.Context, inc *models.Incident) error 
 
 // QueryIncidentsParams defines filter/pagination for incident queries.
 type QueryIncidentsParams struct {
+	Search   string
 	Status   string
 	Severity int16
 	AgentID  string
@@ -942,6 +949,11 @@ func (s *Store) QueryIncidents(ctx context.Context, p QueryIncidentsParams) ([]m
 		n++
 		query += fmt.Sprintf(` AND $%d = ANY(agent_ids)`, n)
 		args = append(args, p.AgentID)
+	}
+	if p.Search != "" {
+		n++
+		query += fmt.Sprintf(` AND (title ILIKE $%d OR description ILIKE $%d)`, n, n)
+		args = append(args, "%"+p.Search+"%")
 	}
 	query += ` ORDER BY last_seen DESC`
 	n++
@@ -1225,7 +1237,7 @@ func (s *Store) InsertIOCBatch(ctx context.Context, iocs []models.IOC) (int, err
 	return count, tx.Commit()
 }
 
-func (s *Store) ListIOCs(ctx context.Context, iocType, source string, enabledOnly bool, limit, offset int) ([]models.IOC, error) {
+func (s *Store) ListIOCs(ctx context.Context, iocType, source, search string, enabledOnly bool, limit, offset int) ([]models.IOC, error) {
 	q := "SELECT * FROM iocs WHERE 1=1"
 	args := []interface{}{}
 	n := 0
@@ -1242,6 +1254,11 @@ func (s *Store) ListIOCs(ctx context.Context, iocType, source string, enabledOnl
 	}
 	if enabledOnly {
 		q += " AND enabled=TRUE"
+	}
+	if search != "" {
+		n++
+		q += fmt.Sprintf(" AND (value ILIKE $%d OR source ILIKE $%d)", n, n)
+		args = append(args, "%"+search+"%")
 	}
 	q += " ORDER BY created_at DESC"
 	if limit > 0 {

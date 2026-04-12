@@ -1,6 +1,6 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────
-# TraceGuard Agent — Raspberry Pi Installer
+# OEDR Agent — Raspberry Pi Installer
 # Run on the Pi as root after building:
 #   sudo bash build.sh
 #   sudo bash install.sh
@@ -17,7 +17,7 @@ BINARY="$SCRIPT_DIR/edr-agent"
 SERVICE="edr-agent"
 
 echo "═══════════════════════════════════════════════════"
-echo "  TraceGuard Agent Installer — Raspberry Pi"
+echo "  OEDR Agent Installer — Raspberry Pi"
 echo "═══════════════════════════════════════════════════"
 
 # Check root
@@ -63,7 +63,7 @@ echo ""
 echo "▶ Installing systemd service..."
 cat > /etc/systemd/system/${SERVICE}.service << EOF
 [Unit]
-Description=TraceGuard Endpoint Detection Agent
+Description=OEDR Endpoint Detection Agent
 After=network-online.target
 Wants=network-online.target
 
@@ -92,7 +92,7 @@ sleep 3
 if systemctl is-active --quiet ${SERVICE}; then
   echo ""
   echo "═══════════════════════════════════════════════════"
-  echo "  ✅ TraceGuard Agent installed and running!"
+  echo "  ✅ OEDR Agent installed and running!"
   echo "═══════════════════════════════════════════════════"
   echo ""
   echo "  Binary:  $INSTALL_DIR/edr-agent"

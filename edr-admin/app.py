@@ -1,5 +1,5 @@
 """
-TraceGuard Admin Portal — Standalone app on port 5001
+OEDR Admin Portal — Standalone app on port 5001
 
 Usage:
   python app.py                   Normal run
@@ -11,8 +11,8 @@ so it works even if you've lost or forgotten the admin password.
 
 Environment variables (all optional):
   EDR_BACKEND        Backend URL        (default: http://localhost:8080)
-  TraceGuard_ADMIN_PORT    Web UI port        (default: 5001)
-  TraceGuard_ADMIN_SECRET  Flask session key  (default: random, changes on restart)
+  OEDR_ADMIN_PORT    Web UI port        (default: 5001)
+  OEDR_ADMIN_SECRET  Flask session key  (default: random, changes on restart)
   DB_HOST            Postgres host      (default: localhost)
   DB_PORT            Postgres port      (default: 5432)
   DB_NAME            Postgres db name   (default: edr)
@@ -26,10 +26,10 @@ from flask_wtf.csrf import CSRFProtect
 from functools import wraps
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("TraceGuard_ADMIN_SECRET") or secrets.token_hex(32)
+app.secret_key = os.environ.get("OEDR_ADMIN_SECRET") or secrets.token_hex(32)
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-app.config["SESSION_COOKIE_SECURE"] = os.environ.get("TraceGuard_COOKIE_SECURE", "").lower() == "true"
+app.config["SESSION_COOKIE_SECURE"] = os.environ.get("OEDR_COOKIE_SECURE", "").lower() == "true"
 csrf = CSRFProtect(app)
 BACKEND = os.environ.get("EDR_BACKEND", "http://localhost:8080")
 
@@ -88,7 +88,7 @@ def _force_reset_via_db():
 def _startup(force_setup=False):
     SEP = "─" * 56
     print(f"\n{SEP}")
-    print(f"  TraceGuard Admin Portal")
+    print(f"  OEDR Admin Portal")
     print(f"  Backend : {BACKEND}")
     print(SEP)
 
@@ -466,11 +466,11 @@ def api_audit():
 # ── main ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="TraceGuard Admin Portal")
+    parser = argparse.ArgumentParser(description="OEDR Admin Portal")
     parser.add_argument("--force-setup", action="store_true",
                         help="Delete all users via direct DB and force first-run setup")
     parser.add_argument("--port", type=int,
-                        default=int(os.environ.get("TraceGuard_ADMIN_PORT", 5001)))
+                        default=int(os.environ.get("OEDR_ADMIN_PORT", 5001)))
     args = parser.parse_args()
 
     _startup(force_setup=args.force_setup)

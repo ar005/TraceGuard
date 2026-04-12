@@ -1,8 +1,8 @@
-# TraceGuard Backend Documentation
+# OEDR Backend Documentation
 
 ## Overview
 
-The TraceGuard Backend (`edr-backend`) is the central server component of the Open EDR platform. It ingests telemetry from agents via gRPC, stores events and alerts in PostgreSQL, runs a real-time detection engine against incoming events, and exposes a REST API for the analyst UI and admin portal.
+The OEDR Backend (`edr-backend`) is the central server component of the Open EDR platform. It ingests telemetry from agents via gRPC, stores events and alerts in PostgreSQL, runs a real-time detection engine against incoming events, and exposes a REST API for the analyst UI and admin portal.
 
 The backend is written in Go, uses the Gin web framework for REST, and supports JWT + API key authentication, SSE live event streaming, LLM-powered alert explanation, live response (remote command execution), IOC threat intelligence feeds, and automated data retention.
 

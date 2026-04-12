@@ -1,6 +1,6 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────
-# TraceGuard Agent — Build Script for Raspberry Pi
+# OEDR Agent — Build Script for Raspberry Pi
 # Run this ON the Pi after copying the project files.
 #
 # Prerequisites: Go 1.21+ installed on Pi
@@ -14,7 +14,7 @@ AGENT_SRC="$SCRIPT_DIR/../edr-agent"
 OUTPUT="$SCRIPT_DIR/edr-agent"
 
 echo "═══════════════════════════════════════════════════"
-echo "  TraceGuard Agent — Raspberry Pi Build"
+echo "  OEDR Agent — Raspberry Pi Build"
 echo "═══════════════════════════════════════════════════"
 
 # Check Go

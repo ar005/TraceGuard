@@ -404,6 +404,7 @@ function IncidentDetail({
 /* ---------- Incidents Page ---------- */
 export default function IncidentsPage() {
   const [statusFilter, setStatusFilter] = useState("");
+  const [search, setSearch] = useState("");
   const [offset, setOffset] = useState(0);
   const [allIncidents, setAllIncidents] = useState<Incident[]>([]);
   const [selectedIncident, setSelectedIncident] = useState<Incident | null>(
@@ -416,11 +417,12 @@ export default function IncidentsPage() {
       api
         .get<{ incidents?: Incident[] } | Incident[]>("/api/v1/incidents", {
           status: statusFilter || undefined,
+          search: search || undefined,
           limit: PAGE_SIZE,
           offset,
         })
         .then((r) => (Array.isArray(r) ? r : r.incidents ?? [])),
-    [statusFilter, offset]
+    [statusFilter, search, offset]
   );
 
   const {
@@ -477,6 +479,16 @@ export default function IncidentsPage() {
       >
         Incidents
       </h1>
+
+      {/* Search */}
+      <input
+        type="text"
+        placeholder="Search incidents by title, description, or hostname..."
+        value={search}
+        onChange={(e) => { setSearch(e.target.value); setOffset(0); setAllIncidents([]); }}
+        className="rounded-md border px-3 py-1.5 text-xs w-full max-w-md outline-none focus-ring"
+        style={{ background: "var(--surface-0)", borderColor: "var(--border)", color: "var(--fg)" }}
+      />
 
       {/* Status filter pills */}
       <div className="flex flex-wrap items-center gap-2">

@@ -1,6 +1,6 @@
-# TraceGuard Agent — Raspberry Pi
+# OEDR Agent — Raspberry Pi
 
-Build and run the TraceGuard EDR agent on Raspberry Pi (ARM64).
+Build and run the OEDR EDR agent on Raspberry Pi (ARM64).
 
 ## Prerequisites
 

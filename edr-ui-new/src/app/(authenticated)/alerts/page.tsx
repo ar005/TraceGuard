@@ -695,6 +695,7 @@ function AlertDetail({
 export default function AlertsPage() {
   const [statusFilter, setStatusFilter] = useState("");
   const [severityFilter, setSeverityFilter] = useState(-1);
+  const [search, setSearch] = useState("");
   const [offset, setOffset] = useState(0);
   const [allAlerts, setAllAlerts] = useState<Alert[]>([]);
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null);
@@ -706,11 +707,12 @@ export default function AlertsPage() {
         .get<{ alerts?: Alert[] } | Alert[]>("/api/v1/alerts", {
           status: statusFilter || undefined,
           severity: severityFilter >= 0 ? severityFilter : undefined,
+          search: search || undefined,
           limit: PAGE_SIZE,
           offset,
         })
         .then((r) => (Array.isArray(r) ? r : r.alerts ?? [])),
-    [statusFilter, severityFilter, offset]
+    [statusFilter, severityFilter, search, offset]
   );
 
   const { data: fetchedAlerts, loading, error, refetch } = useApi(fetchAlerts);
@@ -769,6 +771,16 @@ export default function AlertsPage() {
       >
         Alerts
       </h1>
+
+      {/* Search + filters */}
+      <input
+        type="text"
+        placeholder="Search alerts by title, rule, or hostname..."
+        value={search}
+        onChange={(e) => { setSearch(e.target.value); setOffset(0); setAllAlerts([]); }}
+        className="rounded-md border px-3 py-1.5 text-xs w-full max-w-md outline-none focus-ring"
+        style={{ background: "var(--surface-0)", borderColor: "var(--border)", color: "var(--fg)" }}
+      />
 
       {/* Status filter pills */}
       <div className="flex flex-wrap items-center gap-2">
