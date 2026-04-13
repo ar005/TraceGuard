@@ -663,6 +663,34 @@ function AlertDetail({
                               <span style={{ color: "var(--fg)" }}>{severityLabel(evt.severity)}</span>
                             </div>
                           </div>
+                          {/* Script details (if present) */}
+                          {!!(evt.payload?.interpreter || evt.payload?.script_content) && (
+                            <div>
+                              <div className="text-[10px] font-semibold mb-1" style={{ color: "var(--muted)" }}>Script Execution</div>
+                              <div className="space-y-1 text-[10px]">
+                                {!!evt.payload.interpreter && (
+                                  <div>
+                                    <span style={{ color: "var(--muted)" }}>Interpreter: </span>
+                                    <span className="font-mono font-medium" style={{ color: "var(--primary)" }}>{String(evt.payload.interpreter)}</span>
+                                  </div>
+                                )}
+                                {!!evt.payload.script_path && (
+                                  <div>
+                                    <span style={{ color: "var(--muted)" }}>Script: </span>
+                                    <span className="font-mono" style={{ color: "var(--fg)" }}>{String(evt.payload.script_path)}</span>
+                                  </div>
+                                )}
+                                {!!evt.payload.script_content && (
+                                  <pre
+                                    className="rounded p-2 text-[10px] leading-relaxed overflow-x-auto max-h-40 overflow-y-auto mt-1"
+                                    style={{ background: "hsl(220 20% 8%)", color: "#e2e8f0" }}
+                                  >
+                                    <code>{String(evt.payload.script_content)}</code>
+                                  </pre>
+                                )}
+                              </div>
+                            </div>
+                          )}
                           <div>
                             <div className="text-[10px] font-semibold mb-1" style={{ color: "var(--muted)" }}>Payload</div>
                             <pre

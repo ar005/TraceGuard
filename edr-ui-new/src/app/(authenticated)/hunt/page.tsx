@@ -89,11 +89,16 @@ function summarizeEvent(evt: Event): string {
   const p = (evt.payload ?? {}) as Record<string, unknown>;
   switch (evt.event_type?.toUpperCase()) {
     case "PROCESS_EXEC":
-    case "PROCESS_EXIT":
-      return String(p.cmdline ?? p.comm ?? "—");
+    case "PROCESS_EXIT": {
+      const cmd = String(p.cmdline ?? p.comm ?? "—");
+      const interp = p.interpreter ? `[${p.interpreter}] ` : "";
+      return interp + cmd;
+    }
     case "CMD_EXEC":
     case "CMD_HISTORY":
       return String(p.command ?? p.cmdline ?? "—");
+    case "WINEVENT":
+      return `${p.channel ?? ""} ID:${p.event_id ?? "?"} ${p.provider ?? ""}`.trim() || "—";
     case "FILE_WRITE":
     case "FILE_CREATE":
     case "FILE_DELETE":

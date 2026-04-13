@@ -47,7 +47,8 @@ var allowedActions = map[string]bool{
 	"isolate": true, "release": true,
 	"quarantine": true, "restore": true,
 	"block_ip": true, "unblock_ip": true,
-	"list_blocked": true, "list_quarantined": true,
+	"block_domain": true, "unblock_domain": true,
+	"list_blocked": true, "list_blocked_domains": true, "list_quarantined": true,
 	"scan_packages": true,
 }
 
@@ -222,11 +223,16 @@ func (t *GRPCTransport) executeCommand(cmd *liveCommand) *liveResult {
 			result.Error = "block_ip requires IP address"
 			return result
 		}
-		if err := t.containment.BlockIP(cmd.Args[0]); err != nil {
+		persistent := len(cmd.Args) >= 2 && cmd.Args[1] == "persistent"
+		if err := t.containment.BlockIP(cmd.Args[0], persistent); err != nil {
 			result.Status = "error"
 			result.Error = err.Error()
 		} else {
-			result.Stdout = fmt.Sprintf("IP %s blocked", cmd.Args[0])
+			msg := fmt.Sprintf("IP %s blocked", cmd.Args[0])
+			if persistent {
+				msg += " (persistent)"
+			}
+			result.Stdout = msg
 		}
 		return result
 	case "unblock_ip":
@@ -258,6 +264,60 @@ func (t *GRPCTransport) executeCommand(cmd *liveCommand) *liveResult {
 			result.Stdout = "No IPs currently blocked"
 		} else {
 			result.Stdout = strings.Join(ips, "\n")
+		}
+		return result
+	case "block_domain":
+		if t.containment == nil {
+			result.Status = "error"
+			result.Error = "containment not configured"
+			return result
+		}
+		if len(cmd.Args) == 0 {
+			result.Status = "error"
+			result.Error = "block_domain requires domain name"
+			return result
+		}
+		persistent := len(cmd.Args) >= 2 && cmd.Args[1] == "persistent"
+		if err := t.containment.BlockDomain(cmd.Args[0], persistent); err != nil {
+			result.Status = "error"
+			result.Error = err.Error()
+		} else {
+			msg := fmt.Sprintf("Domain %s blocked", cmd.Args[0])
+			if persistent {
+				msg += " (persistent)"
+			}
+			result.Stdout = msg
+		}
+		return result
+	case "unblock_domain":
+		if t.containment == nil {
+			result.Status = "error"
+			result.Error = "containment not configured"
+			return result
+		}
+		if len(cmd.Args) == 0 {
+			result.Status = "error"
+			result.Error = "unblock_domain requires domain name"
+			return result
+		}
+		if err := t.containment.UnblockDomain(cmd.Args[0]); err != nil {
+			result.Status = "error"
+			result.Error = err.Error()
+		} else {
+			result.Stdout = fmt.Sprintf("Domain %s unblocked", cmd.Args[0])
+		}
+		return result
+	case "list_blocked_domains":
+		if t.containment == nil {
+			result.Status = "error"
+			result.Error = "containment not configured"
+			return result
+		}
+		domains := t.containment.ListBlockedDomains()
+		if len(domains) == 0 {
+			result.Stdout = "No domains currently blocked"
+		} else {
+			result.Stdout = strings.Join(domains, "\n")
 		}
 		return result
 	case "list_quarantined":

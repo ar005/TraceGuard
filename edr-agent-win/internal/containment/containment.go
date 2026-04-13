@@ -9,6 +9,7 @@ package containment
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,32 +22,50 @@ import (
 
 const (
 	quarantineDir  = `C:\ProgramData\TraceGuard\Quarantine`
+	stateFilePath  = `C:\ProgramData\TraceGuard\containment_state.json`
 	rulePrefix     = "TraceGuard_BLOCK_"
+	domainPrefix   = "TraceGuard_DOMAIN_"
 	isolationRule  = "TraceGuard_ISOLATE"
 )
 
-// Controller implements IP blocking, network isolation, and file quarantine.
+// persistedState represents the containment state saved to disk.
+type persistedState struct {
+	Contained         bool                `json:"contained"`
+	BlockedIPs        []string            `json:"blocked_ips"`
+	BlockedDomains    map[string][]string `json:"blocked_domains"`
+	PersistentIPs     map[string]bool     `json:"persistent_ips"`
+	PersistentDomains map[string]bool     `json:"persistent_domains"`
+}
+
+// Controller implements IP blocking, domain blocking, network isolation, and file quarantine.
 type Controller struct {
-	log        zerolog.Logger
-	backendIP  string // backend IP to allow during isolation
-	mu         sync.RWMutex
-	blockedIPs map[string]bool
-	contained  bool
+	log              zerolog.Logger
+	backendIP        string // backend IP to allow during isolation
+	mu               sync.RWMutex
+	blockedIPs       map[string]bool
+	blockedDomains   map[string][]string // domain -> resolved IPs
+	persistentIPs    map[string]bool
+	persistentDoms   map[string]bool
+	contained        bool
 }
 
 // New creates a containment controller.
 func New(backendIP string, log zerolog.Logger) *Controller {
 	return &Controller{
-		log:        log.With().Str("component", "containment").Logger(),
-		backendIP:  backendIP,
-		blockedIPs: make(map[string]bool),
+		log:            log.With().Str("component", "containment").Logger(),
+		backendIP:      backendIP,
+		blockedIPs:     make(map[string]bool),
+		blockedDomains: make(map[string][]string),
+		persistentIPs:  make(map[string]bool),
+		persistentDoms: make(map[string]bool),
 	}
 }
 
 // ─── IP Blocking ────────────────────────────────────────────────────────────
 
 // BlockIP blocks inbound and outbound traffic to/from a specific IP.
-func (c *Controller) BlockIP(ip string) error {
+// If persistent is true, the block survives agent restarts.
+func (c *Controller) BlockIP(ip string, persistent bool) error {
 	if ip == "" {
 		return fmt.Errorf("empty IP address")
 	}
@@ -58,7 +77,22 @@ func (c *Controller) BlockIP(ip string) error {
 		return nil // already blocked
 	}
 
-	ruleName := rulePrefix + sanitizeRuleName(ip)
+	if err := c.addIPFirewallRules(ip, rulePrefix); err != nil {
+		return err
+	}
+
+	c.blockedIPs[ip] = true
+	if persistent {
+		c.persistentIPs[ip] = true
+	}
+	c.log.Info().Str("ip", ip).Bool("persistent", persistent).Msg("IP blocked")
+	c.persistState()
+	return nil
+}
+
+// addIPFirewallRules creates inbound and outbound block rules for an IP.
+func (c *Controller) addIPFirewallRules(ip string, prefix string) error {
+	ruleName := prefix + sanitizeRuleName(ip)
 
 	// Block inbound.
 	if err := runNetsh("add", "rule",
@@ -79,9 +113,6 @@ func (c *Controller) BlockIP(ip string) error {
 	); err != nil {
 		return fmt.Errorf("block outbound %s: %w", ip, err)
 	}
-
-	c.blockedIPs[ip] = true
-	c.log.Info().Str("ip", ip).Msg("IP blocked")
 	return nil
 }
 
@@ -94,16 +125,20 @@ func (c *Controller) UnblockIP(ip string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	ruleName := rulePrefix + sanitizeRuleName(ip)
-
-	// Remove inbound rule.
-	runNetsh("delete", "rule", "name="+ruleName+"_IN")
-	// Remove outbound rule.
-	runNetsh("delete", "rule", "name="+ruleName+"_OUT")
+	c.removeIPFirewallRules(ip, rulePrefix)
 
 	delete(c.blockedIPs, ip)
+	delete(c.persistentIPs, ip)
 	c.log.Info().Str("ip", ip).Msg("IP unblocked")
+	c.persistState()
 	return nil
+}
+
+// removeIPFirewallRules deletes inbound and outbound rules for an IP.
+func (c *Controller) removeIPFirewallRules(ip string, prefix string) {
+	ruleName := prefix + sanitizeRuleName(ip)
+	runNetsh("delete", "rule", "name="+ruleName+"_IN")
+	runNetsh("delete", "rule", "name="+ruleName+"_OUT")
 }
 
 // ListBlockedIPs returns all currently blocked IPs.
@@ -179,6 +214,7 @@ func (c *Controller) Isolate() error {
 
 	c.contained = true
 	c.log.Warn().Str("backend_ip", c.backendIP).Msg("network isolation activated")
+	c.persistState()
 	return nil
 }
 
@@ -201,6 +237,7 @@ func (c *Controller) Release() error {
 
 	c.contained = false
 	c.log.Info().Msg("network isolation released")
+	c.persistState()
 	return nil
 }
 
@@ -209,6 +246,184 @@ func (c *Controller) IsContained() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.contained
+}
+
+// ─── Domain Blocking ───────────────────────────────────────────────────────
+
+// BlockDomain resolves a domain to IPs and blocks each one.
+// If persistent is true, the block survives agent restarts.
+func (c *Controller) BlockDomain(domain string, persistent bool) error {
+	if domain == "" {
+		return fmt.Errorf("empty domain")
+	}
+
+	ips, err := net.LookupHost(domain)
+	if err != nil {
+		return fmt.Errorf("resolve domain %s: %w", domain, err)
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("domain %s resolved to zero addresses", domain)
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if _, exists := c.blockedDomains[domain]; exists {
+		return nil // already blocked
+	}
+
+	var blockedIPs []string
+	for _, ip := range ips {
+		if err := c.addIPFirewallRules(ip, domainPrefix+sanitizeRuleName(domain)+"_"); err != nil {
+			c.log.Warn().Err(err).Str("ip", ip).Str("domain", domain).Msg("failed to block domain IP")
+			continue
+		}
+		blockedIPs = append(blockedIPs, ip)
+	}
+
+	if len(blockedIPs) == 0 {
+		return fmt.Errorf("failed to block any IPs for domain %s", domain)
+	}
+
+	c.blockedDomains[domain] = blockedIPs
+	if persistent {
+		c.persistentDoms[domain] = true
+	}
+	c.log.Info().Str("domain", domain).Strs("ips", blockedIPs).Bool("persistent", persistent).Msg("domain blocked")
+	c.persistState()
+	return nil
+}
+
+// UnblockDomain removes firewall rules for all IPs associated with a domain.
+func (c *Controller) UnblockDomain(domain string) error {
+	if domain == "" {
+		return fmt.Errorf("empty domain")
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	ips, exists := c.blockedDomains[domain]
+	if !exists {
+		return fmt.Errorf("domain %s is not blocked", domain)
+	}
+
+	for _, ip := range ips {
+		c.removeIPFirewallRules(ip, domainPrefix+sanitizeRuleName(domain)+"_")
+	}
+
+	delete(c.blockedDomains, domain)
+	delete(c.persistentDoms, domain)
+	c.log.Info().Str("domain", domain).Msg("domain unblocked")
+	c.persistState()
+	return nil
+}
+
+// ListBlockedDomains returns all currently blocked domains.
+func (c *Controller) ListBlockedDomains() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	var domains []string
+	for domain := range c.blockedDomains {
+		domains = append(domains, domain)
+	}
+	return domains
+}
+
+// ─── State Persistence ─────────────────────────────────────────────────────
+
+// persistState writes the current containment state to disk.
+// Must be called with c.mu held (read or write).
+func (c *Controller) persistState() {
+	state := persistedState{
+		Contained:         c.contained,
+		BlockedDomains:    c.blockedDomains,
+		PersistentIPs:     c.persistentIPs,
+		PersistentDomains: c.persistentDoms,
+	}
+	for ip := range c.blockedIPs {
+		state.BlockedIPs = append(state.BlockedIPs, ip)
+	}
+
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		c.log.Error().Err(err).Msg("failed to marshal containment state")
+		return
+	}
+
+	dir := filepath.Dir(stateFilePath)
+	if err := os.MkdirAll(dir, 0750); err != nil {
+		c.log.Error().Err(err).Msg("failed to create state directory")
+		return
+	}
+
+	if err := os.WriteFile(stateFilePath, data, 0640); err != nil {
+		c.log.Error().Err(err).Msg("failed to write containment state")
+	}
+}
+
+// RestoreState reads the persisted state file and re-applies persistent blocks.
+// Should be called once after New(), before the agent starts processing commands.
+func (c *Controller) RestoreState() {
+	data, err := os.ReadFile(stateFilePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			c.log.Debug().Msg("no containment state file found, starting fresh")
+			return
+		}
+		c.log.Error().Err(err).Msg("failed to read containment state")
+		return
+	}
+
+	var state persistedState
+	if err := json.Unmarshal(data, &state); err != nil {
+		c.log.Error().Err(err).Msg("failed to parse containment state")
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Restore persistent IPs map and tracking for all IPs.
+	// Netsh rules survive reboots, so we only re-apply persistent ones
+	// and restore in-memory tracking for all.
+	if state.PersistentIPs == nil {
+		state.PersistentIPs = make(map[string]bool)
+	}
+	if state.PersistentDomains == nil {
+		state.PersistentDomains = make(map[string]bool)
+	}
+
+	c.persistentIPs = state.PersistentIPs
+	c.persistentDoms = state.PersistentDomains
+
+	// Restore blocked IPs tracking. Netsh rules already exist from before reboot.
+	for _, ip := range state.BlockedIPs {
+		c.blockedIPs[ip] = true
+	}
+
+	// Restore blocked domains tracking.
+	if state.BlockedDomains != nil {
+		for domain, ips := range state.BlockedDomains {
+			c.blockedDomains[domain] = ips
+		}
+	}
+
+	// Re-apply isolation if it was active (netsh rules survive reboot,
+	// but re-applying ensures consistency).
+	if state.Contained {
+		c.contained = true
+		c.log.Warn().Msg("restored network isolation state from previous session")
+	}
+
+	restored := len(state.BlockedIPs)
+	restoredDomains := len(state.BlockedDomains)
+	c.log.Info().
+		Int("blocked_ips", restored).
+		Int("blocked_domains", restoredDomains).
+		Bool("contained", state.Contained).
+		Msg("containment state restored")
 }
 
 // ─── File Quarantine ────────────────────────────────────────────────────────

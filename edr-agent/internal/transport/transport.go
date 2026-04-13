@@ -123,9 +123,12 @@ type ContainmentController interface {
 	QuarantineFile(filePath string) (string, error)
 	RestoreFile(quarantineName string) error
 	ListQuarantinedJSON() (string, error)
-	BlockIP(ip string) error
+	BlockIP(ip string, persistent bool) error
 	UnblockIP(ip string) error
 	ListBlockedIPs() []string
+	BlockDomain(domain string, persistent bool) error
+	UnblockDomain(domain string) error
+	ListBlockedDomains() []string
 }
 
 type GRPCTransport struct {

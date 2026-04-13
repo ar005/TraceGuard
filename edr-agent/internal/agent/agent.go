@@ -129,6 +129,7 @@ func New(cfg *config.Config) (*Agent, error) {
 
 	// Network containment controller.
 	contain := containment.New(cfg.Agent.BackendURL, log)
+	contain.RestoreState()
 	trans.SetContainment(contain)
 
 	a := &Agent{

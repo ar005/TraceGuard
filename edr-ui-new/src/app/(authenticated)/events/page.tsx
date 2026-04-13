@@ -26,6 +26,7 @@ const FILTERS = [
   { label: "TLS SNI", value: "NET_TLS_SNI" },
   { label: "Share", value: "SHARE_MOUNT" },
   { label: "FIM", value: "FIM_VIOLATION" },
+  { label: "WinEvent", value: "WINEVENT" },
 ] as const;
 
 const TYPE_BADGE_COLORS: Record<string, string> = {
@@ -47,6 +48,7 @@ const TYPE_BADGE_COLORS: Record<string, string> = {
   SHARE_UNMOUNT: "bg-teal-600/15 text-teal-300",
   NET_TLS_SNI: "bg-indigo-500/15 text-indigo-400",
   FIM_VIOLATION: "bg-rose-500/15 text-rose-400",
+  WINEVENT: "bg-sky-500/15 text-sky-400",
 };
 
 const PAGE_SIZE = 50;
@@ -61,11 +63,20 @@ function extractSummary(evt: Event): string {
   const type = evt.event_type?.toUpperCase();
 
   switch (type) {
-    case "PROCESS_EXEC":
-      return (p.cmdline as string) ?? (p.comm as string) ?? (p.path as string) ?? "—";
+    case "PROCESS_EXEC": {
+      const cmd = (p.cmdline as string) ?? (p.comm as string) ?? (p.path as string) ?? "—";
+      const interp = p.interpreter as string | undefined;
+      return interp ? `[${interp}] ${cmd}` : cmd;
+    }
     case "CMD_EXEC":
     case "CMD_HISTORY":
       return (p.command as string) ?? (p.cmdline as string) ?? "—";
+    case "WINEVENT": {
+      const ch = (p.channel as string) ?? "";
+      const eid = p.event_id != null ? String(p.event_id) : "";
+      const prov = (p.provider as string) ?? "";
+      return [ch, eid ? `ID:${eid}` : "", prov].filter(Boolean).join(" / ") || "—";
+    }
     case "NET_CONNECT": {
       const dst = p.dst_ip ?? p.dest_ip ?? p.remote_ip;
       const port = p.dst_port ?? p.dest_port ?? p.remote_port;
@@ -343,6 +354,99 @@ function EventDetail({ event, onClose }: { event: Event; onClose: () => void }) 
 
         {/* Process Tree */}
         <EventProcessTree event={event} />
+
+        {/* Script / Interpreter Details */}
+        {!!(event.payload?.interpreter || event.payload?.script_content || event.payload?.script_path) && (
+          <div>
+            <div
+              className="text-xs font-semibold mb-2"
+              style={{ fontFamily: "var(--font-space-grotesk)", color: "var(--fg)" }}
+            >
+              Script Execution
+            </div>
+            <div
+              className="rounded border p-3 space-y-2"
+              style={{ background: "var(--surface-1)", borderColor: "var(--border)" }}
+            >
+              {!!event.payload.interpreter && (
+                <div className="flex justify-between text-xs">
+                  <span style={{ color: "var(--muted)" }}>Interpreter</span>
+                  <span className="font-mono font-medium" style={{ color: "var(--primary)" }}>
+                    {String(event.payload.interpreter)}
+                  </span>
+                </div>
+              )}
+              {!!event.payload.script_path && (
+                <div className="flex justify-between text-xs">
+                  <span style={{ color: "var(--muted)" }}>Script Path</span>
+                  <span className="font-mono truncate ml-4" style={{ color: "var(--fg)" }}>
+                    {String(event.payload.script_path)}
+                  </span>
+                </div>
+              )}
+              {!!event.payload.script_content && (
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider mb-1" style={{ color: "var(--muted)" }}>
+                    Script Content
+                  </div>
+                  <pre
+                    className="rounded p-3 text-[11px] leading-relaxed overflow-x-auto max-h-80 overflow-y-auto"
+                    style={{ background: "hsl(220 20% 8%)", color: "#e2e8f0" }}
+                  >
+                    <code>{String(event.payload.script_content)}</code>
+                  </pre>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* WinEvent Details */}
+        {event.event_type?.toUpperCase() === "WINEVENT" && event.payload && (
+          <div>
+            <div
+              className="text-xs font-semibold mb-2"
+              style={{ fontFamily: "var(--font-space-grotesk)", color: "var(--fg)" }}
+            >
+              Windows Event Log
+            </div>
+            <div
+              className="rounded border p-3 space-y-1"
+              style={{ background: "var(--surface-1)", borderColor: "var(--border)" }}
+            >
+              {[
+                { label: "Channel", value: event.payload.channel },
+                { label: "Event ID", value: event.payload.event_id },
+                { label: "Level", value: event.payload.level },
+                { label: "Provider", value: event.payload.provider },
+                { label: "Computer", value: event.payload.computer },
+                { label: "Time Created", value: event.payload.time_created },
+              ]
+                .filter((f) => f.value != null)
+                .map((f) => (
+                  <div key={f.label} className="flex justify-between text-xs">
+                    <span style={{ color: "var(--muted)" }}>{f.label}</span>
+                    <span className="font-mono" style={{ color: "var(--fg)" }}>
+                      {String(f.value)}
+                    </span>
+                  </div>
+                ))}
+              {!!(event.payload.event_data && typeof event.payload.event_data === "object") && (
+                <div className="mt-2">
+                  <div className="text-[10px] uppercase tracking-wider mb-1" style={{ color: "var(--muted)" }}>
+                    Event Data
+                  </div>
+                  <pre
+                    className="rounded p-3 text-[11px] leading-relaxed overflow-x-auto max-h-60 overflow-y-auto"
+                    style={{ background: "hsl(220 20% 8%)", color: "#e2e8f0" }}
+                  >
+                    <code>{JSON.stringify(event.payload.event_data, null, 2)}</code>
+                  </pre>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* AI Explain */}
         <div
