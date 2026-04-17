@@ -34,7 +34,7 @@ async function request<T>(method: string, path: string, body?: unknown, params?:
     });
 
     if (res.status === 401) {
-      if (typeof window !== "undefined") {
+      if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
         window.location.href = "/login";
       }
       throw new Error("Unauthorized");

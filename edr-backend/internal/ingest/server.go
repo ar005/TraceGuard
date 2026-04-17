@@ -434,6 +434,9 @@ func (s *Server) LiveResponse(stream pb.EventService_LiveResponseServer) error {
 	cmdCh := s.lr.RegisterAgent(agentID)
 	defer s.lr.UnregisterAgent(agentID)
 
+	// Drain any pending commands queued while the agent was offline.
+	go s.drainPendingCommands(stream.Context(), agentID)
+
 	// Read results from agent in background.
 	errCh := make(chan error, 1)
 	go func() {
@@ -479,6 +482,34 @@ func (s *Server) LiveResponse(stream pb.EventService_LiveResponseServer) error {
 		case <-stream.Context().Done():
 			return stream.Context().Err()
 		}
+	}
+}
+
+// drainPendingCommands claims and executes all pending commands for an agent.
+func (s *Server) drainPendingCommands(ctx context.Context, agentID string) {
+	cmds, err := s.store.ClaimPendingCommands(ctx, agentID)
+	if err != nil {
+		s.log.Warn().Err(err).Str("agent_id", agentID).Msg("failed to claim pending commands")
+		return
+	}
+	if len(cmds) == 0 {
+		return
+	}
+	s.log.Info().Str("agent_id", agentID).Int("count", len(cmds)).Msg("draining pending commands")
+
+	for _, cmd := range cmds {
+		var args []string
+		_ = json.Unmarshal(cmd.Args, &args)
+		result, err := s.lr.SendCommand(ctx, agentID, cmd.Action, args, 30)
+		if err != nil {
+			errJSON, _ := json.Marshal(map[string]string{"error": err.Error()})
+			_ = s.store.CompletePendingCommand(ctx, cmd.ID, "failed", errJSON)
+			s.log.Warn().Err(err).Str("cmd_id", cmd.ID).Str("action", cmd.Action).Msg("pending command failed")
+			continue
+		}
+		resultJSON, _ := json.Marshal(result)
+		_ = s.store.CompletePendingCommand(ctx, cmd.ID, "executed", resultJSON)
+		s.log.Info().Str("cmd_id", cmd.ID).Str("action", cmd.Action).Msg("pending command executed")
 	}
 }
 

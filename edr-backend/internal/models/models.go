@@ -241,3 +241,16 @@ func SeverityLabel(s int16) string {
 		return "UNKNOWN"
 	}
 }
+
+// PendingCommand is a queued command waiting for an agent to come online.
+type PendingCommand struct {
+	ID         string          `db:"id"          json:"id"`
+	AgentID    string          `db:"agent_id"    json:"agent_id"`
+	Action     string          `db:"action"      json:"action"`
+	Args       json.RawMessage `db:"args"        json:"args"`
+	CreatedBy  string          `db:"created_by"  json:"created_by"`
+	CreatedAt  time.Time       `db:"created_at"  json:"created_at"`
+	Status     string          `db:"status"      json:"status"` // pending, executed, failed, cancelled
+	Result     json.RawMessage `db:"result"      json:"result,omitempty"`
+	ExecutedAt *time.Time      `db:"executed_at" json:"executed_at,omitempty"`
+}

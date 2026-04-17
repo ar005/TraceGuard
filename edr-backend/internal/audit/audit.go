@@ -53,3 +53,15 @@ func (l *Logger) List(ctx context.Context, limit int) ([]Entry, error) {
 		`SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT $1`, limit)
 	return entries, err
 }
+
+// ListByTarget returns audit entries for a specific target, newest first.
+func (l *Logger) ListByTarget(ctx context.Context, targetType, targetID string, limit int) ([]Entry, error) {
+	if limit == 0 {
+		limit = 100
+	}
+	var entries []Entry
+	err := l.db.SelectContext(ctx, &entries,
+		`SELECT * FROM audit_log WHERE target_type=$1 AND target_id=$2 ORDER BY timestamp DESC LIMIT $3`,
+		targetType, targetID, limit)
+	return entries, err
+}

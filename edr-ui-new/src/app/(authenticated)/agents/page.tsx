@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { Circle, Shield, ShieldOff, Plus, Trash2, X, Loader2, Server, Lock, Unlock, Globe, AlertTriangle } from "lucide-react";
+import { Circle, Shield, ShieldOff, Plus, Trash2, X, Loader2, Server, Lock, Unlock, Globe, AlertTriangle, Clock, WifiOff, ScrollText } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { useApi } from "@/hooks/use-api";
 import { cn, timeAgo } from "@/lib/utils";
@@ -17,7 +17,13 @@ function AgentDetail({
   agent: Agent;
   onClose: () => void;
 }) {
-  const [activeTab, setActiveTab] = useState<"info" | "block">("info");
+  const [activeTab, setActiveTab] = useState<"info" | "block" | "audit">("info");
+
+  const tabs = [
+    { id: "info" as const, label: "Agent Info" },
+    { id: "block" as const, label: "Containment" },
+    { id: "audit" as const, label: "Audit Log" },
+  ];
 
   return (
     <div
@@ -49,19 +55,19 @@ function AgentDetail({
 
       {/* Tabs */}
       <div className="flex border-b" style={{ borderColor: "var(--border)" }}>
-        {(["info", "block"] as const).map((tab) => (
+        {tabs.map((tab) => (
           <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
             className={cn(
               "px-4 py-2 text-xs font-medium transition-colors border-b-2",
-              activeTab === tab
+              activeTab === tab.id
                 ? "border-[var(--primary)] text-[var(--primary)]"
                 : "border-transparent hover:bg-[var(--surface-1)]"
             )}
-            style={activeTab !== tab ? { color: "var(--muted)" } : {}}
+            style={activeTab !== tab.id ? { color: "var(--muted)" } : {}}
           >
-            {tab === "info" ? "Agent Info" : "Containment"}
+            {tab.label}
           </button>
         ))}
       </div>
@@ -69,6 +75,7 @@ function AgentDetail({
       <div className="p-4">
         {activeTab === "info" && <AgentInfoTab agent={agent} />}
         {activeTab === "block" && <BlockTab agent={agent} />}
+        {activeTab === "audit" && <AuditTab agent={agent} />}
       </div>
     </div>
   );
@@ -119,6 +126,15 @@ function looksLikeIP(value: string): boolean {
   return false;
 }
 
+interface PendingCmd {
+  id: string;
+  action: string;
+  args: string[];
+  created_at: string;
+  status: string;
+  created_by: string;
+}
+
 function BlockTab({ agent }: { agent: Agent }) {
   const [ipInput, setIpInput] = useState("");
   const [persistent, setPersistent] = useState(false);
@@ -136,6 +152,13 @@ function BlockTab({ agent }: { agent: Agent }) {
   const [releasing, setReleasing] = useState(false);
   const [showIsolateConfirm, setShowIsolateConfirm] = useState(false);
 
+  // Pending commands state
+  const [pendingCmds, setPendingCmds] = useState<PendingCmd[]>([]);
+  const [loadingPending, setLoadingPending] = useState(false);
+  const [queuing, setQueuing] = useState(false);
+
+  const isOnline = agent.is_online;
+
   // Helper to send a live-response command
   async function sendCommand(action: string, args: string[] = [], timeout = 15) {
     return api.post<{ stdout?: string; output?: string; error?: string }>(
@@ -144,17 +167,57 @@ function BlockTab({ agent }: { agent: Agent }) {
     );
   }
 
+  // Queue a command for when agent comes online
+  async function queueCommand(action: string, args: string[] = []) {
+    setQueuing(true);
+    try {
+      await api.post("/api/v1/pending-commands", {
+        agent_id: agent.id,
+        action,
+        args,
+      });
+      setMessage({ text: `Queued "${action}" — will execute when agent connects.`, error: false });
+      loadPendingCommands();
+    } catch (err) {
+      setMessage({ text: err instanceof Error ? err.message : "Queue failed", error: true });
+    } finally {
+      setQueuing(false);
+    }
+  }
+
+  // Load pending commands
+  async function loadPendingCommands() {
+    setLoadingPending(true);
+    try {
+      const res = await api.get<{ commands: PendingCmd[] }>(`/api/v1/pending-commands/${agent.id}`, { status: "pending" });
+      setPendingCmds(res.commands ?? []);
+    } catch {
+      // ignore
+    } finally {
+      setLoadingPending(false);
+    }
+  }
+
+  // Cancel a pending command
+  async function cancelPending(id: string) {
+    try {
+      await api.del(`/api/v1/pending-commands/${id}`);
+      setPendingCmds((prev) => prev.filter((c) => c.id !== id));
+      setMessage({ text: "Queued command cancelled.", error: false });
+    } catch (err) {
+      setMessage({ text: err instanceof Error ? err.message : "Cancel failed", error: true });
+    }
+  }
+
   // Load blocked IPs list
   async function loadBlockedIPs() {
-    if (!agent.is_online) {
-      setMessage({ text: "Agent is offline — cannot query blocked list.", error: true });
+    if (!isOnline) {
       setLoaded(true);
       return;
     }
     setLoadingList(true);
     setMessage(null);
     try {
-      // Fetch IPs and domains in parallel
       const [ipRes, domainRes] = await Promise.all([
         sendCommand("list_blocked", [], 10),
         sendCommand("list_blocked_domains", [], 10).catch(() => null),
@@ -186,7 +249,7 @@ function BlockTab({ agent }: { agent: Agent }) {
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Request failed";
       if (msg.includes("not connected")) {
-        setMessage({ text: "Agent is not connected for live response. Ensure the agent is running and connected to the backend.", error: true });
+        setMessage({ text: "Agent lost connection during request.", error: true });
       } else {
         setMessage({ text: `Failed to load: ${msg}`, error: true });
       }
@@ -196,9 +259,10 @@ function BlockTab({ agent }: { agent: Agent }) {
     }
   }
 
-  // Load once on mount — not on every render
+  // Load on mount
   useEffect(() => {
     loadBlockedIPs();
+    loadPendingCommands();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent.id]);
 
@@ -206,6 +270,10 @@ function BlockTab({ agent }: { agent: Agent }) {
 
   async function handleIsolate() {
     setShowIsolateConfirm(false);
+    if (!isOnline) {
+      await queueCommand("isolate");
+      return;
+    }
     setIsolating(true);
     setMessage(null);
     try {
@@ -224,6 +292,10 @@ function BlockTab({ agent }: { agent: Agent }) {
   }
 
   async function handleRelease() {
+    if (!isOnline) {
+      await queueCommand("release");
+      return;
+    }
     setReleasing(true);
     setMessage(null);
     try {
@@ -252,6 +324,12 @@ function BlockTab({ agent }: { agent: Agent }) {
     const action = isIP ? "block_ip" : "block_domain";
     const args = persistent ? [target, "persistent"] : [target];
 
+    if (!isOnline) {
+      setIpInput("");
+      await queueCommand(action, args);
+      return;
+    }
+
     setBlocking(true);
     setMessage(null);
 
@@ -278,10 +356,15 @@ function BlockTab({ agent }: { agent: Agent }) {
   }
 
   async function handleUnblock(entry: string, type: "ip" | "domain") {
+    const action = type === "ip" ? "unblock_ip" : "unblock_domain";
+
+    if (!isOnline) {
+      await queueCommand(action, [entry]);
+      return;
+    }
+
     setUnblocking(entry);
     setMessage(null);
-
-    const action = type === "ip" ? "unblock_ip" : "unblock_domain";
 
     try {
       const res = await sendCommand(action, [entry]);
@@ -311,6 +394,73 @@ function BlockTab({ agent }: { agent: Agent }) {
 
   return (
     <div className="space-y-4">
+      {/* ── Agent Offline Banner ── */}
+      {!isOnline && (
+        <div
+          className="rounded border p-3 flex items-start gap-3"
+          style={{
+            borderColor: "oklch(0.6 0.15 60 / 0.4)",
+            background: "oklch(0.6 0.15 60 / 0.08)",
+          }}
+        >
+          <WifiOff size={16} className="shrink-0 mt-0.5" style={{ color: "oklch(0.75 0.15 60)" }} />
+          <div>
+            <div className="text-xs font-semibold" style={{ color: "oklch(0.75 0.15 60)" }}>
+              Agent Not Connected
+            </div>
+            <p className="text-[10px] mt-1 leading-relaxed" style={{ color: "var(--muted)" }}>
+              This agent is offline. You can still queue containment actions below — they
+              will execute automatically as soon as the agent reconnects.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* ── Pending Commands ── */}
+      {pendingCmds.length > 0 && (
+        <div
+          className="rounded border p-3 space-y-2"
+          style={{ borderColor: "var(--border)", background: "var(--surface-1)" }}
+        >
+          <div
+            className="text-xs font-semibold font-heading flex items-center gap-1.5"
+            style={{ color: "var(--fg)" }}
+          >
+            <Clock size={12} />
+            Queued Commands ({pendingCmds.length})
+          </div>
+          <div className="space-y-1">
+            {pendingCmds.map((cmd) => (
+              <div
+                key={cmd.id}
+                className="flex items-center justify-between rounded border px-2.5 py-1.5"
+                style={{ borderColor: "var(--border)", background: "var(--surface-0)" }}
+              >
+                <div className="flex items-center gap-2">
+                  <Clock size={10} style={{ color: "oklch(0.75 0.15 60)" }} />
+                  <span className="font-mono text-[11px]" style={{ color: "var(--fg)" }}>
+                    {cmd.action}
+                  </span>
+                  {cmd.args.length > 0 && (
+                    <span className="font-mono text-[10px]" style={{ color: "var(--muted)" }}>
+                      {cmd.args.join(" ")}
+                    </span>
+                  )}
+                </div>
+                <button
+                  onClick={() => cancelPending(cmd.id)}
+                  className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors hover:bg-red-500/10"
+                  style={{ color: "var(--muted)" }}
+                >
+                  <X size={10} />
+                  Cancel
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* ── Host Isolation ── */}
       <div
         className="rounded border p-3 space-y-3"
@@ -343,37 +493,35 @@ function BlockTab({ agent }: { agent: Agent }) {
         <div className="flex gap-2">
           <button
             onClick={() => setShowIsolateConfirm(true)}
-            disabled={isolating || releasing || isolated || !agent.is_online}
+            disabled={isolating || releasing || isolated || queuing}
             className="flex items-center gap-1.5 rounded border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-red-500/10 disabled:opacity-50"
             style={{ borderColor: "var(--border)", color: "#ef4444" }}
           >
-            {isolating ? (
+            {isolating || queuing ? (
               <Loader2 size={12} className="animate-spin" />
+            ) : !isOnline ? (
+              <Clock size={12} />
             ) : (
               <Lock size={12} />
             )}
-            {isolating ? "Isolating..." : "Isolate Host"}
+            {isolating ? "Isolating..." : !isOnline ? "Queue Isolate" : "Isolate Host"}
           </button>
           <button
             onClick={handleRelease}
-            disabled={releasing || isolating || !isolated || !agent.is_online}
+            disabled={releasing || isolating || queuing}
             className="flex items-center gap-1.5 rounded border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-emerald-500/10 disabled:opacity-50"
             style={{ borderColor: "var(--border)", color: "#22c55e" }}
           >
             {releasing ? (
               <Loader2 size={12} className="animate-spin" />
+            ) : !isOnline ? (
+              <Clock size={12} />
             ) : (
               <Unlock size={12} />
             )}
-            {releasing ? "Releasing..." : "Release Host"}
+            {releasing ? "Releasing..." : !isOnline ? "Queue Release" : "Release Host"}
           </button>
         </div>
-
-        {!agent.is_online && (
-          <p className="text-[10px]" style={{ color: "var(--destructive)" }}>
-            Agent is offline — cannot send commands.
-          </p>
-        )}
       </div>
 
       {/* Isolation confirmation dialog */}
@@ -387,10 +535,13 @@ function BlockTab({ agent }: { agent: Agent }) {
         >
           <div className="flex items-center gap-2 text-xs font-semibold" style={{ color: "#ef4444" }}>
             <AlertTriangle size={14} />
-            Confirm Host Isolation
+            {isOnline ? "Confirm Host Isolation" : "Queue Host Isolation"}
           </div>
           <p className="text-[11px] leading-relaxed" style={{ color: "var(--fg)" }}>
-            This will block <strong>ALL</strong> network traffic except backend communication. Continue?
+            {isOnline
+              ? <>This will block <strong>ALL</strong> network traffic except backend communication. Continue?</>
+              : <>This will queue an isolation command. It will execute as soon as the agent reconnects, blocking <strong>ALL</strong> network traffic. Continue?</>
+            }
           </p>
           <div className="flex gap-2">
             <button
@@ -398,8 +549,8 @@ function BlockTab({ agent }: { agent: Agent }) {
               className="flex items-center gap-1.5 rounded border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-red-500/10"
               style={{ borderColor: "oklch(0.45 0.15 25 / 0.4)", color: "#ef4444" }}
             >
-              <Lock size={12} />
-              Yes, Isolate
+              {isOnline ? <Lock size={12} /> : <Clock size={12} />}
+              {isOnline ? "Yes, Isolate" : "Yes, Queue"}
             </button>
             <button
               onClick={() => setShowIsolateConfirm(false)}
@@ -433,7 +584,7 @@ function BlockTab({ agent }: { agent: Agent }) {
                 borderColor: "var(--border)",
                 color: "var(--fg)",
               }}
-              disabled={blocking || !agent.is_online}
+              disabled={blocking || queuing}
             />
             {detectedType && (
               <span
@@ -446,16 +597,18 @@ function BlockTab({ agent }: { agent: Agent }) {
           </div>
           <button
             onClick={handleBlock}
-            disabled={blocking || !ipInput.trim() || !agent.is_online}
+            disabled={blocking || queuing || !ipInput.trim()}
             className="flex items-center gap-1.5 rounded border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-red-500/10 disabled:opacity-50"
             style={{ borderColor: "var(--border)", color: "#ef4444" }}
           >
-            {blocking ? (
+            {blocking || queuing ? (
               <Loader2 size={12} className="animate-spin" />
+            ) : !isOnline ? (
+              <Clock size={12} />
             ) : (
               <Shield size={12} />
             )}
-            {blocking ? "Blocking..." : "Block"}
+            {blocking ? "Blocking..." : !isOnline ? "Queue Block" : "Block"}
           </button>
         </div>
 
@@ -467,7 +620,6 @@ function BlockTab({ agent }: { agent: Agent }) {
               checked={persistent}
               onChange={(e) => setPersistent(e.target.checked)}
               className="peer sr-only"
-              disabled={!agent.is_online}
             />
             <div
               className="h-5 w-9 rounded-full transition-colors"
@@ -495,12 +647,6 @@ function BlockTab({ agent }: { agent: Agent }) {
             ?
           </span>
         </div>
-
-        {!agent.is_online && (
-          <p className="text-[10px] mt-1" style={{ color: "var(--destructive)" }}>
-            Agent is offline — cannot send commands.
-          </p>
-        )}
       </div>
 
       {/* Status message */}
@@ -522,141 +668,143 @@ function BlockTab({ agent }: { agent: Agent }) {
       )}
 
       {/* ── Currently Blocked ── */}
-      <div>
-        <div className="flex items-center justify-between mb-2">
-          <div
-            className="text-xs font-semibold font-heading"
-            style={{ color: "var(--fg)" }}
-          >
-            Currently Blocked
+      {isOnline && (
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <div
+              className="text-xs font-semibold font-heading"
+              style={{ color: "var(--fg)" }}
+            >
+              Currently Blocked
+            </div>
+            <button
+              onClick={loadBlockedIPs}
+              disabled={loadingList}
+              className="text-[10px] rounded px-2 py-0.5 transition-colors hover:bg-[var(--surface-2)]"
+              style={{ color: "var(--muted)" }}
+            >
+              {loadingList ? "Loading..." : "Refresh"}
+            </button>
           </div>
-          <button
-            onClick={loadBlockedIPs}
-            disabled={loadingList}
-            className="text-[10px] rounded px-2 py-0.5 transition-colors hover:bg-[var(--surface-2)]"
-            style={{ color: "var(--muted)" }}
-          >
-            {loadingList ? "Loading..." : "Refresh"}
-          </button>
+
+          {loadingList && !loaded && (
+            <div className="space-y-2">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="animate-shimmer h-8 rounded" />
+              ))}
+            </div>
+          )}
+
+          {loaded && blockedIPs.length === 0 && blockedDomains.length === 0 && (
+            <div
+              className="rounded border px-3 py-6 text-center text-xs"
+              style={{
+                borderColor: "var(--border)",
+                background: "var(--surface-1)",
+                color: "var(--muted)",
+              }}
+            >
+              No IPs or domains are currently blocked on this agent.
+            </div>
+          )}
+
+          {/* Blocked IPs */}
+          {loaded && blockedIPs.length > 0 && (
+            <div className="mb-3">
+              <div
+                className="text-[10px] font-medium mb-1 flex items-center gap-1"
+                style={{ color: "var(--muted)" }}
+              >
+                <Shield size={10} />
+                Blocked IPs
+              </div>
+              <div
+                className="rounded border divide-y"
+                style={{
+                  borderColor: "var(--border)",
+                  background: "var(--surface-1)",
+                }}
+              >
+                {blockedIPs.map((ip) => (
+                  <div
+                    key={ip}
+                    className="flex items-center justify-between px-3 py-2"
+                    style={{ borderColor: "var(--border)" }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <ShieldOff size={12} className="text-red-400" />
+                      <span className="font-mono text-xs" style={{ color: "var(--fg)" }}>
+                        {ip}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => handleUnblock(ip, "ip")}
+                      disabled={!!unblocking}
+                      className="flex items-center gap-1 rounded px-2 py-1 text-[10px] font-medium transition-colors hover:bg-emerald-500/10 disabled:opacity-50"
+                      style={{ color: "#22c55e" }}
+                    >
+                      {unblocking === ip ? (
+                        <Loader2 size={10} className="animate-spin" />
+                      ) : (
+                        <Trash2 size={10} />
+                      )}
+                      Unblock
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Blocked Domains */}
+          {loaded && blockedDomains.length > 0 && (
+            <div>
+              <div
+                className="text-[10px] font-medium mb-1 flex items-center gap-1"
+                style={{ color: "var(--muted)" }}
+              >
+                <Globe size={10} />
+                Blocked Domains
+              </div>
+              <div
+                className="rounded border divide-y"
+                style={{
+                  borderColor: "var(--border)",
+                  background: "var(--surface-1)",
+                }}
+              >
+                {blockedDomains.map((domain) => (
+                  <div
+                    key={domain}
+                    className="flex items-center justify-between px-3 py-2"
+                    style={{ borderColor: "var(--border)" }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <Globe size={12} className="text-red-400" />
+                      <span className="font-mono text-xs" style={{ color: "var(--fg)" }}>
+                        {domain}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => handleUnblock(domain, "domain")}
+                      disabled={!!unblocking}
+                      className="flex items-center gap-1 rounded px-2 py-1 text-[10px] font-medium transition-colors hover:bg-emerald-500/10 disabled:opacity-50"
+                      style={{ color: "#22c55e" }}
+                    >
+                      {unblocking === domain ? (
+                        <Loader2 size={10} className="animate-spin" />
+                      ) : (
+                        <Trash2 size={10} />
+                      )}
+                      Unblock
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
-
-        {loadingList && !loaded && (
-          <div className="space-y-2">
-            {[1, 2, 3].map((i) => (
-              <div key={i} className="animate-shimmer h-8 rounded" />
-            ))}
-          </div>
-        )}
-
-        {loaded && blockedIPs.length === 0 && blockedDomains.length === 0 && (
-          <div
-            className="rounded border px-3 py-6 text-center text-xs"
-            style={{
-              borderColor: "var(--border)",
-              background: "var(--surface-1)",
-              color: "var(--muted)",
-            }}
-          >
-            No IPs or domains are currently blocked on this agent.
-          </div>
-        )}
-
-        {/* Blocked IPs */}
-        {loaded && blockedIPs.length > 0 && (
-          <div className="mb-3">
-            <div
-              className="text-[10px] font-medium mb-1 flex items-center gap-1"
-              style={{ color: "var(--muted)" }}
-            >
-              <Shield size={10} />
-              Blocked IPs
-            </div>
-            <div
-              className="rounded border divide-y"
-              style={{
-                borderColor: "var(--border)",
-                background: "var(--surface-1)",
-              }}
-            >
-              {blockedIPs.map((ip) => (
-                <div
-                  key={ip}
-                  className="flex items-center justify-between px-3 py-2"
-                  style={{ borderColor: "var(--border)" }}
-                >
-                  <div className="flex items-center gap-2">
-                    <ShieldOff size={12} className="text-red-400" />
-                    <span className="font-mono text-xs" style={{ color: "var(--fg)" }}>
-                      {ip}
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => handleUnblock(ip, "ip")}
-                    disabled={unblocking === ip || !agent.is_online}
-                    className="flex items-center gap-1 rounded px-2 py-1 text-[10px] font-medium transition-colors hover:bg-emerald-500/10 disabled:opacity-50"
-                    style={{ color: "#22c55e" }}
-                  >
-                    {unblocking === ip ? (
-                      <Loader2 size={10} className="animate-spin" />
-                    ) : (
-                      <Trash2 size={10} />
-                    )}
-                    Unblock
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Blocked Domains */}
-        {loaded && blockedDomains.length > 0 && (
-          <div>
-            <div
-              className="text-[10px] font-medium mb-1 flex items-center gap-1"
-              style={{ color: "var(--muted)" }}
-            >
-              <Globe size={10} />
-              Blocked Domains
-            </div>
-            <div
-              className="rounded border divide-y"
-              style={{
-                borderColor: "var(--border)",
-                background: "var(--surface-1)",
-              }}
-            >
-              {blockedDomains.map((domain) => (
-                <div
-                  key={domain}
-                  className="flex items-center justify-between px-3 py-2"
-                  style={{ borderColor: "var(--border)" }}
-                >
-                  <div className="flex items-center gap-2">
-                    <Globe size={12} className="text-red-400" />
-                    <span className="font-mono text-xs" style={{ color: "var(--fg)" }}>
-                      {domain}
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => handleUnblock(domain, "domain")}
-                    disabled={unblocking === domain || !agent.is_online}
-                    className="flex items-center gap-1 rounded px-2 py-1 text-[10px] font-medium transition-colors hover:bg-emerald-500/10 disabled:opacity-50"
-                    style={{ color: "#22c55e" }}
-                  >
-                    {unblocking === domain ? (
-                      <Loader2 size={10} className="animate-spin" />
-                    ) : (
-                      <Trash2 size={10} />
-                    )}
-                    Unblock
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
+      )}
 
       {/* Info */}
       <div
@@ -671,6 +819,169 @@ function BlockTab({ agent }: { agent: Agent }) {
         Linux, Windows Firewall on Windows). Both inbound and outbound traffic is dropped.
         Persistent blocks survive agent restarts. Host isolation blocks all traffic except
         backend communication.
+        {!isOnline && (
+          <> Queued commands run automatically when the agent reconnects.</>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ── Audit Tab ──────────────────────────────────────────────── */
+
+interface AuditEntry {
+  id: number;
+  timestamp: string;
+  actor_id: string;
+  actor_name: string;
+  action: string;
+  target_type: string;
+  target_id: string;
+  target_name: string;
+  ip: string;
+  details: string;
+}
+
+const ACTION_LABELS: Record<string, { label: string; color: string }> = {
+  block_ip:        { label: "Block IP",        color: "#ef4444" },
+  unblock_ip:      { label: "Unblock IP",      color: "#22c55e" },
+  block_domain:    { label: "Block Domain",    color: "#ef4444" },
+  unblock_domain:  { label: "Unblock Domain",  color: "#22c55e" },
+  isolate:         { label: "Isolate Host",    color: "#ef4444" },
+  release:         { label: "Release Host",    color: "#22c55e" },
+};
+
+function AuditTab({ agent }: { agent: Agent }) {
+  const [entries, setEntries] = useState<AuditEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await api.get<{ entries: AuditEntry[] }>(`/api/v1/agents/${agent.id}/audit`, { limit: 200 });
+        if (!cancelled) setEntries(res.entries ?? []);
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load audit log");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [agent.id]);
+
+  if (loading) {
+    return (
+      <div className="space-y-2">
+        {[1, 2, 3, 4].map((i) => (
+          <div key={i} className="animate-shimmer h-12 rounded" />
+        ))}
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div
+        className="rounded border px-3 py-4 text-center text-xs"
+        style={{ borderColor: "var(--border)", background: "var(--surface-1)", color: "var(--destructive)" }}
+      >
+        {error}
+      </div>
+    );
+  }
+
+  if (entries.length === 0) {
+    return (
+      <div
+        className="rounded border px-3 py-8 text-center text-xs"
+        style={{ borderColor: "var(--border)", background: "var(--surface-1)", color: "var(--muted)" }}
+      >
+        <ScrollText size={24} className="mx-auto mb-2 opacity-40" />
+        No containment actions recorded for this agent yet.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div
+        className="text-xs font-semibold font-heading flex items-center gap-1.5"
+        style={{ color: "var(--fg)" }}
+      >
+        <ScrollText size={12} />
+        Containment Audit Log
+      </div>
+
+      <div
+        className="rounded border divide-y"
+        style={{ borderColor: "var(--border)", background: "var(--surface-1)" }}
+      >
+        {entries.map((entry) => {
+          const meta = ACTION_LABELS[entry.action] ?? { label: entry.action, color: "var(--muted)" };
+          const ts = new Date(entry.timestamp);
+          const utc = ts.toISOString().replace("T", " ").slice(0, 19) + " UTC";
+          const isQueued = entry.details.startsWith("queued:");
+          const detail = isQueued ? entry.details.slice(8).trim() : entry.details;
+
+          return (
+            <div
+              key={entry.id}
+              className="px-3 py-2.5 space-y-1"
+              style={{ borderColor: "var(--border)" }}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span
+                    className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold"
+                    style={{
+                      background: meta.color + "18",
+                      color: meta.color,
+                    }}
+                  >
+                    {meta.label}
+                  </span>
+                  {isQueued && (
+                    <span
+                      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-medium"
+                      style={{ background: "var(--surface-2)", color: "oklch(0.75 0.15 60)" }}
+                    >
+                      <Clock size={8} />
+                      queued
+                    </span>
+                  )}
+                </div>
+                <span className="font-mono text-[10px]" style={{ color: "var(--muted)" }}>
+                  {utc}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between text-[11px]">
+                <span style={{ color: "var(--fg)" }}>
+                  by <span className="font-semibold">{entry.actor_name || entry.actor_id || "system"}</span>
+                  {entry.ip && (
+                    <span className="font-mono ml-1" style={{ color: "var(--muted)" }}>
+                      ({entry.ip})
+                    </span>
+                  )}
+                </span>
+              </div>
+
+              {detail && (
+                <div
+                  className="font-mono text-[10px] rounded px-2 py-1"
+                  style={{ background: "var(--surface-0)", color: "var(--muted)" }}
+                >
+                  {detail}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

@@ -113,6 +113,7 @@ func (s *Server) registerRoutes() {
 	r.GET("/health",  s.handleHealth)
 	r.GET("/metrics", s.handleMetrics)
 	r.GET("/metrics/prometheus", gin.WrapH(promhttp.Handler()))
+	r.GET("/api/v1/metrics/prometheus", gin.WrapH(promhttp.Handler()))
 
 	// ── Setup endpoints (no auth — only work when no users exist) ───────────
 	// NOTE: intentionally under /api/v1/setup, NOT /api/v1/admin,
@@ -194,8 +195,25 @@ func (s *Server) registerRoutes() {
 		// Settings (read)
 		v1.GET("/settings/retention",   s.handleGetRetention)
 		v1.GET("/settings/llm",         s.handleGetLLMSettings)
-		v1.GET("/me",                   s.handleMe)
-		v1.GET("/dashboard",            s.handleDashboard)
+
+		// Database size metrics
+		v1.GET("/metrics/db-size", s.handleDBSize)
+		// v1.GET("/me",                   s.handleMe)
+		// v1.GET("/dashboard",            s.handleDashboard)
+
+		// ── Analyst + admin write routes (incident response) ─────
+		v1.PATCH("/alerts/:id",        s.handleUpdateAlert)
+		v1.POST("/alerts/:id/explain", s.handleExplainAlert)
+		v1.POST("/liveresponse/command", s.handleLRCommand)
+		v1.PATCH("/incidents/:id", s.handleUpdateIncident)
+
+		// Pending commands (queued for offline agents)
+		v1.POST("/pending-commands",           s.handleCreatePendingCommand)
+		v1.GET("/pending-commands/:agent_id",  s.handleListPendingCommands)
+		v1.DELETE("/pending-commands/:id",      s.handleCancelPendingCommand)
+
+		// Agent containment audit log (all authenticated users)
+		v1.GET("/agents/:id/audit", s.handleAgentAudit)
 
 		// ── Admin-only write routes ──────────────────────────────
 		w := v1.Group("", s.adminOnly())
@@ -206,16 +224,6 @@ func (s *Server) registerRoutes() {
 
 			// Events (write — strict rate limit)
 			w.POST("/events/inject", strictRateLimitMiddleware(), s.handleInjectEvent)
-
-			// Alerts (write)
-			w.PATCH("/alerts/:id",        s.handleUpdateAlert)
-			w.POST("/alerts/:id/explain", s.handleExplainAlert)
-
-			// Live Response (write)
-			w.POST("/liveresponse/command", s.handleLRCommand)
-
-			// Incidents (write)
-			w.PATCH("/incidents/:id", s.handleUpdateIncident)
 
 			// Rules (write)
 			w.POST("/rules",              s.handleCreateRule)
@@ -894,6 +902,31 @@ func (s *Server) handleMetrics(c *gin.Context) {
 	})
 }
 
+// GET /api/v1/metrics/db-size — database size totals and per-agent breakdown.
+func (s *Server) handleDBSize(c *gin.Context) {
+	ctx := c.Request.Context()
+	total, err := s.store.DBSizeTotal(ctx)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	tables, err := s.store.DBTableSizes(ctx)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	byAgent, err := s.store.DBSizeByAgent(ctx)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"total_bytes": total,
+		"tables":      tables,
+		"by_agent":    byAgent,
+	})
+}
+
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
 func (s *Server) handleDashboard(c *gin.Context) {
@@ -957,6 +990,21 @@ func (s *Server) handleGetAgent(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, agent)
+}
+
+// GET /api/v1/agents/:id/audit — containment audit log for an agent.
+func (s *Server) handleAgentAudit(c *gin.Context) {
+	agentID := c.Param("id")
+	limit := intQuery(c, "limit", 100)
+	entries, err := s.al.ListByTarget(c.Request.Context(), "agent", agentID, limit)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	if entries == nil {
+		entries = []audit.Entry{}
+	}
+	c.JSON(http.StatusOK, gin.H{"entries": entries})
 }
 
 // PATCH /api/v1/agents/:id — update tags, env label, notes
@@ -1512,7 +1560,72 @@ func (s *Server) handleLRCommand(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	// Audit containment actions.
+	if isContainmentAction(body.Action) {
+		uid, uname := currentUser(c)
+		details := strings.Join(body.Args, " ")
+		s.al.Log(c.Request.Context(), uid, uname, body.Action, "agent", body.AgentID, "", c.ClientIP(), details)
+	}
+
 	c.JSON(http.StatusOK, result)
+}
+
+// POST /api/v1/pending-commands — queue a command for an offline agent.
+func (s *Server) handleCreatePendingCommand(c *gin.Context) {
+	var body struct {
+		AgentID string   `json:"agent_id" binding:"required"`
+		Action  string   `json:"action" binding:"required"`
+		Args    []string `json:"args"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	argsJSON, _ := json.Marshal(body.Args)
+	uid, uname := currentUser(c)
+	cmd := &models.PendingCommand{
+		ID:        uuid.New().String(),
+		AgentID:   body.AgentID,
+		Action:    body.Action,
+		Args:      argsJSON,
+		CreatedBy: uname,
+		Status:    "pending",
+	}
+	if err := s.store.CreatePendingCommand(c.Request.Context(), cmd); err != nil {
+		s.jsonError(c, err)
+		return
+	}
+
+	// Audit queued containment actions.
+	if isContainmentAction(body.Action) {
+		details := "queued: " + strings.Join(body.Args, " ")
+		s.al.Log(c.Request.Context(), uid, uname, body.Action, "agent", body.AgentID, "", c.ClientIP(), details)
+	}
+
+	c.JSON(http.StatusCreated, cmd)
+}
+
+// GET /api/v1/pending-commands/:agent_id — list pending commands for an agent.
+func (s *Server) handleListPendingCommands(c *gin.Context) {
+	agentID := c.Param("agent_id")
+	status := c.Query("status") // optional filter
+	cmds, err := s.store.ListPendingCommands(c.Request.Context(), agentID, status)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"commands": cmds})
+}
+
+// DELETE /api/v1/pending-commands/:id — cancel a pending command.
+func (s *Server) handleCancelPendingCommand(c *gin.Context) {
+	id := c.Param("id")
+	if err := s.store.CancelPendingCommand(c.Request.Context(), id); err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 // ─── Incidents ────────────────────────────────────────────────────────────────
@@ -1963,6 +2076,16 @@ func (s *Server) jsonError(c *gin.Context, err error) {
 	c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 }
 
+// isContainmentAction returns true for actions that should be audit-logged.
+func isContainmentAction(action string) bool {
+	switch action {
+	case "block_ip", "unblock_ip", "block_domain", "unblock_domain",
+		"isolate", "release":
+		return true
+	}
+	return false
+}
+
 func intQuery(c *gin.Context, key string, def int) int {
 	if v := c.Query(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -2038,7 +2161,7 @@ func ginLogger(log zerolog.Logger) gin.HandlerFunc {
 func prometheusMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Skip the prometheus metrics endpoint itself to avoid recursion.
-		if c.Request.URL.Path == "/metrics/prometheus" {
+		if c.Request.URL.Path == "/metrics/prometheus" || c.Request.URL.Path == "/api/v1/metrics/prometheus" {
 			c.Next()
 			return
 		}

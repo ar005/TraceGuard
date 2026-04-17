@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useState, useEffect } from "react";
-import { Activity, BarChart3, Cpu, Database, Globe, Radio, RefreshCw, Server, Shield, Zap } from "lucide-react";
+import { Activity, BarChart3, ChevronDown, ChevronRight, Cpu, Database, Globe, HardDrive, Loader2, Radio, RefreshCw, Server, Shield, Zap } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 
@@ -163,6 +163,239 @@ function findByLabel(metrics: ParsedMetric[], name: string, labelKey: string): {
   return Object.entries(grouped)
     .map(([label, value]) => ({ label, value }))
     .sort((a, b) => b.value - a.value);
+}
+
+/* ── Database Size Section ────────────────────────────────────── */
+
+interface AgentSize {
+  agent_id: string;
+  hostname: string;
+  bytes: number;
+  events: number;
+}
+
+interface DBSizeData {
+  total_bytes: number;
+  tables: Record<string, number>;
+  by_agent: AgentSize[];
+}
+
+function formatSize(bytes: number, unit: "MB" | "GB"): string {
+  if (unit === "GB") return (bytes / (1024 * 1024 * 1024)).toFixed(2);
+  return (bytes / (1024 * 1024)).toFixed(2);
+}
+
+function DBSizeSection() {
+  const [data, setData] = useState<DBSizeData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [unit, setUnit] = useState<"MB" | "GB">("MB");
+  const [expanded, setExpanded] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  async function fetchDBSize() {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await api.get<DBSizeData>("/api/v1/metrics/db-size");
+      setData(res);
+      if (res.total_bytes > 1024 * 1024 * 1024) setUnit("GB");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load database size");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleToggle() {
+    if (!open) {
+      setOpen(true);
+      if (!data) fetchDBSize();
+    } else {
+      setOpen(false);
+    }
+  }
+
+  const maxAgentBytes = data?.by_agent[0]?.bytes ?? 1;
+
+  return (
+    <div>
+      {/* Collapsed: just a clickable header bar */}
+      <button
+        onClick={handleToggle}
+        className="w-full flex items-center justify-between rounded border p-3 transition-colors hover:bg-[var(--surface-1)]"
+        style={{ borderColor: "var(--border)", background: "var(--surface-0)" }}
+      >
+        <div className="flex items-center gap-2.5">
+          <div
+            className="rounded p-1.5"
+            style={{ background: "#8b5cf620", color: "#8b5cf6" }}
+          >
+            <HardDrive size={16} />
+          </div>
+          <span
+            className="text-sm font-semibold"
+            style={{ fontFamily: "var(--font-space-grotesk)", color: "var(--fg)" }}
+          >
+            Database Size
+          </span>
+          {data && (
+            <span className="font-mono text-xs" style={{ color: "var(--muted)" }}>
+              — {formatSize(data.total_bytes, unit)} {unit}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {loading && <Loader2 size={14} className="animate-spin" style={{ color: "var(--muted)" }} />}
+          {open ? <ChevronDown size={14} style={{ color: "var(--muted)" }} /> : <ChevronRight size={14} style={{ color: "var(--muted)" }} />}
+        </div>
+      </button>
+
+      {/* Expanded content */}
+      {open && error && (
+        <div
+          className="rounded border px-3 py-2 mt-2 text-xs"
+          style={{ background: "oklch(0.45 0.15 25 / 0.1)", borderColor: "oklch(0.45 0.15 25 / 0.3)", color: "var(--destructive)" }}
+        >
+          {error}
+        </div>
+      )}
+
+      {open && loading && !data && (
+        <div className="mt-2 space-y-2">
+          <div className="animate-shimmer h-16 rounded" />
+          <div className="animate-shimmer h-10 rounded" />
+        </div>
+      )}
+
+      {open && data && (
+        <div className="mt-2 space-y-3">
+          {/* Unit toggle + total */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-baseline gap-2">
+              <span className="font-mono text-2xl font-bold" style={{ color: "var(--fg)" }}>
+                {formatSize(data.total_bytes, unit)}
+              </span>
+              <span className="text-xs" style={{ color: "var(--muted)" }}>{unit} total</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div
+                className="flex rounded-md overflow-hidden border text-[10px]"
+                style={{ borderColor: "var(--border)" }}
+              >
+                {(["MB", "GB"] as const).map((u) => (
+                  <button
+                    key={u}
+                    onClick={() => setUnit(u)}
+                    className="px-2.5 py-1 font-medium transition-colors"
+                    style={{
+                      background: u === unit ? "var(--primary)" : "var(--surface-0)",
+                      color: u === unit ? "var(--primary-fg)" : "var(--muted)",
+                    }}
+                  >
+                    {u}
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={fetchDBSize}
+                disabled={loading}
+                className="rounded border p-1.5 transition-colors hover:bg-[var(--surface-2)] disabled:opacity-50"
+                style={{ borderColor: "var(--border)", color: "var(--muted)" }}
+                title="Refresh"
+              >
+                <RefreshCw size={12} className={loading ? "animate-spin" : ""} />
+              </button>
+            </div>
+          </div>
+
+          {/* Per-agent breakdown */}
+          <div>
+            <button
+              onClick={() => setExpanded(!expanded)}
+              className="flex items-center gap-1 text-xs font-medium mb-2 transition-colors hover:underline"
+              style={{ color: "var(--muted)" }}
+            >
+              {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+              By Agent ({data.by_agent.length})
+            </button>
+
+            {expanded && (
+              <div
+                className="rounded border divide-y"
+                style={{ borderColor: "var(--border)", background: "var(--surface-0)" }}
+              >
+                {data.by_agent.map((ag) => (
+                  <div
+                    key={ag.agent_id}
+                    className="flex items-center gap-3 px-3 py-2.5 text-xs"
+                    style={{ borderColor: "var(--border)" }}
+                  >
+                    <Server size={12} style={{ color: "var(--muted)" }} className="shrink-0" />
+                    <span className="font-medium truncate min-w-0" style={{ color: "var(--fg)" }}>
+                      {ag.hostname}
+                    </span>
+                    <div className="flex-1 mx-2">
+                      <div
+                        className="h-1.5 rounded-full overflow-hidden"
+                        style={{ background: "var(--surface-1)" }}
+                      >
+                        <div
+                          className="h-full rounded-full transition-all"
+                          style={{
+                            width: `${Math.max(2, (ag.bytes / maxAgentBytes) * 100)}%`,
+                            background: "#8b5cf6",
+                          }}
+                        />
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0 w-24">
+                      <span className="font-mono font-bold" style={{ color: "var(--fg)" }}>
+                        {formatSize(ag.bytes, unit)}
+                      </span>
+                      <span className="ml-1" style={{ color: "var(--muted)" }}>{unit}</span>
+                    </div>
+                    <span
+                      className="font-mono text-[10px] shrink-0 w-20 text-right"
+                      style={{ color: "var(--muted)" }}
+                    >
+                      {ag.events.toLocaleString()} events
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Table sizes */}
+          <div>
+            <div className="text-[10px] font-medium mb-1.5" style={{ color: "var(--muted)" }}>
+              Table Sizes
+            </div>
+            <div
+              className="rounded border divide-y"
+              style={{ borderColor: "var(--border)", background: "var(--surface-0)" }}
+            >
+              {Object.entries(data.tables)
+                .sort(([, a], [, b]) => b - a)
+                .map(([table, bytes]) => (
+                  <div
+                    key={table}
+                    className="flex items-center justify-between px-3 py-1.5 text-[11px]"
+                    style={{ borderColor: "var(--border)" }}
+                  >
+                    <span className="font-mono" style={{ color: "var(--fg)" }}>{table}</span>
+                    <span className="font-mono" style={{ color: "var(--muted)" }}>
+                      {formatSize(bytes, unit)} {unit}
+                    </span>
+                  </div>
+                ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* ── Main page ────────────────────────────────────────────────── */
@@ -337,6 +570,9 @@ const fetchMetrics = useCallback(async () => {
               color="#e8a83e"
             />
           </div>
+
+          {/* Database Size */}
+          <DBSizeSection />
 
           {/* Events by type */}
           {eventsByType.length > 0 && (

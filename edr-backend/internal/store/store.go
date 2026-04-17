@@ -1874,3 +1874,136 @@ func (s *Store) IOCStats(ctx context.Context) (*models.IOCStats, error) {
 	`)
 	return &stats, err
 }
+
+// ─── Pending Commands ───────────────────────────────────────────────────────
+
+// CreatePendingCommand queues a command for later execution when an agent connects.
+func (s *Store) CreatePendingCommand(ctx context.Context, cmd *models.PendingCommand) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO pending_commands (id, agent_id, action, args, created_by, status)
+		VALUES ($1, $2, $3, $4, $5, 'pending')
+	`, cmd.ID, cmd.AgentID, cmd.Action, cmd.Args, cmd.CreatedBy)
+	return err
+}
+
+// ListPendingCommands returns all commands for an agent, optionally filtered by status.
+func (s *Store) ListPendingCommands(ctx context.Context, agentID, status string) ([]models.PendingCommand, error) {
+	var cmds []models.PendingCommand
+	q := `SELECT * FROM pending_commands WHERE agent_id=$1`
+	args := []interface{}{agentID}
+	if status != "" {
+		q += ` AND status=$2`
+		args = append(args, status)
+	}
+	q += ` ORDER BY created_at DESC`
+	err := s.db.SelectContext(ctx, &cmds, q, args...)
+	if cmds == nil {
+		cmds = []models.PendingCommand{}
+	}
+	return cmds, err
+}
+
+// ClaimPendingCommands atomically marks all pending commands for an agent as 'executing' and returns them.
+func (s *Store) ClaimPendingCommands(ctx context.Context, agentID string) ([]models.PendingCommand, error) {
+	var cmds []models.PendingCommand
+	err := s.db.SelectContext(ctx, &cmds, `
+		UPDATE pending_commands SET status='executing'
+		WHERE agent_id=$1 AND status='pending'
+		RETURNING *
+	`, agentID)
+	if cmds == nil {
+		cmds = []models.PendingCommand{}
+	}
+	return cmds, err
+}
+
+// CompletePendingCommand marks a pending command as executed or failed.
+func (s *Store) CompletePendingCommand(ctx context.Context, id, status string, result json.RawMessage) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE pending_commands SET status=$2, result=$3, executed_at=NOW()
+		WHERE id=$1
+	`, id, status, result)
+	return err
+}
+
+// CancelPendingCommand marks a pending command as cancelled.
+func (s *Store) CancelPendingCommand(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE pending_commands SET status='cancelled' WHERE id=$1 AND status='pending'
+	`, id)
+	return err
+}
+
+// ─── Database Size ──────────────────────────────────────────────────────────
+
+// DBSizeTotal returns the total database size in bytes.
+func (s *Store) DBSizeTotal(ctx context.Context) (int64, error) {
+	var size int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT pg_database_size(current_database())`).Scan(&size)
+	return size, err
+}
+
+// DBTableSizes returns the size of each major table in bytes.
+func (s *Store) DBTableSizes(ctx context.Context) (map[string]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT relname, pg_total_relation_size(c.oid)
+		FROM pg_class c
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'public' AND c.relkind = 'r'
+		ORDER BY pg_total_relation_size(c.oid) DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := map[string]int64{}
+	for rows.Next() {
+		var name string
+		var size int64
+		if err := rows.Scan(&name, &size); err != nil {
+			return nil, err
+		}
+		result[name] = size
+	}
+	return result, rows.Err()
+}
+
+// AgentDBSize holds the event data size for one agent.
+type AgentDBSize struct {
+	AgentID  string `db:"agent_id" json:"agent_id"`
+	Hostname string `db:"hostname" json:"hostname"`
+	Bytes    int64  `db:"-"        json:"bytes"`
+	Events   int64  `db:"events"   json:"events"`
+}
+
+// DBSizeByAgent returns the events table size approximation per agent.
+func (s *Store) DBSizeByAgent(ctx context.Context) ([]AgentDBSize, error) {
+	// Estimate per-agent size: count events and multiply by avg row size.
+	var avgRowSize int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(
+			pg_total_relation_size('events') / NULLIF((SELECT COUNT(*) FROM events), 0),
+			0
+		)
+	`).Scan(&avgRowSize)
+	if err != nil {
+		return nil, err
+	}
+
+	var results []AgentDBSize
+	err = s.db.SelectContext(ctx, &results, `
+		SELECT e.agent_id, COALESCE(a.hostname, e.agent_id) AS hostname, COUNT(*) AS events
+		FROM events e
+		LEFT JOIN agents a ON a.id = e.agent_id
+		GROUP BY e.agent_id, a.hostname
+		ORDER BY COUNT(*) DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	for i := range results {
+		results[i].Bytes = results[i].Events * avgRowSize
+	}
+	return results, nil
+}

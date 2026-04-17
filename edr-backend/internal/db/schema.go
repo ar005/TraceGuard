@@ -763,6 +763,23 @@ var migrations = []struct {
 		ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_backup_codes TEXT NOT NULL DEFAULT '';
 		`,
 	},
+	{
+		name: "create_pending_commands",
+		sql: `
+		CREATE TABLE IF NOT EXISTS pending_commands (
+			id         TEXT PRIMARY KEY,
+			agent_id   TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+			action     TEXT NOT NULL,
+			args       JSONB NOT NULL DEFAULT '[]',
+			created_by TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			status     TEXT NOT NULL DEFAULT 'pending',
+			result     JSONB,
+			executed_at TIMESTAMPTZ
+		);
+		CREATE INDEX IF NOT EXISTS idx_pending_commands_agent_status ON pending_commands(agent_id, status);
+		`,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.
