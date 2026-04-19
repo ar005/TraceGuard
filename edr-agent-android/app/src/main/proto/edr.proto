@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+package edr.v1;
+
+option go_package          = "github.com/youredr/edr-backend/internal/proto";
+option java_package        = "com.traceguard.agent.proto";
+option java_multiple_files = true;
+option java_outer_classname = "EdrProto";
+
+// ─── EventEnvelope ────────────────────────────────────────────────────────────
+message EventEnvelope {
+  string agent_id   = 1;
+  string hostname   = 2;
+  string event_id   = 3;
+  string event_type = 4;
+  int64  timestamp  = 5;
+  bytes  payload    = 6;
+  string os         = 7;
+  string agent_ver  = 8;
+}
+
+// ─── Heartbeat ────────────────────────────────────────────────────────────────
+message HeartbeatRequest {
+  string     agent_id  = 1;
+  string     hostname  = 2;
+  int64      timestamp = 3;
+  string     agent_ver = 4;
+  string     os        = 5;
+  AgentStats stats     = 6;
+}
+
+message AgentStats {
+  uint64 events_sent    = 1;
+  uint64 events_dropped = 2;
+  uint64 buffer_size    = 3;
+  float  cpu_pct        = 4;
+  uint64 mem_bytes      = 5;
+}
+
+message HeartbeatResponse {
+  bool   ok             = 1;
+  int64  server_time    = 2;
+  string config_version = 3;
+}
+
+// ─── StreamResponse ───────────────────────────────────────────────────────────
+message StreamResponse {
+  bool   ok      = 1;
+  string message = 2;
+}
+
+// ─── AgentRegistration ────────────────────────────────────────────────────────
+message RegisterRequest {
+  string agent_id   = 1;
+  string hostname   = 2;
+  string os         = 3;
+  string os_version = 4;
+  string agent_ver  = 5;
+  string ip         = 6;
+}
+
+message RegisterResponse {
+  bool   ok             = 1;
+  string assigned_id    = 2;
+  string config_version = 3;
+}
+
+// ─── Live Response ────────────────────────────────────────────────────────────
+message LiveCommand {
+  string          command_id = 1;
+  string          action     = 2;
+  repeated string args       = 3;
+  int32           timeout    = 4;
+}
+
+message LiveResult {
+  string command_id = 1;
+  string agent_id   = 2;
+  string status     = 3;
+  int32  exit_code  = 4;
+  string stdout     = 5;
+  string stderr     = 6;
+  string error      = 7;
+}
+
+// ─── EventService ─────────────────────────────────────────────────────────────
+service EventService {
+  rpc Register(RegisterRequest)             returns (RegisterResponse);
+  rpc StreamEvents(stream EventEnvelope)    returns (StreamResponse);
+  rpc Heartbeat(HeartbeatRequest)           returns (HeartbeatResponse);
+  rpc LiveResponse(stream LiveResult)       returns (stream LiveCommand);
+}

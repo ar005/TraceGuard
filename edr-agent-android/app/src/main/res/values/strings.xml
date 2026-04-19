@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">TraceGuard EDR</string>
+    <string name="notification_channel_name">EDR Monitoring</string>
+    <string name="notification_channel_desc">TraceGuard endpoint detection is active</string>
+</resources>
