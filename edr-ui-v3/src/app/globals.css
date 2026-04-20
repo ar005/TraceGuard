@@ -1,0 +1,306 @@
+@import "tailwindcss";
+
+/* ================================================================
+   TRACEGUARD EDR v3 — Vigilant · Guided · Authoritative
+   OKLCH-based amber-tinted neutrals (hue ~70)
+   Fonts: Archivo (display/headings) · Onest (body) · Fira Code (mono)
+   ================================================================ */
+
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--fg);
+  --font-display:  var(--font-archivo);
+  --font-sans:     var(--font-onest);
+  --font-mono:     var(--font-fira-code);
+}
+
+/* ----------------------------------------------------------------
+   Spacing scale — 4pt base
+   ---------------------------------------------------------------- */
+:root {
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-24: 96px;
+}
+
+/* ----------------------------------------------------------------
+   Type scale — fixed rem for app UI (no fluid/clamp in product UIs)
+   ---------------------------------------------------------------- */
+:root {
+  --text-xs:   0.6875rem;  /* 11px — timestamps, captions */
+  --text-sm:   0.8125rem;  /* 13px — table rows, body */
+  --text-base: 0.9375rem;  /* 15px — default */
+  --text-lg:   1.125rem;   /* 18px — section headings */
+  --text-xl:   1.375rem;   /* 22px — page titles */
+  --text-2xl:  1.75rem;    /* 28px — stat numbers */
+  --text-3xl:  2.5rem;     /* 40px — hero metrics */
+
+  --leading-tight:  1.2;
+  --leading-snug:   1.35;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.65; /* dark bg: add 0.05–0.1 over normal */
+}
+
+/* ----------------------------------------------------------------
+   Color tokens — dark mode (default)
+   Neutrals tinted toward amber hue ~70 for subconscious warmth
+   ---------------------------------------------------------------- */
+:root {
+  /* Primary — copper-gold */
+  --primary:       oklch(0.65 0.17 68);
+  --primary-hover: oklch(0.60 0.17 68);
+  --primary-muted: oklch(0.65 0.08 68);
+  --primary-fg:    oklch(0.12 0.01 70);
+
+  /* Dark surfaces — amber-tinted neutrals */
+  --bg:        oklch(0.13 0.012 70);
+  --surface-0: oklch(0.155 0.012 70);
+  --surface-1: oklch(0.185 0.014 70);
+  --surface-2: oklch(0.225 0.016 70);
+  --surface-3: oklch(0.265 0.018 70);
+
+  /* Borders */
+  --border:    oklch(0.27 0.018 70);
+  --border-hi: oklch(0.34 0.022 70);
+  --ring:      var(--primary);
+
+  /* Text */
+  --fg:   oklch(0.92 0.008 70);  /* warm white */
+  --fg-2: oklch(0.65 0.010 70);  /* secondary */
+  --fg-3: oklch(0.46 0.010 70);  /* muted */
+  --fg-4: oklch(0.32 0.008 70);  /* disabled */
+
+  /* Severity */
+  --sev-critical:    oklch(0.55 0.24 22);
+  --sev-critical-bg: oklch(0.55 0.24 22 / 0.08);
+  --sev-high:        oklch(0.60 0.19 38);
+  --sev-high-bg:     oklch(0.60 0.19 38 / 0.08);
+  --sev-medium:      oklch(0.68 0.15 68);
+  --sev-medium-bg:   oklch(0.68 0.15 68 / 0.08);
+  --sev-low:         oklch(0.62 0.13 145);
+  --sev-low-bg:      oklch(0.62 0.13 145 / 0.06);
+  --sev-info:        oklch(0.58 0.12 240);
+  --sev-info-bg:     oklch(0.58 0.12 240 / 0.06);
+
+  /* Status */
+  --status-online:  oklch(0.58 0.14 145);
+  --status-offline: oklch(0.38 0.008 70);
+  --status-warn:    oklch(0.68 0.15 68);
+
+  /* Semantic */
+  --destructive:    oklch(0.55 0.24 22);
+  --success:        oklch(0.58 0.14 145);
+  --warning:        oklch(0.68 0.15 68);
+
+  /* Sidebar */
+  --rail-bg:     oklch(0.115 0.012 70);
+  --rail-border: oklch(0.22 0.016 70);
+  --rail-fg:     oklch(0.55 0.010 70);
+  --rail-active-bg: oklch(0.20 0.020 70);
+  --rail-active-fg: var(--primary);
+}
+
+/* ----------------------------------------------------------------
+   Light mode overrides
+   ---------------------------------------------------------------- */
+.light {
+  --bg:        oklch(0.97 0.006 80);
+  --surface-0: oklch(1.00 0.003 80);
+  --surface-1: oklch(0.95 0.008 80);
+  --surface-2: oklch(0.91 0.010 80);
+  --surface-3: oklch(0.86 0.012 80);
+  --border:    oklch(0.84 0.012 80);
+  --border-hi: oklch(0.76 0.016 80);
+  --fg:        oklch(0.18 0.014 70);
+  --fg-2:      oklch(0.38 0.012 70);
+  --fg-3:      oklch(0.55 0.010 70);
+  --fg-4:      oklch(0.68 0.008 70);
+  --rail-bg:     oklch(0.93 0.010 80);
+  --rail-border: oklch(0.86 0.012 80);
+  --rail-fg:     oklch(0.46 0.010 70);
+  --rail-active-bg: oklch(0.88 0.018 70);
+  --rail-active-fg: var(--primary-hover);
+}
+
+/* ----------------------------------------------------------------
+   Base
+   ---------------------------------------------------------------- */
+html { color-scheme: dark; }
+.light { color-scheme: light; }
+
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-onest), system-ui, sans-serif;
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ----------------------------------------------------------------
+   Typography utilities
+   ---------------------------------------------------------------- */
+.font-display  { font-family: var(--font-archivo), system-ui, sans-serif; }
+.font-mono     { font-family: var(--font-fira-code), ui-monospace, monospace; }
+
+/* Stat number — Archivo Black, no letter-spacing */
+.stat-num {
+  font-family: var(--font-archivo), system-ui, sans-serif;
+  font-weight: 900;
+  font-size: var(--text-2xl);
+  line-height: var(--leading-tight);
+  color: var(--fg);
+  letter-spacing: -0.02em;
+}
+.stat-num-hero {
+  font-family: var(--font-archivo), system-ui, sans-serif;
+  font-weight: 900;
+  font-size: var(--text-3xl);
+  line-height: var(--leading-tight);
+  letter-spacing: -0.03em;
+}
+
+/* Section label — tiny uppercase Archivo */
+.section-label {
+  font-family: var(--font-archivo), system-ui, sans-serif;
+  font-weight: 600;
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+
+/* Page title */
+.page-title {
+  font-family: var(--font-archivo), system-ui, sans-serif;
+  font-weight: 700;
+  font-size: var(--text-xl);
+  line-height: var(--leading-snug);
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+
+/* ----------------------------------------------------------------
+   Severity utilities — row wash (full background, never a stripe)
+   ---------------------------------------------------------------- */
+.sev-row-critical { background: var(--sev-critical-bg); }
+.sev-row-high     { background: var(--sev-high-bg); }
+.sev-row-medium   { background: var(--sev-medium-bg); }
+.sev-row-low      { background: var(--sev-low-bg); }
+.sev-row-info     { background: var(--sev-info-bg); }
+
+.sev-dot-critical { background: var(--sev-critical); }
+.sev-dot-high     { background: var(--sev-high); }
+.sev-dot-medium   { background: var(--sev-medium); }
+.sev-dot-low      { background: var(--sev-low); }
+.sev-dot-info     { background: var(--sev-info); }
+
+.sev-text-critical { color: var(--sev-critical); }
+.sev-text-high     { color: var(--sev-high); }
+.sev-text-medium   { color: var(--sev-medium); }
+.sev-text-low      { color: var(--sev-low); }
+.sev-text-info     { color: var(--sev-info); }
+
+/* ----------------------------------------------------------------
+   Status dot — live pulse animation
+   ---------------------------------------------------------------- */
+@keyframes live-pulse {
+  0%, 100% { transform: scale(1);    opacity: 1; }
+  50%       { transform: scale(1.25); opacity: 0.75; }
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.status-dot-online {
+  background: var(--status-online);
+  animation: live-pulse 2.4s ease-in-out infinite;
+}
+.status-dot-offline { background: var(--status-offline); }
+.status-dot-warn    { background: var(--status-warn); animation: live-pulse 1.6s ease-in-out infinite; }
+
+/* ----------------------------------------------------------------
+   AI explain inset
+   ---------------------------------------------------------------- */
+.ai-explain {
+  background: oklch(0.18 0.016 265 / 0.6);
+  border: 1px solid oklch(0.30 0.020 265 / 0.5);
+  border-radius: 6px;
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  color: oklch(0.80 0.010 265);
+}
+
+.ai-explain-icon {
+  font-size: var(--text-xs);
+  color: oklch(0.65 0.14 265);
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.ai-explain-icon:hover { color: oklch(0.78 0.14 265); }
+
+/* ----------------------------------------------------------------
+   Loading shimmer
+   ---------------------------------------------------------------- */
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+.animate-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--surface-1) 25%,
+    var(--surface-2) 50%,
+    var(--surface-1) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+  border-radius: 4px;
+}
+
+/* ----------------------------------------------------------------
+   Scrollbar styling
+   ---------------------------------------------------------------- */
+::-webkit-scrollbar       { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-hi); }
+
+/* ----------------------------------------------------------------
+   Focus ring
+   ---------------------------------------------------------------- */
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* ----------------------------------------------------------------
+   Dot-grid background (subtle)
+   ---------------------------------------------------------------- */
+.bg-dot-grid {
+  background-image: radial-gradient(circle, var(--border) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* ----------------------------------------------------------------
+   Transitions
+   ---------------------------------------------------------------- */
+.transition-fast { transition: all 0.12s cubic-bezier(0.4, 0, 0.2, 1); }
+.transition-base { transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1); }
