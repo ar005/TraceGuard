@@ -2,9 +2,11 @@ package com.traceguard.agent.android.liveresponse
 
 import android.app.ActivityManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Process
+import com.traceguard.agent.android.service.ContainmentVpnService
 import com.traceguard.agent.events.LiveCommand
 import com.traceguard.agent.events.LiveResult
 import java.io.File
@@ -26,9 +28,11 @@ class LiveResponseHandler(private val context: Context) {
             "pm"      -> handlePm(cmd)
             "dumpsys" -> handleDumpsys(cmd)
             "kill"    -> handleKill(cmd)
-            "netstat" -> handleNetstat(cmd)
-            "exec"    -> handleExec(cmd)
-            else      -> error(cmd, "unknown action: ${cmd.action}")
+            "netstat"  -> handleNetstat(cmd)
+            "exec"     -> handleExec(cmd)
+            "isolate"  -> handleIsolate(cmd)
+            "release"  -> handleRelease(cmd)
+            else       -> error(cmd, "unknown action: ${cmd.action}")
         }
     }
 
@@ -123,6 +127,28 @@ class LiveResponseHandler(private val context: Context) {
         // secondary blocklist check on the exec args
         if (BLOCKED.containsMatchIn(command)) return error(cmd, "blocked: dangerous command")
         return ok(cmd, runShell(command))
+    }
+
+    private fun handleIsolate(cmd: LiveCommand): LiveResult {
+        val intent = Intent(context, ContainmentVpnService::class.java)
+            .setAction(ContainmentVpnService.ACTION_ISOLATE)
+        return try {
+            context.startService(intent)
+            ok(cmd, "containment activated — all traffic blocked except backend")
+        } catch (e: Exception) {
+            error(cmd, "isolate failed: ${e.message}")
+        }
+    }
+
+    private fun handleRelease(cmd: LiveCommand): LiveResult {
+        val intent = Intent(context, ContainmentVpnService::class.java)
+            .setAction(ContainmentVpnService.ACTION_RELEASE)
+        return try {
+            context.startService(intent)
+            ok(cmd, "containment released — normal network access restored")
+        } catch (e: Exception) {
+            error(cmd, "release failed: ${e.message}")
+        }
     }
 
     private fun runShell(command: String): String = try {

@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.traceguard.agent.android.config.ConfigRepository
+import com.traceguard.agent.android.service.ContainmentState
+import com.traceguard.agent.android.service.ContainmentVpnService
 import com.traceguard.agent.buffer.EventBuffer
 import com.traceguard.agent.config.AgentConfig
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -17,13 +19,16 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 data class AgentUiState(
-    val agentId:      String  = "",
-    val backendHost:  String  = "192.168.1.100",
-    val backendPort:  Int     = 50051,
-    val useTls:       Boolean = false,
-    val apiToken:     String  = "",
-    val bufferCount:  Long    = 0,
-    val serviceRunning: Boolean = false,
+    val agentId:          String           = "",
+    val backendHost:      String           = "192.168.1.100",
+    val backendPort:      Int              = 50051,
+    val useTls:           Boolean          = false,
+    val apiToken:         String           = "",
+    val bufferCount:      Long             = 0,
+    val serviceRunning:   Boolean          = false,
+    val containmentState: ContainmentState = ContainmentState.RELEASED,
+    /** Set to true when VPN pre-auth should be requested from the UI. */
+    val needsVpnPermission: Boolean        = false,
 )
 
 @HiltViewModel
@@ -39,6 +44,7 @@ class MainViewModel @Inject constructor(
     init {
         loadConfig()
         startPolling()
+        observeContainment()
     }
 
     private fun loadConfig() {
@@ -61,10 +67,27 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    fun onHostChanged(host: String)        { _state.value = _state.value.copy(backendHost = host) }
-    fun onPortChanged(port: String)        { _state.value = _state.value.copy(backendPort = port.toIntOrNull() ?: 50051) }
-    fun onTlsChanged(tls: Boolean)         { _state.value = _state.value.copy(useTls = tls) }
-    fun onTokenChanged(token: String)      { _state.value = _state.value.copy(apiToken = token) }
+    private fun observeContainment() {
+        viewModelScope.launch {
+            ContainmentVpnService.state.collect { cs ->
+                _state.value = _state.value.copy(
+                    containmentState  = cs,
+                    needsVpnPermission = cs == ContainmentState.PERMISSION_REQUIRED,
+                )
+            }
+        }
+    }
+
+    fun onVpnPermissionResult(granted: Boolean) {
+        if (granted) {
+            _state.value = _state.value.copy(needsVpnPermission = false)
+        }
+    }
+
+    fun onHostChanged(host: String)   { _state.value = _state.value.copy(backendHost = host) }
+    fun onPortChanged(port: String)   { _state.value = _state.value.copy(backendPort = port.toIntOrNull() ?: 50051) }
+    fun onTlsChanged(tls: Boolean)    { _state.value = _state.value.copy(useTls = tls) }
+    fun onTokenChanged(token: String) { _state.value = _state.value.copy(apiToken = token) }
 
     fun saveAndApply() {
         val s = _state.value
