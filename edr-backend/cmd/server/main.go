@@ -14,10 +14,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
 	"github.com/youredr/edr-backend/internal/api"
+	"github.com/youredr/edr-backend/internal/connectors"
 	"github.com/youredr/edr-backend/internal/cvecache"
 	"github.com/youredr/edr-backend/internal/sse"
 	"github.com/youredr/edr-backend/internal/llm"
@@ -31,8 +33,13 @@ import (
 	"github.com/youredr/edr-backend/internal/liveresponse"
 	"github.com/youredr/edr-backend/internal/metrics"
 	"github.com/youredr/edr-backend/internal/models"
+	"github.com/youredr/edr-backend/internal/natsbus"
 	"github.com/youredr/edr-backend/internal/store"
 	"github.com/youredr/edr-backend/internal/users"
+	"github.com/youredr/edr-backend/internal/export"
+	"github.com/youredr/edr-backend/internal/playbook"
+	"github.com/youredr/edr-backend/internal/userrisk"
+	"github.com/youredr/edr-backend/internal/workers"
 
 	// Register JSON codec for gRPC
 	_ "github.com/youredr/edr-backend/internal/proto"
@@ -61,6 +68,17 @@ func main() {
 	}
 	logger.Info().Str("grpc", cfg.Server.GRPCAddr).Str("http", cfg.Server.HTTPAddr).Msg("EDR backend starting")
 
+	// ── Node identity ─────────────────────────────────────────────────────────
+	nodeID := cfg.Server.NodeID
+	if nodeID == "" {
+		if h, err := os.Hostname(); err == nil {
+			nodeID = h
+		} else {
+			nodeID = "unknown"
+		}
+	}
+	logger.Info().Str("node_id", nodeID).Msg("node identity")
+
 	// ── Database ──────────────────────────────────────────────────────────────
 	database, err := db.Open(cfg.Database.DSNString())
 	if err != nil {
@@ -78,6 +96,18 @@ func main() {
 
 	// ── Store ─────────────────────────────────────────────────────────────────
 	st := store.New(database)
+
+	// ── Read replica (optional) ────────────────────────────────────────────────
+	if cfg.Database.ReadURL != "" {
+		rdb, err := db.OpenReplica(cfg.Database.ReadURL)
+		if err != nil {
+			logger.Warn().Err(err).Msg("read replica unavailable — all reads use primary")
+		} else {
+			st.SetReadReplica(rdb)
+			defer rdb.Close()
+			logger.Info().Msg("read replica connected")
+		}
+	}
 
 	// ── JWT secret: env var or random ─────────────────────────────────────────
 	jwtSecret := []byte(os.Getenv("EDR_JWT_SECRET"))
@@ -119,13 +149,28 @@ func main() {
 
 	// ── Detection Engine ──────────────────────────────────────────────────────
 		// SSE broker — fans live events to connected browser clients.
-	sseBroker := sse.New(logger)
+	// SSE broker — backed by PostgreSQL LISTEN/NOTIFY for multi-node fan-out.
+	sseBroker := sse.New(logger, database, cfg.Database.DSNString())
+	brokerCtx, brokerCancel := context.WithCancel(context.Background())
+	defer brokerCancel()
+	sseBroker.Start(brokerCtx)
+
+	// ── SOAR + Export (created before engine so callbacks can reference them) ──
+	// These are late-bound via pointers; the actual Runner/ExportManager are
+	// created after lrManager (below) and stored into these vars.
+	var (
+		pbRunner  *playbook.Runner
+		exportMgr *export.ExportManager
+	)
 
 	// Incident correlation window — alerts on the same agent within this
 	// window are grouped into a single incident.
 	const incidentWindow = 30 * time.Minute
 
-	engine := detection.New(st, logger, func(ctx context.Context, alert *models.Alert) {
+	// fireAlert is the shared alert dispatch closure used by the detection engine
+	// and the behavioral analyzer.
+	var fireAlert func(ctx context.Context, alert *models.Alert)
+	fireAlert = func(ctx context.Context, alert *models.Alert) {
 		if err := st.InsertAlert(ctx, alert); err != nil {
 			logger.Error().Err(err).Str("rule", alert.RuleID).Msg("persist alert failed")
 			return
@@ -137,14 +182,36 @@ func main() {
 			Int("severity",  int(alert.Severity)).
 			Msg("ALERT FIRED")
 
+		// ── SOAR: trigger playbooks + export ────────────────────────────
+		if pbRunner != nil {
+			pbRunner.OnAlert(ctx, alert)
+		}
+		if exportMgr != nil {
+			exportMgr.ExportAlert(ctx, alert)
+		}
+
 		// ── Incident correlation ─────────────────────────────────────────
-		existing, err := st.FindOpenIncident(ctx, alert.AgentID, incidentWindow)
+		// XDR alerts carry user_uid / source_types — correlate cross-source.
+		userUID    := alert.UserUID
+		srcIPStr   := ""
+		sourceType := ""
+		if len(alert.SourceTypes) > 0 {
+			sourceType = alert.SourceTypes[0]
+		}
+
+		var existing *models.Incident
+		var err error
+		if userUID != "" || srcIPStr != "" {
+			existing, err = st.FindOpenIncidentXdr(ctx, alert.AgentID, userUID, srcIPStr, incidentWindow)
+		} else {
+			existing, err = st.FindOpenIncident(ctx, alert.AgentID, incidentWindow)
+		}
 		if err != nil {
 			logger.Warn().Err(err).Msg("incident lookup failed — creating new incident")
 		}
 		if existing != nil {
-			// Append alert to existing incident.
-			if err := st.AddAlertToIncident(ctx, existing.ID, alert); err != nil {
+			// Append alert to existing incident (XDR-aware).
+			if err := st.AddAlertToIncidentXdr(ctx, existing.ID, alert, userUID, srcIPStr, sourceType); err != nil {
 				logger.Error().Err(err).Str("incident", existing.ID).Msg("add alert to incident failed")
 			} else {
 				_ = st.SetAlertIncident(ctx, alert.ID, existing.ID)
@@ -157,9 +224,13 @@ func main() {
 		} else {
 			// Create a new incident for this alert.
 			incID := "inc-" + uuid.New().String()
+			title := fmt.Sprintf("Incident on %s", alert.Hostname)
+			if userUID != "" {
+				title = fmt.Sprintf("Incident — %s", userUID)
+			}
 			inc := &models.Incident{
 				ID:          incID,
-				Title:       fmt.Sprintf("Incident on %s", alert.Hostname),
+				Title:       title,
 				Description: fmt.Sprintf("Auto-correlated incident starting with: %s", alert.Title),
 				Severity:    alert.Severity,
 				Status:      "OPEN",
@@ -170,6 +241,12 @@ func main() {
 				AlertCount:  1,
 				FirstSeen:   time.Now(),
 				LastSeen:    time.Now(),
+			}
+			if userUID != "" {
+				inc.UserUIDs = pq.StringArray{userUID}
+			}
+			if sourceType != "" {
+				inc.SourceTypes = pq.StringArray{sourceType}
 			}
 			if err := st.InsertIncident(ctx, inc); err != nil {
 				logger.Error().Err(err).Msg("create incident failed")
@@ -182,7 +259,8 @@ func main() {
 					Msg("new incident created")
 			}
 		}
-	})
+	}
+	engine := detection.New(st, logger, fireAlert)
 	if err := engine.Reload(context.Background()); err != nil {
 		logger.Fatal().Err(err).Msg("load detection rules")
 	}
@@ -194,8 +272,70 @@ func main() {
 	// to agents via live response when IOC matches are found.
 	engine.SetAutoResponder(lrManager)
 
+	// ── SOAR Runner + Export Manager ──────────────────────────────────────────
+	pbRunner = playbook.New(st, lrManager, logger)
+	exportMgr = export.New(st, logger)
+	logger.Info().Msg("SOAR playbook runner and export manager initialized")
+
+	// ── NATS JetStream (XDR pipeline, optional) ───────────────────────────────
+	var ingestSink ingest.EventSink // nil = inline detection (EDR mode)
+	var natsBus *natsbus.Bus
+	if cfg.NATS.Enabled {
+		var err error
+		natsBus, err = natsbus.New(cfg.NATS.URL, logger)
+		if err != nil {
+			logger.Fatal().Err(err).Str("url", cfg.NATS.URL).Msg("NATS connect failed")
+		}
+		defer natsBus.Close()
+
+		natsCtx, natsCancel := context.WithCancel(context.Background())
+		defer natsCancel()
+
+		if err := natsBus.EnsureStream(natsCtx); err != nil {
+			logger.Fatal().Err(err).Msg("NATS stream setup failed")
+		}
+
+		if err := workers.RunDetectionWorker(natsCtx, natsBus, engine, logger); err != nil {
+			logger.Fatal().Err(err).Msg("detection worker startup failed")
+		}
+		if err := workers.RunStoreWorker(natsCtx, natsBus, st, logger); err != nil {
+			logger.Fatal().Err(err).Msg("store worker startup failed")
+		}
+
+		ingestSink = natsbus.NewSink(natsBus)
+		logger.Info().Str("url", cfg.NATS.URL).Msg("XDR pipeline enabled (NATS JetStream)")
+	} else {
+		logger.Info().Msg("XDR pipeline disabled — running inline detection (EDR mode)")
+	}
+
+	// ── XDR Connector Registry ────────────────────────────────────────────────
+	// Connectors only run when the NATS pipeline is active; they publish
+	// normalized XdrEvents to the same JetStream subjects as endpoint events.
+	if natsBus != nil {
+		connReg := connectors.NewRegistry(natsbus.NewSink(natsBus), st, logger)
+		connCtx, connCancel := context.WithCancel(context.Background())
+		defer connCancel()
+		if err := connReg.LoadAndStart(connCtx); err != nil {
+			logger.Warn().Err(err).Msg("connector registry load failed — connectors disabled")
+		}
+	}
+
+	// ── User Risk Scorer + Decay Worker ──────────────────────────────────────
+	if natsBus != nil {
+		scorer := userrisk.New(st, logger)
+		riskCtx, riskCancel := context.WithCancel(context.Background())
+		defer riskCancel()
+		_ = natsBus.Subscribe(riskCtx, natsbus.ConsumerConfig{Name: "user-risk-scorer"}, func(ctx context.Context, ev *models.XdrEvent) error {
+			scorer.Score(ctx, ev)
+			return nil
+		})
+
+		decayWorker := workers.NewRiskDecayWorker(st, 24*time.Hour, 10, logger)
+		go decayWorker.Run(riskCtx)
+	}
+
 	// ── gRPC Ingest Server ────────────────────────────────────────────────────
-	grpcServer := ingest.New(st, engine, sseBroker, lrManager, logger, ingest.TLSConfig{
+	grpcServer := ingest.New(st, engine, sseBroker, lrManager, ingestSink, logger, ingest.TLSConfig{
 		Enabled:  cfg.Server.TLS.Enabled,
 		CertFile: cfg.Server.TLS.CertFile,
 		KeyFile:  cfg.Server.TLS.KeyFile,
@@ -235,7 +375,7 @@ func main() {
 	})
 	go iocSyncer.Start(context.Background())
 
-	apiServer := api.New(st, engine, km, um, al, llmClient, lrManager, iocSyncer, sseBroker, logger, cfg.Auth.APIKey,
+	apiServer := api.New(st, engine, km, um, al, llmClient, lrManager, iocSyncer, sseBroker, logger, nodeID, cfg.Auth.APIKey,
 		api.RateLimitConfig{
 			Enabled:           cfg.RateLimit.Enabled,
 			RequestsPerSecond: cfg.RateLimit.RequestsPerSecond,
@@ -244,6 +384,13 @@ func main() {
 	// ── CVE Cache Fetcher ────────────────────────────────────────────────────
 	cveFetcher := cvecache.New(st, logger)
 	apiServer.SetCVEFetcher(cveFetcher)
+
+	// Wire XDR sink for REST webhook ingest (only when NATS is enabled).
+	if natsBus != nil {
+		apiServer.SetXdrSink(natsbus.NewSink(natsBus))
+	}
+	apiServer.SetPlaybookRunner(pbRunner)
+	apiServer.SetExportManager(exportMgr)
 
 	go func() {
 		if err := apiServer.Listen(cfg.Server.HTTPAddr); err != nil {
@@ -321,6 +468,14 @@ func main() {
 			runSweep()
 		}
 	}()
+
+	// ── XDR Phase 4: Flow retention worker ────────────────────────────────────
+	flowRetention := workers.NewFlowRetentionWorker(st.DB(), cfg.Retention.FlowDays, logger)
+	go flowRetention.Start(context.Background())
+
+	// ── XDR Phase 4: Behavioral analytics ─────────────────────────────────────
+	behavioralAnalyzer := detection.NewBehavioralAnalyzer(st.DB(), st, fireAlert, logger)
+	go behavioralAnalyzer.Start(context.Background())
 
 	// ── Graceful shutdown ─────────────────────────────────────────────────────
 	quit := make(chan os.Signal, 1)

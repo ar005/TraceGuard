@@ -81,4 +81,15 @@ var (
 		Help:    "Database query latency",
 		Buckets: prometheus.DefBuckets,
 	}, []string{"operation"})
+
+	// XDR connectors
+	XdrEventsReceived = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "xdr_events_received_total",
+		Help: "Total XDR events received from external connectors",
+	}, []string{"source_type"})
+
+	XdrConnectorLag = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "xdr_connector_lag_seconds",
+		Help: "Seconds behind real-time for each connector (file-tail connectors only)",
+	}, []string{"connector_id"})
 )

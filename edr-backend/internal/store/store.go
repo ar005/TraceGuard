@@ -25,11 +25,26 @@ import (
 
 // Store wraps the database connection and provides typed query methods.
 type Store struct {
-	db *sqlx.DB
+	db     *sqlx.DB
+	readDB *sqlx.DB // optional read replica; nil → use primary
 }
 
 func New(db *sqlx.DB) *Store {
 	return &Store{db: db}
+}
+
+// SetReadReplica configures an optional read replica. Once set, all read-heavy
+// queries route to it; writes always go to the primary db.
+func (s *Store) SetReadReplica(rdb *sqlx.DB) {
+	s.readDB = rdb
+}
+
+// rdb returns the read replica if configured, otherwise the primary DB.
+func (s *Store) rdb() *sqlx.DB {
+	if s.readDB != nil {
+		return s.readDB
+	}
+	return s.db
 }
 
 // DB returns the underlying sqlx.DB, used by the migration package.
@@ -97,13 +112,13 @@ func (s *Store) MarkAgentOffline(ctx context.Context, agentID string) error {
 
 func (s *Store) GetAgent(ctx context.Context, id string) (*models.Agent, error) {
 	var a models.Agent
-	err := s.db.GetContext(ctx, &a, `SELECT * FROM agents WHERE id=$1`, id)
+	err := s.rdb().GetContext(ctx, &a, `SELECT * FROM agents WHERE id=$1`, id)
 	return &a, err
 }
 
 func (s *Store) ListAgents(ctx context.Context) ([]models.Agent, error) {
 	var agents []models.Agent
-	err := s.db.SelectContext(ctx, &agents, `SELECT * FROM agents ORDER BY last_seen DESC`)
+	err := s.rdb().SelectContext(ctx, &agents, `SELECT * FROM agents ORDER BY last_seen DESC`)
 	return agents, err
 }
 
@@ -223,13 +238,13 @@ func (s *Store) QueryEvents(ctx context.Context, p QueryEventsParams) ([]models.
 	args = append(args, p.Limit, p.Offset)
 
 	var events []models.Event
-	err := s.db.SelectContext(ctx, &events, query, args...)
+	err := s.rdb().SelectContext(ctx, &events, query, args...)
 	return events, err
 }
 
 func (s *Store) GetEvent(ctx context.Context, id string) (*models.Event, error) {
 	var e models.Event
-	err := s.db.GetContext(ctx, &e, `SELECT * FROM events WHERE id=$1`, id)
+	err := s.rdb().GetContext(ctx, &e, `SELECT * FROM events WHERE id=$1`, id)
 	return &e, err
 }
 
@@ -247,6 +262,28 @@ func (s *Store) CountEvents(ctx context.Context, agentID string, since time.Time
 		).Scan(&n)
 	}
 	return n, err
+}
+
+// TimelinePoint is one hourly bucket of event counts.
+type TimelinePoint struct {
+	Hour  string `db:"hour"  json:"hour"`
+	Count int64  `db:"count" json:"count"`
+}
+
+// EventsTimeline returns per-hour event counts from since to now.
+func (s *Store) EventsTimeline(ctx context.Context, since time.Time) ([]TimelinePoint, error) {
+	var pts []TimelinePoint
+	err := s.rdb().SelectContext(ctx, &pts, `
+		SELECT
+			to_char(date_trunc('hour', timestamp AT TIME ZONE 'UTC'),
+				'YYYY-MM-DD"T"HH24:00:00"Z"') AS hour,
+			COUNT(*) AS count
+		FROM events
+		WHERE timestamp >= $1
+		GROUP BY date_trunc('hour', timestamp AT TIME ZONE 'UTC')
+		ORDER BY 1 ASC
+	`, since)
+	return pts, err
 }
 
 // DeleteOldEvents deletes events older than the given cutoff time.
@@ -280,16 +317,17 @@ func (s *Store) DeleteOldAlerts(ctx context.Context, olderThan time.Time) (int64
 func (s *Store) InsertAlert(ctx context.Context, a *models.Alert) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO alerts
-		  (id, title, description, severity, status, rule_id, rule_name, mitre_ids, event_ids, agent_id, hostname, first_seen, last_seen, hit_count)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW(),NOW(),1)
+		  (id, title, description, severity, status, rule_id, rule_name, mitre_ids, event_ids, agent_id, hostname, user_uid, source_types, first_seen, last_seen, hit_count)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW(),NOW(),1)
 		ON CONFLICT (id) DO UPDATE SET
-			last_seen  = NOW(),
-			hit_count  = alerts.hit_count + 1,
-			event_ids  = alerts.event_ids || EXCLUDED.event_ids,
-			status     = CASE WHEN alerts.status='CLOSED' THEN 'OPEN' ELSE alerts.status END
+			last_seen    = NOW(),
+			hit_count    = alerts.hit_count + 1,
+			event_ids    = alerts.event_ids || EXCLUDED.event_ids,
+			source_types = (SELECT array_agg(DISTINCT x) FROM unnest(alerts.source_types || EXCLUDED.source_types) x),
+			status       = CASE WHEN alerts.status='CLOSED' THEN 'OPEN' ELSE alerts.status END
 	`, a.ID, a.Title, a.Description, a.Severity, a.Status,
 		a.RuleID, a.RuleName, pq.Array(a.MitreIDs), pq.Array(a.EventIDs),
-		a.AgentID, a.Hostname)
+		a.AgentID, a.Hostname, a.UserUID, pq.Array(a.SourceTypes))
 	return err
 }
 
@@ -343,13 +381,13 @@ func (s *Store) QueryAlerts(ctx context.Context, p QueryAlertsParams) ([]models.
 	args = append(args, p.Limit, p.Offset)
 
 	var alerts []models.Alert
-	err := s.db.SelectContext(ctx, &alerts, query, args...)
+	err := s.rdb().SelectContext(ctx, &alerts, query, args...)
 	return alerts, err
 }
 
 func (s *Store) GetAlert(ctx context.Context, id string) (*models.Alert, error) {
 	var a models.Alert
-	err := s.db.GetContext(ctx, &a, `SELECT * FROM alerts WHERE id=$1`, id)
+	err := s.rdb().GetContext(ctx, &a, `SELECT * FROM alerts WHERE id=$1`, id)
 	return &a, err
 }
 
@@ -369,7 +407,7 @@ func (s *Store) GetAlertEvents(ctx context.Context, alertID string) ([]models.Ev
 	if len(eventIDs) == 0 {
 		// Fall back to alert_id column only
 		var events []models.Event
-		err = s.db.SelectContext(ctx, &events,
+		err = s.rdb().SelectContext(ctx, &events,
 			`SELECT * FROM events WHERE alert_id=$1 ORDER BY timestamp DESC LIMIT 500`,
 			alertID)
 		return events, err
@@ -377,12 +415,12 @@ func (s *Store) GetAlertEvents(ctx context.Context, alertID string) ([]models.Ev
 
 	// Fetch by event IDs first (exact match), then also by alert_id, union them.
 	var byID, byAlertID []models.Event
-	if err2 := s.db.SelectContext(ctx, &byID,
+	if err2 := s.rdb().SelectContext(ctx, &byID,
 		`SELECT * FROM events WHERE id = ANY($1) ORDER BY timestamp DESC`,
 		pq.Array(eventIDs)); err2 != nil {
 		return nil, err2
 	}
-	if err2 := s.db.SelectContext(ctx, &byAlertID,
+	if err2 := s.rdb().SelectContext(ctx, &byAlertID,
 		`SELECT * FROM events WHERE alert_id=$1 ORDER BY timestamp DESC LIMIT 500`,
 		alertID); err2 != nil {
 		return nil, err2
@@ -405,6 +443,13 @@ func (s *Store) UpdateAlertStatus(ctx context.Context, id, status, assignee, not
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE alerts SET status=$2, assignee=$3, notes=$4 WHERE id=$1`,
 		id, status, assignee, notes)
+	return err
+}
+
+func (s *Store) UpdateAlertTriage(ctx context.Context, id, verdict string, score int16, notes string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE alerts SET triage_verdict=$2, triage_score=$3, triage_notes=$4, triage_at=NOW() WHERE id=$1`,
+		id, verdict, score, notes)
 	return err
 }
 
@@ -433,13 +478,13 @@ func (s *Store) AlertStats(ctx context.Context) (map[string]int64, error) {
 
 func (s *Store) ListRules(ctx context.Context) ([]models.Rule, error) {
 	var rules []models.Rule
-	err := s.db.SelectContext(ctx, &rules, `SELECT * FROM rules ORDER BY severity DESC, name`)
+	err := s.rdb().SelectContext(ctx, &rules, `SELECT * FROM rules ORDER BY severity DESC, name`)
 	return rules, err
 }
 
 func (s *Store) GetRule(ctx context.Context, id string) (*models.Rule, error) {
 	var r models.Rule
-	err := s.db.GetContext(ctx, &r, `SELECT * FROM rules WHERE id=$1`, id)
+	err := s.rdb().GetContext(ctx, &r, `SELECT * FROM rules WHERE id=$1`, id)
 	return &r, err
 }
 
@@ -482,14 +527,14 @@ func (s *Store) DeleteRule(ctx context.Context, id string) error {
 
 func (s *Store) ListSuppressions(ctx context.Context) ([]models.SuppressionRule, error) {
 	var sups []models.SuppressionRule
-	err := s.db.SelectContext(ctx, &sups,
+	err := s.rdb().SelectContext(ctx, &sups,
 		`SELECT * FROM suppression_rules ORDER BY created_at DESC`)
 	return sups, err
 }
 
 func (s *Store) GetSuppression(ctx context.Context, id string) (*models.SuppressionRule, error) {
 	var r models.SuppressionRule
-	err := s.db.GetContext(ctx, &r, `SELECT * FROM suppression_rules WHERE id=$1`, id)
+	err := s.rdb().GetContext(ctx, &r, `SELECT * FROM suppression_rules WHERE id=$1`, id)
 	return &r, err
 }
 
@@ -569,7 +614,7 @@ func (s *Store) BacktestRule(ctx context.Context, p BacktestParams) (int, []mode
 func (s *Store) FindOpenAlert(ctx context.Context, ruleID, agentID string, dedupeWindow time.Duration) (*models.Alert, error) {
 	var a models.Alert
 	cutoff := time.Now().Add(-dedupeWindow)
-	err := s.db.GetContext(ctx, &a, `
+	err := s.rdb().GetContext(ctx, &a, `
 		SELECT * FROM alerts
 		WHERE rule_id  = $1
 		  AND agent_id = $2
@@ -621,7 +666,7 @@ func (s *Store) UpdateAgentWinEventConfig(ctx context.Context, id string, config
 // GetAgentWinEventConfig returns the Windows Event Log configuration for an agent.
 func (s *Store) GetAgentWinEventConfig(ctx context.Context, id string) (json.RawMessage, error) {
 	var config json.RawMessage
-	err := s.db.GetContext(ctx, &config,
+	err := s.rdb().GetContext(ctx, &config,
 		`SELECT winevent_config FROM agents WHERE id=$1`, id)
 	return config, err
 }
@@ -710,7 +755,7 @@ func (s *Store) HuntQuery(ctx context.Context, query string, limit int) ([]model
 	allArgs := append(args, limit)
 
 	var events []models.Event
-	if err := s.db.SelectContext(ctx, &events, dataSQL, allArgs...); err != nil {
+	if err := s.rdb().SelectContext(ctx, &events, dataSQL, allArgs...); err != nil {
 		return nil, 0, fmt.Errorf("hunt query failed: %w", err)
 	}
 
@@ -1264,7 +1309,7 @@ func processInfoFromEvent(e *models.Event) ProcessNode {
 func (s *Store) GetProcessTree(ctx context.Context, agentID string, pid int, depth int) (*ProcessNode, error) {
 	// Find the target process.
 	var target models.Event
-	err := s.db.GetContext(ctx, &target, `
+	err := s.rdb().GetContext(ctx, &target, `
 		SELECT * FROM events
 		WHERE agent_id = $1
 		  AND event_type = 'PROCESS_EXEC'
@@ -1309,7 +1354,7 @@ func (s *Store) findChildren(ctx context.Context, agentID string, node *ProcessN
 	}
 
 	var children []models.Event
-	err := s.db.SelectContext(ctx, &children, `
+	err := s.rdb().SelectContext(ctx, &children, `
 		SELECT * FROM events
 		WHERE agent_id = $1
 		  AND event_type = 'PROCESS_EXEC'
@@ -1340,7 +1385,7 @@ func (s *Store) GetProcessAncestors(ctx context.Context, agentID string, pid int
 	for i := 0; i < maxDepth; i++ {
 		// Find this process to get its PPID.
 		var ev models.Event
-		err := s.db.GetContext(ctx, &ev, `
+		err := s.rdb().GetContext(ctx, &ev, `
 			SELECT * FROM events
 			WHERE agent_id = $1
 			  AND event_type = 'PROCESS_EXEC'
@@ -1360,7 +1405,7 @@ func (s *Store) GetProcessAncestors(ctx context.Context, agentID string, pid int
 
 		// Find the parent process event.
 		var parentEv models.Event
-		err = s.db.GetContext(ctx, &parentEv, `
+		err = s.rdb().GetContext(ctx, &parentEv, `
 			SELECT * FROM events
 			WHERE agent_id = $1
 			  AND event_type = 'PROCESS_EXEC'
@@ -1385,10 +1430,11 @@ func (s *Store) InsertIncident(ctx context.Context, inc *models.Incident) error 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO incidents
 		  (id, title, description, severity, status, alert_ids, agent_ids, hostnames, mitre_ids,
-		   alert_count, first_seen, last_seen, assignee, notes, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW(),NOW())`,
+		   user_uids, src_ips, source_types, alert_count, first_seen, last_seen, assignee, notes, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW(),NOW())`,
 		inc.ID, inc.Title, inc.Description, inc.Severity, inc.Status,
 		pq.Array(inc.AlertIDs), pq.Array(inc.AgentIDs), pq.Array(inc.Hostnames), pq.Array(inc.MitreIDs),
+		pq.Array(inc.UserUIDs), pq.Array(inc.SrcIPs), pq.Array(inc.SourceTypes),
 		inc.AlertCount, inc.FirstSeen, inc.LastSeen, inc.Assignee, inc.Notes)
 	return err
 }
@@ -1440,14 +1486,14 @@ func (s *Store) QueryIncidents(ctx context.Context, p QueryIncidentsParams) ([]m
 	args = append(args, p.Offset)
 
 	var incidents []models.Incident
-	err := s.db.SelectContext(ctx, &incidents, query, args...)
+	err := s.rdb().SelectContext(ctx, &incidents, query, args...)
 	return incidents, err
 }
 
 // GetIncident returns a single incident by ID.
 func (s *Store) GetIncident(ctx context.Context, id string) (*models.Incident, error) {
 	var inc models.Incident
-	err := s.db.GetContext(ctx, &inc, `SELECT * FROM incidents WHERE id=$1`, id)
+	err := s.rdb().GetContext(ctx, &inc, `SELECT * FROM incidents WHERE id=$1`, id)
 	return &inc, err
 }
 
@@ -1464,7 +1510,7 @@ func (s *Store) UpdateIncident(ctx context.Context, id, status, assignee, notes 
 func (s *Store) FindOpenIncident(ctx context.Context, agentID string, window time.Duration) (*models.Incident, error) {
 	var inc models.Incident
 	cutoff := time.Now().Add(-window)
-	err := s.db.GetContext(ctx, &inc, `
+	err := s.rdb().GetContext(ctx, &inc, `
 		SELECT * FROM incidents
 		WHERE $1 = ANY(agent_ids)
 		  AND status IN ('OPEN','INVESTIGATING')
@@ -1477,6 +1523,52 @@ func (s *Store) FindOpenIncident(ctx context.Context, agentID string, window tim
 		return nil, err
 	}
 	return &inc, nil
+}
+
+// FindOpenIncidentXdr looks up an open incident matching by user_uid or src_ip
+// in addition to agent_id. Used for cross-source incident correlation.
+func (s *Store) FindOpenIncidentXdr(ctx context.Context, agentID, userUID, srcIP string, window time.Duration) (*models.Incident, error) {
+	var inc models.Incident
+	cutoff := time.Now().Add(-window)
+	err := s.rdb().GetContext(ctx, &inc, `
+		SELECT * FROM incidents
+		WHERE status IN ('OPEN','INVESTIGATING')
+		  AND last_seen >= $4
+		  AND (
+		      ($1 != '' AND $1 = ANY(agent_ids))
+		   OR ($2 != '' AND $2 = ANY(user_uids))
+		   OR ($3 != '' AND $3::inet = ANY(src_ips))
+		  )
+		ORDER BY last_seen DESC LIMIT 1`, agentID, userUID, srcIP, cutoff)
+	if err != nil {
+		if err.Error() == "sql: no rows in result set" {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &inc, nil
+}
+
+// AddAlertToIncidentXdr extends AddAlertToIncident with XDR cross-source fields.
+func (s *Store) AddAlertToIncidentXdr(ctx context.Context, incidentID string, alert *models.Alert, userUID, srcIP, sourceType string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE incidents SET
+			alert_ids    = array_append(alert_ids, $2),
+			agent_ids    = CASE WHEN $3 != '' AND NOT ($3 = ANY(agent_ids)) THEN array_append(agent_ids, $3) ELSE agent_ids END,
+			hostnames    = CASE WHEN $4 != '' AND NOT ($4 = ANY(hostnames)) THEN array_append(hostnames, $4) ELSE hostnames END,
+			user_uids    = CASE WHEN $5 != '' AND NOT ($5 = ANY(user_uids)) THEN array_append(user_uids, $5) ELSE user_uids END,
+			src_ips      = CASE WHEN $6 != '' AND NOT ($6::text = ANY(src_ips::text[])) THEN array_append(src_ips, $6::inet) ELSE src_ips END,
+			source_types = CASE WHEN $7 != '' AND NOT ($7 = ANY(source_types)) THEN array_append(source_types, $7) ELSE source_types END,
+			mitre_ids    = (SELECT ARRAY(SELECT DISTINCT unnest(mitre_ids || $8::text[]))),
+			alert_count  = alert_count + 1,
+			severity     = GREATEST(severity, $9),
+			last_seen    = NOW(),
+			updated_at   = NOW()
+		WHERE id = $1`,
+		incidentID, alert.ID, alert.AgentID, alert.Hostname,
+		userUID, srcIP, sourceType,
+		pq.Array(alert.MitreIDs), alert.Severity)
+	return err
 }
 
 // AddAlertToIncident appends an alert to an existing incident, updating
@@ -1508,7 +1600,7 @@ func (s *Store) SetAlertIncident(ctx context.Context, alertID, incidentID string
 // GetIncidentAlerts returns all alerts belonging to an incident.
 func (s *Store) GetIncidentAlerts(ctx context.Context, incidentID string) ([]models.Alert, error) {
 	var alerts []models.Alert
-	err := s.db.SelectContext(ctx, &alerts, `
+	err := s.rdb().SelectContext(ctx, &alerts, `
 		SELECT * FROM alerts WHERE incident_id=$1 ORDER BY first_seen DESC`, incidentID)
 	return alerts, err
 }
@@ -1551,7 +1643,7 @@ func (s *Store) ListAgentPackages(ctx context.Context, agentID string, limit, of
 		limit = 500
 	}
 	var pkgs []models.AgentPackage
-	err := s.db.SelectContext(ctx, &pkgs, `
+	err := s.rdb().SelectContext(ctx, &pkgs, `
 		SELECT * FROM agent_packages WHERE agent_id=$1
 		ORDER BY name ASC LIMIT $2 OFFSET $3`, agentID, limit, offset)
 	return pkgs, err
@@ -1587,7 +1679,7 @@ func (s *Store) QueryVulnerabilities(ctx context.Context, agentID string, limit,
 	args = append(args, limit, offset)
 
 	var vulns []models.Vulnerability
-	err := s.db.SelectContext(ctx, &vulns, query, args...)
+	err := s.rdb().SelectContext(ctx, &vulns, query, args...)
 	return vulns, err
 }
 
@@ -1615,7 +1707,7 @@ func (s *Store) QueryVulnerabilitiesFiltered(ctx context.Context, agentID, sever
 	args = append(args, limit, offset)
 
 	var vulns []models.Vulnerability
-	err := s.db.SelectContext(ctx, &vulns, query, args...)
+	err := s.rdb().SelectContext(ctx, &vulns, query, args...)
 	return vulns, err
 }
 
@@ -1749,13 +1841,13 @@ func (s *Store) ListIOCs(ctx context.Context, iocType, source, search string, en
 	}
 
 	var iocs []models.IOC
-	err := s.db.SelectContext(ctx, &iocs, q, args...)
+	err := s.rdb().SelectContext(ctx, &iocs, q, args...)
 	return iocs, err
 }
 
 func (s *Store) GetIOC(ctx context.Context, id string) (*models.IOC, error) {
 	var ioc models.IOC
-	err := s.db.GetContext(ctx, &ioc, `SELECT * FROM iocs WHERE id=$1`, id)
+	err := s.rdb().GetContext(ctx, &ioc, `SELECT * FROM iocs WHERE id=$1`, id)
 	return &ioc, err
 }
 
@@ -1775,7 +1867,7 @@ func (s *Store) DeleteIOCsBySource(ctx context.Context, source string) (int64, e
 // LookupIOC checks if a value exists as an enabled, non-expired IOC of the given type.
 func (s *Store) LookupIOC(ctx context.Context, iocType, value string) (*models.IOC, error) {
 	var ioc models.IOC
-	err := s.db.GetContext(ctx, &ioc, `
+	err := s.rdb().GetContext(ctx, &ioc, `
 		SELECT * FROM iocs
 		WHERE type=$1 AND value=$2 AND enabled=TRUE
 		  AND (expires_at IS NULL OR expires_at > NOW())
@@ -1789,7 +1881,7 @@ func (s *Store) LookupIOC(ctx context.Context, iocType, value string) (*models.I
 // LoadActiveIOCs returns all enabled, non-expired IOCs of a given type, keyed by value.
 func (s *Store) LoadActiveIOCs(ctx context.Context, iocType string) (map[string]*models.IOC, error) {
 	var iocs []models.IOC
-	err := s.db.SelectContext(ctx, &iocs, `
+	err := s.rdb().SelectContext(ctx, &iocs, `
 		SELECT * FROM iocs
 		WHERE type=$1 AND enabled=TRUE
 		  AND (expires_at IS NULL OR expires_at > NOW())
@@ -1809,7 +1901,7 @@ func (s *Store) LoadActiveIOCs(ctx context.Context, iocType string) (map[string]
 // GetCVE returns a cached CVE detail by ID.
 func (s *Store) GetCVE(ctx context.Context, cveID string) (*models.CVEDetail, error) {
 	var c models.CVEDetail
-	err := s.db.GetContext(ctx, &c, `SELECT cve_id, severity, description, published_date, "references", exploit_available, cisa_kev, source, fetched_at FROM cve_cache WHERE cve_id=$1`, cveID)
+	err := s.rdb().GetContext(ctx, &c, `SELECT cve_id, severity, description, published_date, "references", exploit_available, cisa_kev, source, fetched_at FROM cve_cache WHERE cve_id=$1`, cveID)
 	return &c, err
 }
 
@@ -1856,13 +1948,13 @@ func (s *Store) IOCStatsBySource(ctx context.Context, since time.Time) ([]models
 		ORDER BY total DESC
 	`
 	var stats []models.IOCSourceStats
-	err := s.db.SelectContext(ctx, &stats, q, since)
+	err := s.rdb().SelectContext(ctx, &stats, q, since)
 	return stats, err
 }
 
 func (s *Store) IOCStats(ctx context.Context) (*models.IOCStats, error) {
 	var stats models.IOCStats
-	err := s.db.GetContext(ctx, &stats, `
+	err := s.rdb().GetContext(ctx, &stats, `
 		SELECT
 			COUNT(*)                                       AS total_iocs,
 			COUNT(*) FILTER (WHERE type='ip')              AS ip_count,
@@ -1896,7 +1988,7 @@ func (s *Store) ListPendingCommands(ctx context.Context, agentID, status string)
 		args = append(args, status)
 	}
 	q += ` ORDER BY created_at DESC`
-	err := s.db.SelectContext(ctx, &cmds, q, args...)
+	err := s.rdb().SelectContext(ctx, &cmds, q, args...)
 	if cmds == nil {
 		cmds = []models.PendingCommand{}
 	}
@@ -1906,7 +1998,7 @@ func (s *Store) ListPendingCommands(ctx context.Context, agentID, status string)
 // ClaimPendingCommands atomically marks all pending commands for an agent as 'executing' and returns them.
 func (s *Store) ClaimPendingCommands(ctx context.Context, agentID string) ([]models.PendingCommand, error) {
 	var cmds []models.PendingCommand
-	err := s.db.SelectContext(ctx, &cmds, `
+	err := s.rdb().SelectContext(ctx, &cmds, `
 		UPDATE pending_commands SET status='executing'
 		WHERE agent_id=$1 AND status='pending'
 		RETURNING *
@@ -1992,7 +2084,7 @@ func (s *Store) DBSizeByAgent(ctx context.Context) ([]AgentDBSize, error) {
 	}
 
 	var results []AgentDBSize
-	err = s.db.SelectContext(ctx, &results, `
+	err = s.rdb().SelectContext(ctx, &results, `
 		SELECT e.agent_id, COALESCE(a.hostname, e.agent_id) AS hostname, COUNT(*) AS events
 		FROM events e
 		LEFT JOIN agents a ON a.id = e.agent_id

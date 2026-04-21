@@ -7,6 +7,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
@@ -780,6 +781,658 @@ var migrations = []struct {
 		CREATE INDEX IF NOT EXISTS idx_pending_commands_agent_status ON pending_commands(agent_id, status);
 		`,
 	},
+	{
+		name: "add_api_key_role",
+		sql: `
+		ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'admin';
+		`,
+	},
+	{
+		name: "add_performance_indexes",
+		sql: `
+    -- Fast alert dedup lookups (FindOpenAlert called on every event ingested)
+    CREATE INDEX IF NOT EXISTS alerts_dedup_idx
+        ON alerts(rule_id, agent_id, status, last_seen DESC);
+
+    -- Fast alert list by agent
+    CREATE INDEX IF NOT EXISTS alerts_agent_status_idx
+        ON alerts(agent_id, status, last_seen DESC);
+
+    -- Process tree PID lookups (avoids per-node table scan)
+    CREATE INDEX IF NOT EXISTS events_process_pid_idx
+        ON events(CAST(payload->>'pid' AS bigint))
+        WHERE event_type = 'PROCESS_EXEC';
+
+    -- Fast event lookup by agent + type + time (most common query pattern)
+    CREATE INDEX IF NOT EXISTS events_agent_type_ts_idx
+        ON events(agent_id, event_type, timestamp DESC);
+
+    -- Incident alert joins
+    CREATE INDEX IF NOT EXISTS alerts_incident_idx
+        ON alerts(incident_id) WHERE incident_id IS NOT NULL;
+    `,
+	},
+	{
+		name: "xdr_phase0_schema",
+		sql: `
+    -- XDR Phase 0: extend events table with OCSF and cross-source fields.
+    -- All new columns have safe defaults so existing rows are unaffected.
+
+    ALTER TABLE events
+        ADD COLUMN IF NOT EXISTS class_uid    INTEGER      NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS category_uid SMALLINT     NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS activity_id  SMALLINT     NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS source_type  TEXT         NOT NULL DEFAULT 'endpoint',
+        ADD COLUMN IF NOT EXISTS source_id    TEXT         NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS tenant_id    TEXT         NOT NULL DEFAULT 'default',
+        ADD COLUMN IF NOT EXISTS user_uid     TEXT         NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS src_ip       INET,
+        ADD COLUMN IF NOT EXISTS dst_ip       INET,
+        ADD COLUMN IF NOT EXISTS process_name TEXT         NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS raw_log      TEXT         NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS enrichments  JSONB        NOT NULL DEFAULT '{}';
+
+    CREATE INDEX IF NOT EXISTS events_source_type_idx ON events(source_type, timestamp DESC);
+    CREATE INDEX IF NOT EXISTS events_source_id_idx   ON events(source_id,   timestamp DESC)
+        WHERE source_id != '';
+    CREATE INDEX IF NOT EXISTS events_user_uid_idx    ON events(user_uid)
+        WHERE user_uid != '';
+    CREATE INDEX IF NOT EXISTS events_src_ip_idx      ON events(src_ip)
+        WHERE src_ip IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS events_dst_ip_idx      ON events(dst_ip)
+        WHERE dst_ip IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS events_tenant_idx      ON events(tenant_id, timestamp DESC);
+
+    -- xdr_sources: connector registry
+    CREATE TABLE IF NOT EXISTS xdr_sources (
+        id            TEXT PRIMARY KEY,
+        name          TEXT        NOT NULL,
+        source_type   TEXT        NOT NULL,
+        connector     TEXT        NOT NULL,
+        config        JSONB       NOT NULL DEFAULT '{}',
+        enabled       BOOLEAN     NOT NULL DEFAULT TRUE,
+        last_seen_at  TIMESTAMPTZ,
+        events_today  BIGINT      NOT NULL DEFAULT 0,
+        error_state   TEXT        NOT NULL DEFAULT '',
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS xdr_sources_type_idx ON xdr_sources(source_type);
+
+    -- identity_graph: normalized cross-source user identities
+    CREATE TABLE IF NOT EXISTS identity_graph (
+        id              TEXT PRIMARY KEY,
+        canonical_uid   TEXT        NOT NULL UNIQUE,
+        display_name    TEXT        NOT NULL DEFAULT '',
+        department      TEXT        NOT NULL DEFAULT '',
+        title           TEXT        NOT NULL DEFAULT '',
+        manager_uid     TEXT        NOT NULL DEFAULT '',
+        account_ids     JSONB       NOT NULL DEFAULT '{}',
+        risk_score      SMALLINT    NOT NULL DEFAULT 0,
+        risk_factors    JSONB       NOT NULL DEFAULT '[]',
+        is_privileged   BOOLEAN     NOT NULL DEFAULT FALSE,
+        is_service_acct BOOLEAN     NOT NULL DEFAULT FALSE,
+        last_login_at   TIMESTAMPTZ,
+        last_seen_src   TEXT        NOT NULL DEFAULT '',
+        agent_ids       TEXT[]      NOT NULL DEFAULT '{}',
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS ig_risk_score_idx  ON identity_graph(risk_score DESC);
+    CREATE INDEX IF NOT EXISTS ig_privileged_idx  ON identity_graph(is_privileged)
+        WHERE is_privileged;
+    CREATE INDEX IF NOT EXISTS ig_account_ids_idx ON identity_graph USING GIN(account_ids);
+
+    -- asset_inventory: unified endpoint + cloud + network device registry
+    CREATE TABLE IF NOT EXISTS asset_inventory (
+        id                TEXT PRIMARY KEY,
+        asset_type        TEXT        NOT NULL,
+        hostname          TEXT        NOT NULL DEFAULT '',
+        ip_addresses      TEXT[]      NOT NULL DEFAULT '{}',
+        mac_addresses     TEXT[]      NOT NULL DEFAULT '{}',
+        os                TEXT        NOT NULL DEFAULT '',
+        os_version        TEXT        NOT NULL DEFAULT '',
+        cloud_provider    TEXT        NOT NULL DEFAULT '',
+        cloud_region      TEXT        NOT NULL DEFAULT '',
+        cloud_account     TEXT        NOT NULL DEFAULT '',
+        cloud_resource_id TEXT        NOT NULL DEFAULT '',
+        agent_id          TEXT        REFERENCES agents(id) ON DELETE SET NULL,
+        tags              TEXT[]      NOT NULL DEFAULT '{}',
+        risk_score        SMALLINT    NOT NULL DEFAULT 0,
+        criticality       SMALLINT    NOT NULL DEFAULT 1,
+        owner_uid         TEXT        NOT NULL DEFAULT '',
+        first_seen_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_seen_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        source_id         TEXT        REFERENCES xdr_sources(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS asset_hostname_idx ON asset_inventory(hostname);
+    CREATE INDEX IF NOT EXISTS asset_ip_idx       ON asset_inventory USING GIN(ip_addresses);
+    CREATE INDEX IF NOT EXISTS asset_type_idx     ON asset_inventory(asset_type);
+    CREATE INDEX IF NOT EXISTS asset_agent_idx    ON asset_inventory(agent_id)
+        WHERE agent_id IS NOT NULL;
+
+    -- playbook_runs: SOAR execution audit trail (Phase 3)
+    CREATE TABLE IF NOT EXISTS playbook_runs (
+        id            TEXT PRIMARY KEY,
+        playbook_id   TEXT        NOT NULL,
+        playbook_name TEXT        NOT NULL,
+        trigger_type  TEXT        NOT NULL,
+        trigger_id    TEXT        NOT NULL,
+        status        TEXT        NOT NULL DEFAULT 'running',
+        started_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        finished_at   TIMESTAMPTZ,
+        actions_log   JSONB       NOT NULL DEFAULT '[]',
+        triggered_by  TEXT        NOT NULL DEFAULT 'system',
+        error         TEXT        NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS pr_trigger_idx ON playbook_runs(trigger_id);
+    CREATE INDEX IF NOT EXISTS pr_status_idx  ON playbook_runs(status, started_at DESC);
+
+    -- xdr_network_flows: high-volume network flow data (separate from events).
+    -- Partitioned by start_time (daily). PRIMARY KEY must include partition key.
+    CREATE TABLE IF NOT EXISTS xdr_network_flows (
+        id          TEXT        NOT NULL,
+        source_id   TEXT        NOT NULL,
+        tenant_id   TEXT        NOT NULL DEFAULT 'default',
+        start_time  TIMESTAMPTZ NOT NULL,
+        end_time    TIMESTAMPTZ,
+        src_ip      INET        NOT NULL,
+        dst_ip      INET        NOT NULL,
+        src_port    INTEGER,
+        dst_port    INTEGER,
+        protocol    TEXT        NOT NULL DEFAULT '',
+        bytes_in    BIGINT      NOT NULL DEFAULT 0,
+        bytes_out   BIGINT      NOT NULL DEFAULT 0,
+        packets_in  INTEGER     NOT NULL DEFAULT 0,
+        packets_out INTEGER     NOT NULL DEFAULT 0,
+        flow_state  TEXT        NOT NULL DEFAULT '',
+        service     TEXT        NOT NULL DEFAULT '',
+        agent_id    TEXT,
+        user_uid    TEXT        NOT NULL DEFAULT '',
+        enrichments JSONB       NOT NULL DEFAULT '{}',
+        received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (id, start_time)
+    ) PARTITION BY RANGE (start_time);
+
+    CREATE TABLE IF NOT EXISTS xdr_network_flows_default
+        PARTITION OF xdr_network_flows DEFAULT;
+
+    CREATE INDEX IF NOT EXISTS flows_src_ip_idx ON xdr_network_flows(src_ip, start_time DESC);
+    CREATE INDEX IF NOT EXISTS flows_dst_ip_idx ON xdr_network_flows(dst_ip, start_time DESC);
+    CREATE INDEX IF NOT EXISTS flows_agent_idx  ON xdr_network_flows(agent_id)
+        WHERE agent_id IS NOT NULL;
+    `,
+	},
+	{
+		name: "xdr_phase2_schema",
+		sql: `
+    -- XDR Phase 2: extend alerts + incidents with cross-source identity fields.
+
+    ALTER TABLE alerts
+        ADD COLUMN IF NOT EXISTS user_uid     TEXT    NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS source_types TEXT[]  NOT NULL DEFAULT '{}';
+
+    CREATE INDEX IF NOT EXISTS alerts_user_uid_idx      ON alerts(user_uid)      WHERE user_uid != '';
+    CREATE INDEX IF NOT EXISTS alerts_source_types_idx  ON alerts USING GIN(source_types);
+
+    ALTER TABLE incidents
+        ADD COLUMN IF NOT EXISTS user_uids    TEXT[]  NOT NULL DEFAULT '{}',
+        ADD COLUMN IF NOT EXISTS src_ips      INET[]  NOT NULL DEFAULT '{}',
+        ADD COLUMN IF NOT EXISTS source_types TEXT[]  NOT NULL DEFAULT '{}';
+
+    CREATE INDEX IF NOT EXISTS incidents_user_uids_idx    ON incidents USING GIN(user_uids);
+    CREATE INDEX IF NOT EXISTS incidents_source_types_idx ON incidents USING GIN(source_types);
+
+    -- Identity graph: add email + alias support for Phase 2 stitcher.
+    ALTER TABLE identity_graph
+        ADD COLUMN IF NOT EXISTS email        TEXT    NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS aliases      TEXT[]  NOT NULL DEFAULT '{}';
+
+    CREATE INDEX IF NOT EXISTS identity_email_idx   ON identity_graph(email)   WHERE email != '';
+    CREATE INDEX IF NOT EXISTS identity_aliases_idx ON identity_graph USING GIN(aliases);
+
+    -- Asset inventory: track last-seen IP for impossible-travel lookups.
+    ALTER TABLE asset_inventory
+        ADD COLUMN IF NOT EXISTS last_seen_ip INET;
+    `,
+	},
+	{
+		name: "xdr_phase3_schema",
+		sql: `
+    -- XDR Phase 3: SOAR playbooks + export destinations.
+
+    -- playbooks: SOAR automation rules
+    CREATE TABLE IF NOT EXISTS playbooks (
+        id            TEXT PRIMARY KEY,
+        name          TEXT        NOT NULL,
+        description   TEXT        NOT NULL DEFAULT '',
+        enabled       BOOLEAN     NOT NULL DEFAULT TRUE,
+        trigger_type  TEXT        NOT NULL DEFAULT 'alert',
+        trigger_filter JSONB      NOT NULL DEFAULT '{}',
+        actions       JSONB       NOT NULL DEFAULT '[]',
+        run_count     BIGINT      NOT NULL DEFAULT 0,
+        last_run_at   TIMESTAMPTZ,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        created_by    TEXT        NOT NULL DEFAULT 'system'
+    );
+    CREATE INDEX IF NOT EXISTS playbooks_enabled_idx ON playbooks(enabled);
+
+    -- export_destinations: SIEM / notification sinks
+    CREATE TABLE IF NOT EXISTS export_destinations (
+        id            TEXT PRIMARY KEY,
+        name          TEXT        NOT NULL,
+        dest_type     TEXT        NOT NULL,   -- slack|pagerduty|webhook|syslog_cef|email
+        config        JSONB       NOT NULL DEFAULT '{}',
+        enabled       BOOLEAN     NOT NULL DEFAULT TRUE,
+        filter_sev    SMALLINT    NOT NULL DEFAULT 0,
+        filter_types  TEXT[]      NOT NULL DEFAULT '{}',
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS export_dest_type_idx ON export_destinations(dest_type);
+    CREATE INDEX IF NOT EXISTS export_dest_enabled_idx ON export_destinations(enabled);
+    `,
+	},
+	{
+		name: "phase4_case_management",
+		sql: `
+    -- Phase 4: Case Management — analyst investigation workflow.
+
+    CREATE TABLE IF NOT EXISTS cases (
+        id          TEXT PRIMARY KEY,
+        title       TEXT        NOT NULL,
+        description TEXT        NOT NULL DEFAULT '',
+        status      TEXT        NOT NULL DEFAULT 'OPEN',
+        severity    SMALLINT    NOT NULL DEFAULT 2,
+        assignee    TEXT        NOT NULL DEFAULT '',
+        tags        TEXT[]      NOT NULL DEFAULT '{}',
+        mitre_ids   TEXT[]      NOT NULL DEFAULT '{}',
+        alert_count INT         NOT NULL DEFAULT 0,
+        created_by  TEXT        NOT NULL DEFAULT '',
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        closed_at   TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS cases_status_idx   ON cases(status);
+    CREATE INDEX IF NOT EXISTS cases_severity_idx ON cases(severity DESC);
+    CREATE INDEX IF NOT EXISTS cases_created_idx  ON cases(created_at DESC);
+    CREATE INDEX IF NOT EXISTS cases_assignee_idx ON cases(assignee) WHERE assignee != '';
+
+    CREATE TABLE IF NOT EXISTS case_alerts (
+        case_id    TEXT        NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+        alert_id   TEXT        NOT NULL,
+        linked_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        linked_by  TEXT        NOT NULL DEFAULT '',
+        PRIMARY KEY (case_id, alert_id)
+    );
+    CREATE INDEX IF NOT EXISTS case_alerts_alert_idx ON case_alerts(alert_id);
+
+    CREATE TABLE IF NOT EXISTS case_notes (
+        id         TEXT PRIMARY KEY,
+        case_id    TEXT        NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+        body       TEXT        NOT NULL,
+        author     TEXT        NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS case_notes_case_idx ON case_notes(case_id, created_at DESC);
+    `,
+	},
+	{
+		name: "phase5_ai_triage",
+		sql: `
+    -- Phase 5: AI triage fields on alerts.
+    ALTER TABLE alerts
+        ADD COLUMN IF NOT EXISTS triage_verdict TEXT        NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS triage_score   SMALLINT    NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS triage_notes   TEXT        NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS triage_at      TIMESTAMPTZ;
+
+    CREATE INDEX IF NOT EXISTS alerts_triage_verdict_idx ON alerts(triage_verdict)
+        WHERE triage_verdict != '';
+    `,
+	},
+	{
+		name: "phase6_container_inventory",
+		sql: `
+    -- Phase 6: Container & Kubernetes Security Monitoring.
+
+    -- container_inventory: tracked container instances observed via process events.
+    CREATE TABLE IF NOT EXISTS container_inventory (
+        container_id TEXT        NOT NULL,
+        agent_id     TEXT        NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        hostname     TEXT        NOT NULL DEFAULT '',
+        runtime      TEXT        NOT NULL DEFAULT '',   -- docker, containerd, podman, cri-o
+        image_name   TEXT        NOT NULL DEFAULT '',
+        pod_name     TEXT        NOT NULL DEFAULT '',
+        namespace    TEXT        NOT NULL DEFAULT '',
+        first_seen   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_seen    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        event_count  BIGINT      NOT NULL DEFAULT 0,
+        PRIMARY KEY (container_id, agent_id)
+    );
+    CREATE INDEX IF NOT EXISTS ci_agent_idx     ON container_inventory(agent_id);
+    CREATE INDEX IF NOT EXISTS ci_runtime_idx   ON container_inventory(runtime)   WHERE runtime   != '';
+    CREATE INDEX IF NOT EXISTS ci_namespace_idx ON container_inventory(namespace) WHERE namespace  != '';
+    CREATE INDEX IF NOT EXISTS ci_last_seen_idx ON container_inventory(last_seen DESC);
+
+    -- Functional index for fast container_id lookups in event payloads.
+    CREATE INDEX IF NOT EXISTS events_container_idx
+        ON events ((payload->'process'->>'container_id'))
+        WHERE (payload->'process'->>'container_id') IS NOT NULL
+          AND (payload->'process'->>'container_id') != '';
+
+    -- Container escape & privilege escalation detection rules.
+    INSERT INTO rules (id, name, description, severity, event_types, conditions, mitre_ids, author,
+                       rule_type, threshold_count, threshold_window_s, group_by)
+    VALUES
+    (
+        'rule-container-nsenter',
+        'Container Namespace Escape via nsenter',
+        'nsenter or unshare executed inside a container — technique used to escape to host namespaces.',
+        4,
+        ARRAY['PROCESS_EXEC'],
+        '[{"field":"process.container_id","op":"neq","value":""},{"field":"process.comm","op":"in","value":["nsenter","unshare","chroot"]}]',
+        ARRAY['T1611'],
+        'system',
+        'match', 0, 0, ''
+    ),
+    (
+        'rule-container-docker-socket',
+        'Docker Socket Accessed from Container',
+        'A process inside a container opened /var/run/docker.sock — could allow full host takeover.',
+        4,
+        ARRAY['FILE_CREATE','FILE_WRITE'],
+        '[{"field":"process.container_id","op":"neq","value":""},{"field":"path","op":"eq","value":"/var/run/docker.sock"}]',
+        ARRAY['T1611'],
+        'system',
+        'match', 0, 0, ''
+    ),
+    (
+        'rule-container-proc-host',
+        'Container Process Accessing Host /proc',
+        'A container process accessed /proc/1 or /proc/*/root — possible container escape via procfs.',
+        4,
+        ARRAY['FILE_CREATE','FILE_WRITE'],
+        '[{"field":"process.container_id","op":"neq","value":""},{"field":"path","op":"regex","value":"^/proc/1/|^/proc/[0-9]+/root"}]',
+        ARRAY['T1611'],
+        'system',
+        'match', 0, 0, ''
+    ),
+    (
+        'rule-container-root-exec',
+        'High-Privilege Binary Executed in Container',
+        'A root-capability binary (mount, fdisk, modprobe, insmod) was executed inside a container.',
+        3,
+        ARRAY['PROCESS_EXEC'],
+        '[{"field":"process.container_id","op":"neq","value":""},{"field":"process.comm","op":"in","value":["mount","umount","fdisk","modprobe","insmod","rmmod","iptables","ip6tables"]}]',
+        ARRAY['T1611','T1548'],
+        'system',
+        'match', 0, 0, ''
+    ),
+    (
+        'rule-container-shell-spawn',
+        'Interactive Shell Spawned Inside Container',
+        'An interactive shell was started inside a container — possible attacker lateral movement or container compromise.',
+        3,
+        ARRAY['PROCESS_EXEC'],
+        '[{"field":"process.container_id","op":"neq","value":""},{"field":"process.comm","op":"in","value":["bash","sh","dash","zsh","ksh","fish"]}]',
+        ARRAY['T1059.004','T1610'],
+        'system',
+        'match', 0, 0, ''
+    )
+    ON CONFLICT (id) DO NOTHING;
+    `,
+	},
+	{
+		name: "xdr_phase1_rules",
+		sql: `
+    -- XDR Phase 1: source_types filter on rules + cross-source network detection rules.
+
+    ALTER TABLE rules
+        ADD COLUMN IF NOT EXISTS source_types TEXT[] NOT NULL DEFAULT '{}';
+
+    CREATE INDEX IF NOT EXISTS rules_source_types_idx ON rules USING GIN(source_types)
+        WHERE array_length(source_types, 1) > 0;
+
+    -- Seed 3 cross-source network detection rules (source_types = '{network}').
+    INSERT INTO rules (id, name, description, severity, event_types, conditions, mitre_ids, author,
+                       rule_type, threshold_count, threshold_window_s, group_by, source_types)
+    VALUES
+    (
+        'rule-net-internal-recon',
+        'Network Internal Reconnaissance Sweep',
+        'A single source IP made connections to 20+ distinct destination ports within 60 seconds — classic port scan or internal lateral movement recon.',
+        3,
+        ARRAY['NET_FLOW'],
+        '[{"field":"proto","op":"in","value":["tcp","udp"]}]',
+        ARRAY['T1046'],
+        'system',
+        'threshold', 20, 60, 'src_ip',
+        ARRAY['network']
+    ),
+    (
+        'rule-net-dns-tunnel',
+        'Potential DNS Tunnelling — High Query Rate',
+        'A host issued 50+ DNS queries within 60 seconds — may indicate DNS tunnelling for C2 or data exfiltration.',
+        3,
+        ARRAY['NET_DNS'],
+        '[{"field":"qtype_name","op":"neq","value":"PTR"}]',
+        ARRAY['T1071.004'],
+        'system',
+        'threshold', 50, 60, 'src_ip',
+        ARRAY['network']
+    ),
+    (
+        'rule-net-large-upload',
+        'Unusually Large Outbound Transfer',
+        'A single network flow carried more than 100 MB outbound — possible data exfiltration.',
+        3,
+        ARRAY['NET_FLOW'],
+        '[{"field":"resp_bytes","op":"gt","value":"104857600"}]',
+        ARRAY['T1048'],
+        'system',
+        'match', 0, 0, '',
+        ARRAY['network']
+    )
+    ON CONFLICT (id) DO NOTHING;
+    `,
+	},
+	{
+		name: "xdr_phase2_rules",
+		sql: `
+    -- XDR Phase 2: cross-source identity detection rules.
+    -- Requires source_types column added in xdr_phase1_rules.
+
+    INSERT INTO rules (id, name, description, severity, event_types, conditions, mitre_ids, author,
+                       rule_type, threshold_count, threshold_window_s, group_by, source_types,
+                       sequence_window_s, sequence_by, sequence_steps)
+    VALUES
+    (
+        'rule-xdr-burst-login-failure',
+        'Identity Burst Login Failure',
+        '10 or more failed authentication events for the same user within 60 seconds across any identity source — possible credential stuffing or brute force.',
+        3,
+        ARRAY['AUTH_FAILED','LOGIN_FAILED','IDENTITY_AUTH_LOGIN_FAILED'],
+        '[]',
+        ARRAY['T1110','T1110.001'],
+        'system',
+        'threshold', 10, 60, 'user_uid',
+        ARRAY['identity'],
+        0, '', NULL
+    ),
+    (
+        'rule-xdr-cloud-priv-escalation',
+        'Cloud Privilege Escalation',
+        'A user attached an IAM policy, created an access key, or assumed a privileged role — possible cloud account takeover or insider threat.',
+        4,
+        ARRAY['CLOUD_API_CALL'],
+        '[{"field":"event_name","op":"in","value":["AttachRolePolicy","AttachUserPolicy","CreateAccessKey","AssumeRole","PutUserPolicy","AddUserToGroup"]}]',
+        ARRAY['T1078.004','T1098'],
+        'system',
+        'match', 0, 0, '',
+        ARRAY['cloud'],
+        0, '', NULL
+    ),
+    (
+        'rule-xdr-impossible-travel',
+        'Impossible Travel Login',
+        'Login from two geographically distant IPs within 1 hour for the same user — physical travel at this speed is impossible.',
+        4,
+        ARRAY['AUTH_SUCCESS','LOGIN_SUCCESS','IDENTITY_AUTH_LOGIN_SUCCESS'],
+        '[]',
+        ARRAY['T1078'],
+        'system',
+        'threshold', 2, 3600, 'user_uid',
+        ARRAY['identity'],
+        0, '', NULL
+    ),
+    (
+        'rule-xdr-lateral-movement-chain',
+        'Lateral Movement: Endpoint + Identity Sequence',
+        'Same user performed a privileged endpoint action followed by an identity-source login from a different IP within 5 minutes — possible credential theft and lateral movement.',
+        4,
+        ARRAY['PROCESS_EXEC','LOGIN_SUCCESS','AUTH_SUCCESS'],
+        '[]',
+        ARRAY['T1021','T1550'],
+        'system',
+        'sequence_cross', 0, 0, '',
+        ARRAY['endpoint','identity'],
+        300, 'user_uid',
+        '[{"event_type":"PROCESS_EXEC","source_types":["endpoint"],"conditions":[{"field":"process.comm","op":"in","value":["sudo","su","runas","psexec"]}]},{"event_type":"LOGIN_SUCCESS","source_types":["identity"],"conditions":[]}]'
+    )
+    ON CONFLICT (id) DO NOTHING;
+    `,
+	},
+	{
+		name: "xdr_phase3_response_actions",
+		sql: `
+    -- XDR Phase 3: response_actions audit trail.
+    CREATE TABLE IF NOT EXISTS response_actions (
+        id              TEXT PRIMARY KEY,
+        action_type     TEXT        NOT NULL,
+        target_type     TEXT        NOT NULL,
+        target_id       TEXT        NOT NULL,
+        status          TEXT        NOT NULL DEFAULT 'pending',
+        triggered_by    TEXT        NOT NULL DEFAULT 'system',
+        playbook_run_id TEXT        NOT NULL DEFAULT '',
+        params          JSONB       NOT NULL DEFAULT '{}',
+        result          JSONB       NOT NULL DEFAULT '{}',
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        reversed_at     TIMESTAMPTZ,
+        reversed_by     TEXT        NOT NULL DEFAULT '',
+        notes           TEXT        NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS ra_target_idx    ON response_actions(target_type, target_id);
+    CREATE INDEX IF NOT EXISTS ra_status_idx    ON response_actions(status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS ra_triggered_idx ON response_actions(triggered_by);
+    `,
+	},
+	{
+		name: "xdr_phase3_seed_playbooks",
+		sql: `
+    -- XDR Phase 3: seed 5 common SOC workflow playbooks.
+    INSERT INTO playbooks (id, name, description, enabled, trigger_type, trigger_filter, actions)
+    VALUES
+    (
+        'pb-critical-alert-notify',
+        'Critical Alert — Slack + PagerDuty',
+        'Notify SOC via Slack and page on-call via PagerDuty when a CRITICAL severity alert fires.',
+        TRUE,
+        'alert',
+        '{"min_severity": 4}',
+        '[{"type":"slack","config":{"webhook_env":"SLACK_SOC_WEBHOOK","message":"*CRITICAL ALERT* on {{.Hostname}}: {{.Title}}"}},{"type":"pagerduty","config":{"integration_key_env":"PD_INTEGRATION_KEY","severity":"critical"}}]'
+    ),
+    (
+        'pb-high-alert-email',
+        'High Alert — Email SOC Team',
+        'Send an email to the SOC distribution list when a HIGH severity alert fires.',
+        TRUE,
+        'alert',
+        '{"min_severity": 3}',
+        '[{"type":"email","config":{"to_env":"SOC_EMAIL","subject":"[HIGH] Alert on {{.Hostname}}: {{.Title}}"}}]'
+    ),
+    (
+        'pb-isolate-on-critical',
+        'Auto-Isolate Endpoint on Critical Malware Alert',
+        'Automatically isolate the endpoint when a critical detection fires for known malware rules.',
+        FALSE,
+        'alert',
+        '{"min_severity": 4, "rule_ids": ["rule-memory-inject", "rule-kmod-load"]}',
+        '[{"type":"isolate_host","config":{}},{"type":"update_alert","config":{"status":"INVESTIGATING","notes":"Auto-isolated by playbook"}},{"type":"slack","config":{"webhook_env":"SLACK_SOC_WEBHOOK","message":"Host *{{.Hostname}}* isolated — critical alert: {{.Title}}"}}]'
+    ),
+    (
+        'pb-block-ip-on-ioc',
+        'Block IP on IOC Match',
+        'Block the source IP on the endpoint when an IOC network indicator fires.',
+        FALSE,
+        'alert',
+        '{"rule_ids": ["ioc-ip-match"]}',
+        '[{"type":"block_ip","config":{}},{"type":"update_alert","config":{"status":"INVESTIGATING","notes":"IP blocked by playbook"}}]'
+    ),
+    (
+        'pb-disable-user-impossible-travel',
+        'Disable Identity on Impossible Travel',
+        'Disable the Okta user account when an impossible travel alert fires and risk score is high.',
+        FALSE,
+        'alert',
+        '{"rule_ids": ["rule-xdr-impossible-travel"], "min_severity": 3}',
+        '[{"type":"disable_identity","config":{"provider":"okta","reason":"Auto-disabled: impossible travel detected"}},{"type":"slack","config":{"webhook_env":"SLACK_SOC_WEBHOOK","message":"User *{{.UserUID}}* disabled — impossible travel alert"}}]'
+    )
+    ON CONFLICT (id) DO NOTHING;
+    `,
+	},
+	{
+		name: "xdr_phase4_scale",
+		sql: `
+    -- XDR Phase 4: multi-tenancy, scale, behavioral analytics.
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
+
+    -- Per-tenant rate-limit overrides.
+    CREATE TABLE IF NOT EXISTS tenant_rate_limits (
+        tenant_id          TEXT    PRIMARY KEY,
+        requests_per_second FLOAT  NOT NULL DEFAULT 20,
+        burst              INT     NOT NULL DEFAULT 40,
+        updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    -- Add retention_flows_days to the settings key-value store if not present.
+    INSERT INTO settings (key, value) VALUES ('retention_flows_days', '7')
+    ON CONFLICT (key) DO NOTHING;
+
+    -- Behavioural analytics baseline table (EWMA state per user).
+    CREATE TABLE IF NOT EXISTS behavioral_baselines (
+        user_uid   TEXT        PRIMARY KEY,
+        tenant_id  TEXT        NOT NULL DEFAULT 'default',
+        ewma       FLOAT       NOT NULL DEFAULT 0,
+        ewma_sq    FLOAT       NOT NULL DEFAULT 0,
+        n          INT         NOT NULL DEFAULT 0,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS bb_tenant_idx ON behavioral_baselines(tenant_id);
+
+    -- STIX import audit trail.
+    CREATE TABLE IF NOT EXISTS stix_imports (
+        id          TEXT        PRIMARY KEY,
+        bundle_id   TEXT        NOT NULL DEFAULT '',
+        source      TEXT        NOT NULL DEFAULT 'manual',
+        ioc_count   INT         NOT NULL DEFAULT 0,
+        errors      TEXT        NOT NULL DEFAULT '',
+        imported_by TEXT        NOT NULL DEFAULT 'system',
+        imported_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    -- Sigma import audit trail.
+    CREATE TABLE IF NOT EXISTS sigma_imports (
+        id          TEXT        PRIMARY KEY,
+        rule_count  INT         NOT NULL DEFAULT 0,
+        errors      TEXT        NOT NULL DEFAULT '',
+        imported_by TEXT        NOT NULL DEFAULT 'system',
+        imported_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    `,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.
@@ -788,8 +1441,24 @@ func Open(dsn string) (*sqlx.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect postgres: %w", err)
 	}
-	db.SetMaxOpenConns(50)
-	db.SetMaxIdleConns(25)
+	db.SetMaxOpenConns(75)
+	db.SetMaxIdleConns(20)
+	db.SetConnMaxLifetime(15 * time.Minute)
+	db.SetConnMaxIdleTime(5 * time.Minute)
+	return db, nil
+}
+
+// OpenReplica opens a read-only connection pool to a PostgreSQL read replica.
+// Pool is tuned conservatively since it handles SELECT traffic only.
+func OpenReplica(dsn string) (*sqlx.DB, error) {
+	db, err := sqlx.Connect("postgres", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("connect read replica: %w", err)
+	}
+	db.SetMaxOpenConns(20)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(10 * time.Minute)
+	db.SetConnMaxIdleTime(3 * time.Minute)
 	return db, nil
 }
 

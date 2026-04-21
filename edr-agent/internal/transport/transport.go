@@ -299,12 +299,39 @@ func (t *GRPCTransport) sendLoop(ctx context.Context) {
 	}
 	openStream()
 
+	const flushInterval = 50 * time.Millisecond
+	flushTicker := time.NewTicker(flushInterval)
+	defer flushTicker.Stop()
+	pending := make([]*eventEnvelope, 0, 50)
+
+	flushPending := func() {
+		if stream == nil || len(pending) == 0 {
+			pending = pending[:0]
+			return
+		}
+		for _, e := range pending {
+			if err := stream.SendMsg(e); err != nil {
+				t.log.Warn().Err(err).Msg("send failed — will reconnect")
+				stream = nil
+				t.mu.Lock()
+				t.connected = false
+				t.mu.Unlock()
+				break
+			}
+		}
+		pending = pending[:0]
+	}
+
 	for {
 		select {
 		case <-t.stopCh:
+			flushPending()
 			return
 		case <-ctx.Done():
+			flushPending()
 			return
+		case <-flushTicker.C:
+			flushPending()
 		case data := <-t.sendCh:
 			if stream == nil {
 				if err := t.connect(ctx); err != nil {
@@ -326,12 +353,9 @@ func (t *GRPCTransport) sendLoop(ctx context.Context) {
 			if err := json.Unmarshal(data, &env); err != nil {
 				continue
 			}
-			if err := stream.SendMsg(&env); err != nil {
-				t.log.Warn().Err(err).Msg("send failed — will reconnect")
-				stream = nil
-				t.mu.Lock()
-				t.connected = false
-				t.mu.Unlock()
+			pending = append(pending, &env)
+			if len(pending) >= 50 {
+				flushPending()
 			}
 		}
 	}

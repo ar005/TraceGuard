@@ -51,6 +51,11 @@ export interface Alert {
   notes: string;
   hit_count: number;
   incident_id: string;
+  // Phase 5 — AI triage
+  triage_verdict?: string;
+  triage_score?: number;
+  triage_notes?: string;
+  triage_at?: string;
 }
 
 export interface Rule {
@@ -220,4 +225,47 @@ export interface IOCSourceStats {
   total_hits: number;
   first_seen: string;
   last_updated: string;
+}
+
+// ── XDR ──────────────────────────────────────────────────────────────────────
+
+export interface XdrSource {
+  id: string;
+  name: string;
+  source_type: string;   // "network" | "cloud" | "identity" | "email" | "saas"
+  connector: string;     // "zeek" | "suricata" | "syslog" | "webhook"
+  config: Record<string, unknown>;
+  enabled: boolean;
+  last_seen_at?: string;
+  events_today: number;
+  error_state: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface XdrSourceHealth {
+  id: string;
+  status: "healthy" | "unhealthy" | "build_error";
+  error: string;
+  error_state: string;
+  last_seen_at?: string;
+  events_today: number;
+}
+
+export interface NetworkEvent {
+  id: string;
+  class_uid: number;
+  category_uid: number;
+  activity_id: number;
+  source_type: string;
+  source_id: string;
+  tenant_id: string;
+  event_type: string;
+  timestamp: string;
+  received_at: string;
+  src_ip?: string;
+  dst_ip?: string;
+  raw_log?: string;
+  payload?: Record<string, unknown>;
+  enrichments?: Record<string, unknown>;
 }

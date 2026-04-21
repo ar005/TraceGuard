@@ -48,6 +48,7 @@ type Key struct {
 	LastUsedAt *time.Time `db:"last_used_at" json:"last_used_at,omitempty"`
 	CreatedBy  string     `db:"created_by"   json:"created_by"`
 	Enabled    bool       `db:"enabled"      json:"enabled"`
+	Role       string     `db:"role"         json:"role"` // "admin" or "analyst"
 }
 
 // CreateResult is returned once at creation — raw_key is never stored.

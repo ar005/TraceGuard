@@ -25,9 +25,9 @@ import (
 	"github.com/rs/zerolog"
 )
 
-const chainName = "TraceGuard_CONTAIN"
+const chainName = "OEDR_CONTAIN"
 const quarantineDir = "/var/lib/edr/quarantine"
-const blockChain = "TraceGuard_BLOCK"
+const blockChain = "OEDR_BLOCK"
 const stateFile = "/var/lib/edr/containment_state.json"
 
 // persistedState holds containment state that survives agent restarts.
@@ -145,11 +145,29 @@ func (m *Manager) Release() error {
 	return nil
 }
 
+// quarantineBlocklist contains paths that must never be quarantined (deleting them
+// would immediately break the system).
+var quarantineBlocklist = []string{
+	"/bin/", "/sbin/", "/usr/bin/", "/usr/sbin/", "/lib/", "/lib64/",
+	"/etc/passwd", "/etc/shadow", "/etc/group", "/etc/gshadow",
+	"/etc/hosts", "/etc/resolv.conf", "/etc/fstab",
+	"/boot/", "/proc/", "/sys/", "/dev/",
+	"/usr/lib/systemd/", "/lib/systemd/",
+}
+
 // QuarantineFile moves a file to the quarantine directory, stripping execute permissions.
 // Original path is preserved in a .meta sidecar file for potential restoration.
 func (m *Manager) QuarantineFile(filePath string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Reject paths that would break the system if removed.
+	clean := filepath.Clean(filePath)
+	for _, blocked := range quarantineBlocklist {
+		if clean == strings.TrimSuffix(blocked, "/") || strings.HasPrefix(clean, blocked) {
+			return "", fmt.Errorf("quarantine of system path %q is not permitted", clean)
+		}
+	}
 
 	// Validate the file exists.
 	info, err := os.Stat(filePath)
@@ -322,7 +340,7 @@ func (m *Manager) blockIPLocked(ip string, persistent bool) error {
 		return fmt.Errorf("IP %s is already blocked", ip)
 	}
 
-	// Create TraceGuard_BLOCK chain if it doesn't exist (ignore error if already exists).
+	// Create OEDR_BLOCK chain if it doesn't exist (ignore error if already exists).
 	_ = run("iptables", "-N", blockChain)
 
 	// Add DROP rules for source and destination.
@@ -688,7 +706,7 @@ func (m *Manager) wasBlockedBefore(ip, domain string) bool {
 	return m.ipBlockedByOtherDomain(ip, domain)
 }
 
-// ensureBlockChainJumps adds jumps from INPUT and OUTPUT to TraceGuard_BLOCK if not present.
+// ensureBlockChainJumps adds jumps from INPUT and OUTPUT to OEDR_BLOCK if not present.
 func (m *Manager) ensureBlockChainJumps() {
 	// Check if jump already exists by trying to add — iptables -C checks existence.
 	if run("iptables", "-C", "INPUT", "-j", blockChain) != nil {

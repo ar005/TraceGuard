@@ -3,6 +3,9 @@
 server:
   grpc_addr: ":50051"
   http_addr: ":8080"
+  # node_id is included in /health and /healthz responses for LB debugging.
+  # Defaults to the hostname when unset.
+  node_id: ""
   tls:
     enabled:   false          # set true + fill cert/key to enable TLS on gRPC
     cert_file: "/etc/edr/tls/server.crt"
@@ -16,6 +19,10 @@ database:
   user:     "edr"
   password: "edr"
   ssl_mode: "disable"
+  # read_url: "postgres://edr:edr@postgres-replica:5432/edr?sslmode=disable"
+  # When set, heavy read queries (events, alerts, agents) route to this replica.
+  # Writes always go to the primary above. Env override: EDR_DATABASE_READ_URL.
+  read_url: ""
 
 log:
   level:  "info"
@@ -23,6 +30,14 @@ log:
 
 auth:
   api_key: ""
+
+# NATS JetStream — XDR pipeline backbone.
+# Set enabled: true to decouple detection from ingest and unlock multi-source ingestion.
+# When disabled (default), detection runs inline — single-node EDR mode, no NATS required.
+# Env override: EDR_NATS_ENABLED=true / EDR_NATS_URL=nats://nats:4222
+nats:
+  enabled: false
+  url:     "nats://nats:4222"
 
 # Rate limiting: per-IP token bucket.
 # Protects against DoS and brute-force. Set enabled: false to disable.

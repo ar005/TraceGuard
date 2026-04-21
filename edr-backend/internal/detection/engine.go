@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 	"github.com/rs/zerolog"
 	"github.com/youredr/edr-backend/internal/liveresponse"
 	"github.com/youredr/edr-backend/internal/models"
@@ -174,6 +175,99 @@ func (e *Engine) Evaluate(ctx context.Context, ev *models.Event) {
 	}
 }
 
+// evaluateWithRulesSlice runs the detection match loop against the provided rule slice
+// instead of the shared e.rules field, avoiding race conditions in concurrent callers.
+func (e *Engine) evaluateWithRulesSlice(ctx context.Context, ev *models.Event, rules []models.Rule) {
+	e.mu.RLock()
+	sups := e.suppressions
+	e.mu.RUnlock()
+
+	payload := flatMap(ev.Payload)
+	if payload == nil {
+		return
+	}
+
+	// Check suppressions first.
+	for i := range sups {
+		s := &sups[i]
+		if !s.Enabled { continue }
+		if !matchesEventType(s.EventTypes, ev.EventType) { continue }
+		var conds []models.RuleCondition
+		if err := json.Unmarshal(s.Conditions, &conds); err != nil { continue }
+		if e.matchesAll(payload, conds) {
+			e.log.Debug().Str("suppression", s.ID).Str("event", ev.ID).Msg("event suppressed")
+			go func(sid string) { _ = e.store.IncrSuppressionHits(context.Background(), sid) }(s.ID)
+			return
+		}
+	}
+
+	// Check IOC matches (IP, domain, hash).
+	e.checkIOCs(ctx, ev, payload)
+
+	// Check for typosquat / lookalike domains on browser request events.
+	e.checkTyposquat(ctx, ev, payload)
+
+	// Evaluate detection rules.
+	for i := range rules {
+		rule := &rules[i]
+		if !rule.Enabled { continue }
+		if !matchesEventType(rule.EventTypes, ev.EventType) { continue }
+		var conditions []models.RuleCondition
+		if err := json.Unmarshal(rule.Conditions, &conditions); err != nil {
+			e.log.Warn().Str("rule", rule.ID).Err(err).Msg("invalid rule conditions")
+			continue
+		}
+		if !e.matchesAll(payload, conditions) { continue }
+
+		switch rule.RuleType {
+		case "threshold":
+			e.evaluateThreshold(ctx, ev, rule, payload)
+		default: // "match" or empty
+			e.fireAlert(ctx, ev, rule)
+		}
+	}
+}
+
+// xdrCtxKey is the context key carrying XdrEvent context through Evaluate → fireAlert.
+type xdrCtxKey struct{}
+
+// EvaluateXdr is the XDR pipeline entry point — wraps Evaluate for XdrEvent.
+// Rules with a non-empty source_types list only fire for matching source types.
+// The XdrEvent is injected into ctx so fireAlertWithContext can populate
+// alert.UserUID and alert.SourceTypes without changing function signatures.
+func (e *Engine) EvaluateXdr(ctx context.Context, ev *models.XdrEvent) {
+	e.mu.RLock()
+	rules := make([]models.Rule, len(e.rules))
+	copy(rules, e.rules)
+	e.mu.RUnlock()
+
+	// Build a filtered rule set: keep rules that apply to ev.SourceType.
+	// Rules with empty source_types match all sources (backward compatible).
+	filtered := make([]models.Rule, 0, len(rules))
+	for i := range rules {
+		r := &rules[i]
+		if len(r.SourceTypes) == 0 {
+			filtered = append(filtered, *r)
+			continue
+		}
+		for _, st := range r.SourceTypes {
+			if st == "*" || st == ev.SourceType {
+				filtered = append(filtered, *r)
+				break
+			}
+		}
+	}
+
+	// Carry XdrEvent context so fireAlertWithContext can enrich the alert.
+	ctx = context.WithValue(ctx, xdrCtxKey{}, ev)
+	e.evaluateWithRulesSlice(ctx, &ev.Event, filtered)
+
+	// Also evaluate sequence_cross rules keyed by user_uid.
+	if ev.UserUID != "" {
+		e.evaluateSequenceCross(ctx, ev, filtered)
+	}
+}
+
 // ─── Threshold evaluation ─────────────────────────────────────────────────────
 
 // evaluateThreshold maintains a per-(rule,groupKey) sliding window.
@@ -251,6 +345,86 @@ func (e *Engine) resolveGroupKey(ev *models.Event, payload map[string]interface{
 		}
 		return ev.AgentID // fallback
 	}
+}
+
+// ─── Cross-source sequence evaluation ────────────────────────────────────────
+
+// sequenceState tracks progress through a sequence_cross rule for one user.
+type sequenceState struct {
+	step      int
+	startedAt time.Time
+	events    []string // event IDs captured so far
+}
+
+// evaluateSequenceCross checks sequence_cross rules against the current XdrEvent.
+// Rules are matched by user_uid across any source type within sequence_window_s.
+func (e *Engine) evaluateSequenceCross(ctx context.Context, ev *models.XdrEvent, rules []models.Rule) {
+	now := time.Now()
+	for i := range rules {
+		rule := &rules[i]
+		if rule.RuleType != "sequence_cross" || !rule.Enabled {
+			continue
+		}
+		var steps []models.SequenceStep
+		if err := json.Unmarshal(rule.SequenceSteps, &steps); err != nil || len(steps) == 0 {
+			continue
+		}
+		windowDur := time.Duration(rule.SequenceWindowS) * time.Second
+		if windowDur <= 0 {
+			windowDur = 5 * time.Minute
+		}
+
+		key := windowKey{ruleID: rule.ID, groupVal: ev.UserUID}
+
+		e.winMu.Lock()
+		// Use the existing windows map but store step count in len(timestamps):
+		// we encode state as a count of matching steps as timestamps in order.
+		ts := e.windows[key]
+
+		// Prune if window expired.
+		if len(ts) > 0 && now.Sub(ts[0]) > windowDur {
+			ts = ts[:0]
+		}
+
+		// Check if current event matches the next expected step.
+		nextStep := len(ts)
+		if nextStep < len(steps) {
+			step := steps[nextStep]
+			if matchesSequenceStep(ev, step) {
+				ts = append(ts, now)
+				e.windows[key] = ts
+			}
+		}
+
+		if len(ts) >= len(steps) {
+			// All steps matched — fire alert and reset.
+			delete(e.windows, key)
+			e.winMu.Unlock()
+			e.fireAlert(ctx, &ev.Event, rule)
+			continue
+		}
+		e.winMu.Unlock()
+	}
+}
+
+// matchesSequenceStep returns true if ev satisfies a sequence step's source_types + event_type.
+func matchesSequenceStep(ev *models.XdrEvent, step models.SequenceStep) bool {
+	if step.EventType != "" && step.EventType != ev.EventType {
+		return false
+	}
+	if len(step.SourceTypes) > 0 {
+		matched := false
+		for _, st := range step.SourceTypes {
+			if st == "*" || st == ev.SourceType {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
 }
 
 // pruneAllWindows removes window entries older than their respective rule windows.
@@ -397,6 +571,14 @@ func (e *Engine) fireAlertWithContext(ctx context.Context, ev *models.Event, rul
 		MitreIDs: rule.MitreIDs, EventIDs: []string{ev.ID},
 		AgentID: ev.AgentID, Hostname: ev.Hostname,
 		FirstSeen: time.Now(), LastSeen: time.Now(),
+	}
+
+	// Enrich alert with XDR context if available (populated by EvaluateXdr).
+	if xdrEv, ok := ctx.Value(xdrCtxKey{}).(*models.XdrEvent); ok && xdrEv != nil {
+		alert.UserUID = xdrEv.UserUID
+		if xdrEv.SourceType != "" && xdrEv.SourceType != "endpoint" {
+			alert.SourceTypes = pq.StringArray{xdrEv.SourceType}
+		}
 	}
 
 	e.log.Warn().

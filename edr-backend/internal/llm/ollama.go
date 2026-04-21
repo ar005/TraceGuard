@@ -52,6 +52,14 @@ func (o *ollamaProvider) ExplainAlert(ctx context.Context, alert *models.Alert, 
 	return o.generate(ctx, prompt)
 }
 
+func (o *ollamaProvider) Complete(ctx context.Context, system, user string) (string, error) {
+	prompt := user
+	if system != "" {
+		prompt = "SYSTEM: " + system + "\n\nUSER: " + user
+	}
+	return o.generate(ctx, prompt)
+}
+
 // generate calls the Ollama /api/generate endpoint.
 func (o *ollamaProvider) generate(ctx context.Context, prompt string) (string, error) {
 	body, _ := json.Marshal(map[string]interface{}{

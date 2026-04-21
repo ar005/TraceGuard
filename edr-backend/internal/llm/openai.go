@@ -97,3 +97,48 @@ func (o *openAIProvider) ExplainAlert(ctx context.Context, alert *models.Alert, 
 	}
 	return strings.TrimSpace(result.Choices[0].Message.Content), nil
 }
+
+func (o *openAIProvider) Complete(ctx context.Context, system, user string) (string, error) {
+	if system == "" {
+		system = "You are a senior security analyst specialising in endpoint detection and response."
+	}
+	body, _ := json.Marshal(map[string]interface{}{
+		"model": o.model,
+		"messages": []map[string]string{
+			{"role": "system", "content": system},
+			{"role": "user", "content": user},
+		},
+		"temperature": 0.2,
+		"max_tokens":  800,
+	})
+	req, err := http.NewRequestWithContext(ctx, "POST", o.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+o.apiKey)
+
+	resp, err := o.hc.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("openai request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return "", fmt.Errorf("openai HTTP %d: %s", resp.StatusCode, rb)
+	}
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	if len(result.Choices) == 0 {
+		return "", fmt.Errorf("openai: no choices")
+	}
+	return strings.TrimSpace(result.Choices[0].Message.Content), nil
+}

@@ -15,6 +15,7 @@ export function useApi<T>(fetchFn: (signal: AbortSignal) => Promise<T>): UseApiR
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
   const mountedRef = useRef(true);
+  const inflightRef = useRef(false);
 
   const refetch = useCallback(() => {
     setTick((t) => t + 1);
@@ -23,6 +24,9 @@ export function useApi<T>(fetchFn: (signal: AbortSignal) => Promise<T>): UseApiR
   useEffect(() => {
     mountedRef.current = true;
     const controller = new AbortController();
+
+    if (inflightRef.current) return () => { mountedRef.current = false; controller.abort(); };
+    inflightRef.current = true;
 
     setLoading(true);
     setError(null);
@@ -39,6 +43,9 @@ export function useApi<T>(fetchFn: (signal: AbortSignal) => Promise<T>): UseApiR
           setError(err instanceof Error ? err.message : String(err));
           setLoading(false);
         }
+      })
+      .finally(() => {
+        inflightRef.current = false;
       });
 
     return () => {

@@ -17,11 +17,13 @@ type Config struct {
 	Retention RetentionConfig `mapstructure:"retention"`
 	RateLimit RateLimitConfig `mapstructure:"rate_limit"`
 	IOCFeed   IOCFeedConfig   `mapstructure:"ioc_feed"`
+	NATS      NATSConfig      `mapstructure:"nats"`
 }
 
 type ServerConfig struct {
 	GRPCAddr string    `mapstructure:"grpc_addr"`
 	HTTPAddr string    `mapstructure:"http_addr"`
+	NodeID   string    `mapstructure:"node_id"`
 	TLS      TLSConfig `mapstructure:"tls"`
 }
 
@@ -40,6 +42,9 @@ type DatabaseConfig struct {
 	User     string `mapstructure:"user"`
 	Password string `mapstructure:"password"`
 	SSLMode  string `mapstructure:"ssl_mode"`
+	// ReadURL is an optional full DSN for a read replica.
+	// When set, read-heavy queries route there; writes always use the primary.
+	ReadURL  string `mapstructure:"read_url"`
 }
 
 func (d *DatabaseConfig) DSNString() string {
@@ -64,6 +69,7 @@ type AuthConfig struct {
 type RetentionConfig struct {
 	EventDays int `mapstructure:"event_days"` // 0 = disabled
 	AlertDays int `mapstructure:"alert_days"` // 0 = disabled (only CLOSED)
+	FlowDays  int `mapstructure:"flow_days"`  // xdr_network_flows partition retention; 0 = use DB setting (default 7)
 }
 
 type RateLimitConfig struct {
@@ -75,6 +81,13 @@ type RateLimitConfig struct {
 type IOCFeedConfig struct {
 	Enabled      bool          `mapstructure:"enabled"`
 	SyncInterval time.Duration `mapstructure:"sync_interval"`
+}
+
+type NATSConfig struct {
+	// URL is the NATS server connection string. Leave empty to disable NATS
+	// and run detection synchronously (single-node EDR mode).
+	URL     string `mapstructure:"url"`
+	Enabled bool   `mapstructure:"enabled"`
 }
 
 func Load(path string) (*Config, error) {
@@ -97,6 +110,8 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("rate_limit.burst", 40)
 	v.SetDefault("ioc_feed.enabled", true)
 	v.SetDefault("ioc_feed.sync_interval", 6*time.Hour)
+	v.SetDefault("nats.enabled", false)
+	v.SetDefault("nats.url", "nats://nats:4222")
 
 	// Allow env overrides with EDR_ prefix, replacing _ with . for nesting
 	v.SetEnvPrefix("EDR")

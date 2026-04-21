@@ -17,6 +17,8 @@ import (
 type Provider interface {
 	Name() string
 	ExplainAlert(ctx context.Context, alert *models.Alert, events []models.Event) (string, error)
+	// Complete sends a single-turn completion. system may be empty.
+	Complete(ctx context.Context, system, user string) (string, error)
 }
 
 // Config holds provider-agnostic LLM settings loaded from the database.

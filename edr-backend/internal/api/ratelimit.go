@@ -13,6 +13,13 @@ import (
 	"golang.org/x/time/rate"
 )
 
+// TenantRateLimitOverride holds per-tenant rate limit values loaded from the
+// tenant_rate_limits DB table at startup.
+type TenantRateLimitOverride struct {
+	RequestsPerSecond float64
+	Burst             int
+}
+
 // RateLimitConfig controls rate limiting behaviour.
 type RateLimitConfig struct {
 	// Enabled turns rate limiting on/off.
@@ -157,6 +164,50 @@ func strictRateLimitMiddleware() gin.HandlerFunc {
 			c.Header("Retry-After", "5")
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 				"error": "rate limit exceeded for this endpoint — try again shortly",
+			})
+			return
+		}
+		c.Next()
+	}
+}
+
+// tenantRateLimitMiddleware wraps rateLimitMiddleware but applies per-tenant
+// overrides when the JWT tenant_id matches a loaded override. Falls back to the
+// global config for unknown tenants.
+func tenantRateLimitMiddleware(cfg RateLimitConfig, overrides map[string]TenantRateLimitOverride) gin.HandlerFunc {
+	if !cfg.Enabled || len(overrides) == 0 {
+		return rateLimitMiddleware(cfg)
+	}
+
+	stores := make(map[string]*rateLimiterStore, len(overrides))
+	for tid, ov := range overrides {
+		rps := ov.RequestsPerSecond
+		if rps <= 0 {
+			rps = cfg.RequestsPerSecond
+		}
+		burst := ov.Burst
+		if burst <= 0 {
+			burst = cfg.Burst
+		}
+		stores[tid] = newRateLimiterStore(rps, burst, cfg.CleanupInterval, cfg.MaxAge)
+	}
+	defaultStore := newRateLimiterStore(cfg.RequestsPerSecond, cfg.Burst, cfg.CleanupInterval, cfg.MaxAge)
+
+	return func(c *gin.Context) {
+		tenantID := "default"
+		if raw, ok := c.Get("tenant_id"); ok {
+			if tid, ok := raw.(string); ok && tid != "" {
+				tenantID = tid
+			}
+		}
+		store, ok := stores[tenantID]
+		if !ok {
+			store = defaultStore
+		}
+		if !store.getLimiter(c.ClientIP()).Allow() {
+			c.Header("Retry-After", "1")
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+				"error": "rate limit exceeded — try again shortly",
 			})
 			return
 		}

@@ -2,8 +2,10 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth";
+import { useNotifications } from "@/hooks/use-notifications";
+import type { Notification } from "@/hooks/use-notifications";
 import {
   LayoutDashboard,
   MonitorCheck,
@@ -19,7 +21,21 @@ import {
   FileX2,
   Bug,
   BarChart2,
+  Network,
+  Cloud,
+  Users,
+  UserCheck,
+  Server,
+  PlaySquare,
+  ShieldCheck,
+  Share2,
+  FolderOpen,
+  Container,
   LogOut,
+  Bell,
+  X,
+  AlertTriangle,
+  WifiOff,
 } from "lucide-react";
 
 interface NavItem {
@@ -39,9 +55,10 @@ const NAV: NavGroup[] = [
     label: "Core",
     items: [
       { href: "/dashboard",  icon: LayoutDashboard, label: "Dashboard" },
-      { href: "/agents",     icon: MonitorCheck,    label: "Agents",   matchPrefix: "/agents" },
+      { href: "/agents",     icon: MonitorCheck,    label: "Agents",    matchPrefix: "/agents" },
       { href: "/alerts",     icon: ShieldAlert,     label: "Alerts" },
       { href: "/incidents",  icon: Layers,          label: "Incidents" },
+      { href: "/cases",      icon: FolderOpen,      label: "Cases",     matchPrefix: "/cases" },
     ],
   },
   {
@@ -64,9 +81,24 @@ const NAV: NavGroup[] = [
     ],
   },
   {
+    label: "XDR",
+    items: [
+      { href: "/sources",          icon: Network,       label: "Sources",         matchPrefix: "/sources" },
+      { href: "/network-events",   icon: Globe,         label: "Network Events" },
+      { href: "/cloud-events",     icon: Cloud,         label: "Cloud Events" },
+      { href: "/identity-events",  icon: Users,         label: "Identity Events" },
+      { href: "/user-risk",        icon: UserCheck,     label: "User Risk" },
+      { href: "/asset-inventory",  icon: Server,        label: "Asset Inventory" },
+      { href: "/containers",       icon: Container,     label: "Containers",      matchPrefix: "/containers" },
+    ],
+  },
+  {
     label: "Operate",
     items: [
       { href: "/live-response", icon: Terminal,          label: "Live Response" },
+      { href: "/playbooks",         icon: PlaySquare,   label: "Playbooks",         matchPrefix: "/playbooks" },
+      { href: "/response-actions",  icon: ShieldCheck,  label: "Response Actions",  matchPrefix: "/response-actions" },
+      { href: "/export",        icon: Share2,            label: "Export / SIEM" },
       { href: "/metrics",       icon: BarChart2,         label: "Metrics" },
       { href: "/settings",      icon: SlidersHorizontal, label: "Settings" },
     ],
@@ -74,6 +106,8 @@ const NAV: NavGroup[] = [
 ];
 
 const STORAGE_KEY = "tg-sidebar-expanded";
+
+const SEV_COLORS = ["var(--fg-3)", "oklch(0.65 0.15 200)", "oklch(0.70 0.16 80)", "oklch(0.65 0.18 35)", "var(--sev-critical)"];
 
 function ShieldLogo({ size = 20 }: { size?: number }) {
   return (
@@ -96,14 +130,117 @@ function ShieldLogo({ size = 20 }: { size?: number }) {
   );
 }
 
+/* ── Notification Dropdown ───────────────────────────────────────── */
+
+function NotificationItem({ n }: { n: Notification }) {
+  const Icon = n.type === "agent_offline" ? WifiOff : AlertTriangle;
+  const color = n.type === "agent_offline"
+    ? "var(--fg-3)"
+    : SEV_COLORS[n.severity ?? 0] ?? "var(--fg-3)";
+
+  return (
+    <div
+      className="flex items-start gap-2 px-3 py-2 transition-fast hover:bg-[var(--surface-1)]"
+      style={{ opacity: n.read ? 0.6 : 1 }}
+    >
+      <Icon size={13} style={{ color, flexShrink: 0, marginTop: 2 }} />
+      <div className="min-w-0 flex-1">
+        <p className="truncate" style={{ fontSize: "var(--text-xs)", color: "var(--fg)", fontWeight: n.read ? 400 : 600 }}>
+          {n.title}
+        </p>
+        {n.subtitle && (
+          <p className="truncate" style={{ fontSize: "var(--text-xs)", color: "var(--fg-3)" }}>
+            {n.subtitle}
+          </p>
+        )}
+      </div>
+      {!n.read && (
+        <span
+          className="shrink-0 rounded-full"
+          style={{ width: 6, height: 6, background: "var(--primary)", marginTop: 4 }}
+        />
+      )}
+    </div>
+  );
+}
+
+function BellButton({ expanded, unread, onClick }: { expanded: boolean; unread: number; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      title={expanded ? undefined : `Notifications${unread > 0 ? ` (${unread})` : ""}`}
+      aria-label="Notifications"
+      className="relative flex items-center transition-fast rounded-md"
+      style={{
+        height: "34px",
+        margin: "0 auto",
+        width: expanded ? "calc(100% - 0px)" : "40px",
+        padding: expanded ? "0 10px" : "0",
+        gap: expanded ? "10px" : "0",
+        justifyContent: expanded ? "flex-start" : "center",
+        background: "none",
+        border: "none",
+        cursor: "pointer",
+        color: "var(--fg-3)",
+        borderRadius: "6px",
+        whiteSpace: "nowrap",
+        overflow: "visible",
+      }}
+    >
+      <span className="relative" style={{ flexShrink: 0 }}>
+        <Bell size={15} />
+        {unread > 0 && (
+          <span
+            className="absolute flex items-center justify-center rounded-full font-display font-bold"
+            style={{
+              top: -5, right: -5,
+              width: 14, height: 14,
+              background: "var(--sev-critical)",
+              color: "#fff",
+              fontSize: 9,
+              fontFamily: "var(--font-archivo)",
+              lineHeight: 1,
+            }}
+          >
+            {unread > 9 ? "9+" : unread}
+          </span>
+        )}
+      </span>
+      {expanded && (
+        <span style={{ fontSize: "var(--text-sm)" }}>
+          Notifications{unread > 0 ? ` (${unread})` : ""}
+        </span>
+      )}
+    </button>
+  );
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────────── */
+
 export function Sidebar() {
   const pathname = usePathname();
   const { logout, user } = useAuth();
   const [expanded, setExpanded] = useState(false);
+  const [bellOpen, setBellOpen] = useState(false);
+  const bellRef = useRef<HTMLDivElement>(null);
+
+  const { notifications, unread, markAllRead, clear } = useNotifications();
 
   useEffect(() => {
     try { setExpanded(localStorage.getItem(STORAGE_KEY) === "1"); } catch {/* ignore */}
   }, []);
+
+  // Close bell dropdown on outside click
+  useEffect(() => {
+    if (!bellOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (bellRef.current && !bellRef.current.contains(e.target as Node)) {
+        setBellOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [bellOpen]);
 
   const toggle = () => {
     setExpanded(v => {
@@ -221,7 +358,7 @@ export function Sidebar() {
         ))}
       </div>
 
-      {/* Bottom — user + logout */}
+      {/* Bottom — notifications + user + logout */}
       <div
         style={{
           borderTop: "1px solid var(--rail-border)",
@@ -229,8 +366,83 @@ export function Sidebar() {
           display: "flex",
           flexDirection: "column",
           gap: "4px",
+          position: "relative",
+          overflow: "visible",
         }}
       >
+        {/* Bell button */}
+        <div ref={bellRef} style={{ position: "relative" }}>
+          <BellButton
+            expanded={expanded}
+            unread={unread}
+            onClick={() => {
+              setBellOpen(v => !v);
+              if (!bellOpen) markAllRead();
+            }}
+          />
+
+          {/* Notification dropdown — pops out to the right of sidebar */}
+          {bellOpen && (
+            <div
+              className="absolute z-50 rounded-xl border shadow-2xl"
+              style={{
+                left: expanded ? "0" : "52px",
+                bottom: 0,
+                width: "300px",
+                background: "var(--surface-0)",
+                borderColor: "var(--border)",
+                maxHeight: "380px",
+                display: "flex",
+                flexDirection: "column",
+                overflow: "hidden",
+              }}
+            >
+              {/* Header */}
+              <div
+                className="flex items-center justify-between px-3 py-2 shrink-0"
+                style={{ borderBottom: "1px solid var(--border)" }}
+              >
+                <span style={{ fontSize: "var(--text-xs)", fontWeight: 700, color: "var(--fg)", fontFamily: "var(--font-archivo)" }}>
+                  Notifications
+                </span>
+                <div className="flex items-center gap-2">
+                  {notifications.length > 0 && (
+                    <button
+                      onClick={clear}
+                      className="transition-fast hover:text-[var(--fg)]"
+                      style={{ fontSize: "var(--text-xs)", color: "var(--fg-3)" }}
+                    >
+                      Clear
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setBellOpen(false)}
+                    className="transition-fast hover:text-[var(--fg)]"
+                    style={{ color: "var(--fg-3)" }}
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+              </div>
+
+              {/* List */}
+              <div className="overflow-y-auto flex-1">
+                {notifications.length === 0 ? (
+                  <div
+                    className="flex flex-col items-center justify-center gap-2 py-10"
+                    style={{ color: "var(--fg-4)" }}
+                  >
+                    <Bell size={22} />
+                    <p style={{ fontSize: "var(--text-xs)" }}>No notifications</p>
+                  </div>
+                ) : (
+                  notifications.map((n) => <NotificationItem key={n.id} n={n} />)
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
         {expanded && user && (
           <div
             style={{
@@ -253,6 +465,7 @@ export function Sidebar() {
             </p>
           </div>
         )}
+
         <button
           onClick={() => void logout()}
           title={expanded ? undefined : "Log out"}

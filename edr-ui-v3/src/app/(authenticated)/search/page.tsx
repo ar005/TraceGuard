@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import { Download } from "lucide-react";
+import { Download, Sparkles, ChevronDown, ChevronUp } from "lucide-react";
 import { useApi } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
 import { exportToCSV, exportToJSON } from "@/lib/export";
@@ -134,6 +134,32 @@ export default function SearchPage() {
   const [offset, setOffset] = useState(0);
   const [allEvents, setAllEvents] = useState<Event[]>([]);
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [aiGenOpen, setAiGenOpen] = useState(false);
+  const [aiGenInput, setAiGenInput] = useState("");
+  const [aiGenLoading, setAiGenLoading] = useState(false);
+  const [aiGenResult, setAiGenResult] = useState<{ query: string; explanation: string } | null>(null);
+  const [aiGenError, setAiGenError] = useState("");
+
+  async function handleAiGenerate() {
+    if (!aiGenInput.trim()) return;
+    setAiGenLoading(true); setAiGenError("");
+    try {
+      const res = await api.post<{ query: string; explanation: string }>("/api/v1/hunt/generate", { description: aiGenInput });
+      setAiGenResult(res);
+    } catch (e: unknown) {
+      setAiGenError(e instanceof Error ? e.message : "AI generation failed");
+    } finally {
+      setAiGenLoading(false);
+    }
+  }
+
+  function useAiQuery() {
+    if (aiGenResult?.query) {
+      setSearch(aiGenResult.query);
+      setAiGenOpen(false);
+      triggerSearch();
+    }
+  }
 
   /* Build search trigger key: only fetch when user explicitly wants to */
   const [searchTrigger, setSearchTrigger] = useState(0);
@@ -227,6 +253,60 @@ export default function SearchPage() {
       >
         Search
       </h1>
+
+      {/* AI query generator */}
+      <div className="rounded-xl border border-neutral-800 bg-neutral-900 overflow-hidden">
+        <button
+          onClick={() => setAiGenOpen((o) => !o)}
+          className="w-full flex items-center gap-2 px-4 py-3 text-sm text-left hover:bg-neutral-800/50 transition-colors"
+        >
+          <Sparkles size={14} className="text-violet-400" />
+          <span className="font-medium text-neutral-300">AI Query Generator</span>
+          <span className="text-xs text-neutral-500 ml-1">— describe what you want to find</span>
+          <span className="ml-auto text-neutral-500">
+            {aiGenOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          </span>
+        </button>
+        {aiGenOpen && (
+          <div className="border-t border-neutral-800 p-4 space-y-3">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={aiGenInput}
+                onChange={(e) => setAiGenInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleAiGenerate()}
+                placeholder="e.g. find bash processes spawned by nginx in the last hour"
+                className="flex-1 rounded-lg border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm outline-none focus:border-neutral-500"
+              />
+              <button
+                onClick={handleAiGenerate}
+                disabled={aiGenLoading || !aiGenInput.trim()}
+                className="px-4 py-2 text-sm rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 font-medium flex items-center gap-1.5"
+              >
+                <Sparkles size={13} />
+                {aiGenLoading ? "Generating…" : "Generate"}
+              </button>
+            </div>
+            {aiGenError && <p className="text-xs text-red-400">{aiGenError}</p>}
+            {aiGenResult && (
+              <div className="space-y-2">
+                <div className="rounded-lg border border-neutral-700 bg-neutral-950 p-3">
+                  <p className="font-mono text-xs text-emerald-300 break-all">{aiGenResult.query}</p>
+                </div>
+                {aiGenResult.explanation && (
+                  <p className="text-xs text-neutral-400">{aiGenResult.explanation}</p>
+                )}
+                <button
+                  onClick={useAiQuery}
+                  className="px-3 py-1.5 text-xs rounded-lg bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 font-medium"
+                >
+                  Use this query →
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Search bar */}
       <form onSubmit={handleSearchSubmit}>

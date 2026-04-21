@@ -28,15 +28,23 @@ import (
 	"github.com/youredr/edr-backend/internal/liveresponse"
 	"github.com/youredr/edr-backend/internal/metrics"
 	"github.com/youredr/edr-backend/internal/models"
+	"github.com/youredr/edr-backend/internal/ocsf"
 	pb "github.com/youredr/edr-backend/internal/proto"
 	"github.com/youredr/edr-backend/internal/sse"
 	"github.com/youredr/edr-backend/internal/store"
 )
 
 const (
-	batchSize          = 50
-	batchFlushInterval = 200 * time.Millisecond
+	batchSize          = 500
+	batchFlushInterval = 100 * time.Millisecond
 )
+
+// EventSink receives normalized XdrEvents after DB insertion for async processing.
+// When NATS is enabled, a NATSSink publishes to the XDR pipeline so detection
+// runs in a separate worker process. When nil, detection runs inline (EDR mode).
+type EventSink interface {
+	Publish(ev *models.XdrEvent) error
+}
 
 // batchEntry pairs an event with its envelope for post-insert processing.
 type batchEntry struct {
@@ -50,6 +58,7 @@ type Server struct {
 	engine    *detection.Engine
 	sseBroker *sse.Broker
 	lr        *liveresponse.Manager
+	sink      EventSink // nil = inline detection (EDR mode); non-nil = NATS pipeline (XDR mode)
 	log       zerolog.Logger
 	grpc      *grpc.Server
 
@@ -67,11 +76,14 @@ type TLSConfig struct {
 }
 
 // New creates an ingest Server.
-func New(st *store.Store, eng *detection.Engine, sb *sse.Broker, lr *liveresponse.Manager, log zerolog.Logger, tls TLSConfig) *Server {
+// Pass a non-nil sink to enable XDR pipeline mode (detection via NATS worker).
+// Pass nil to keep inline detection (default EDR single-node mode).
+func New(st *store.Store, eng *detection.Engine, sb *sse.Broker, lr *liveresponse.Manager, sink EventSink, log zerolog.Logger, tls TLSConfig) *Server {
 	s := &Server{
 		store:     st,
 		engine:    eng,
 		sseBroker: sb,
+		sink:      sink,
 		lr:        lr,
 		log:       log.With().Str("component", "ingest").Logger(),
 	}
@@ -322,19 +334,75 @@ func (s *Server) flushBatch(batch []*batchEntry) {
 	}
 	metrics.EventsStored.Add(float64(len(batch)))
 
-	// Post-insert processing for each event (SSE, detection, PKG_INVENTORY).
+	// Post-insert processing for each event (SSE, detection, PKG_INVENTORY, containers).
 	for _, b := range batch {
 		if s.sseBroker != nil {
 			go s.sseBroker.Publish(b.event)
 		}
 
-		detStart := time.Now()
-		s.engine.Evaluate(ctx, b.event)
-		metrics.DetectionDuration.Observe(time.Since(detStart).Seconds())
+		if s.sink != nil {
+			// XDR mode: publish to NATS pipeline; detection-worker evaluates asynchronously.
+			xdrEv := &models.XdrEvent{
+				Event:       *b.event,
+				SourceType:  "endpoint",
+				SourceID:    b.event.AgentID,
+				TenantID:    "default",
+				ClassUID:    ocsf.ClassUID(b.event.EventType),
+				CategoryUID: ocsf.CategoryUID(b.event.EventType),
+			}
+			if err := s.sink.Publish(xdrEv); err != nil {
+				// Fall back to inline detection so no events are missed.
+				s.log.Warn().Err(err).Str("event", b.event.ID).Msg("NATS publish failed — running inline detection")
+				detStart := time.Now()
+				s.engine.Evaluate(ctx, b.event)
+				metrics.DetectionDuration.Observe(time.Since(detStart).Seconds())
+			}
+		} else {
+			// EDR mode: inline synchronous detection.
+			detStart := time.Now()
+			s.engine.Evaluate(ctx, b.event)
+			metrics.DetectionDuration.Observe(time.Since(detStart).Seconds())
+		}
 
 		if b.env.EventType == "PKG_INVENTORY" {
 			go s.processPackageInventory(ctx, b.env.AgentID, b.env.Payload)
 		}
+
+		// Extract container context and upsert into the inventory.
+		// Only PROCESS_EXEC events carry full container enrichment.
+		if b.env.EventType == "PROCESS_EXEC" || b.env.EventType == "PROCESS_FORK" {
+			go s.upsertContainerFromPayload(b.event.AgentID, b.event.Hostname, b.env.Payload)
+		}
+	}
+}
+
+// upsertContainerFromPayload parses the event payload and, if a container_id is present,
+// upserts the container into the inventory. Runs in a background goroutine.
+func (s *Server) upsertContainerFromPayload(agentID, hostname string, payload []byte) {
+	var p struct {
+		Process struct {
+			ContainerID string `json:"container_id"`
+			Runtime     string `json:"runtime"`
+			ImageName   string `json:"image_name"`
+			PodName     string `json:"pod_name"`
+			Namespace   string `json:"namespace"`
+		} `json:"process"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil || p.Process.ContainerID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.store.UpsertContainer(ctx, store.ContainerInfo{
+		ContainerID: p.Process.ContainerID,
+		AgentID:     agentID,
+		Hostname:    hostname,
+		Runtime:     p.Process.Runtime,
+		ImageName:   p.Process.ImageName,
+		PodName:     p.Process.PodName,
+		Namespace:   p.Process.Namespace,
+	}); err != nil {
+		s.log.Warn().Err(err).Str("container", p.Process.ContainerID).Msg("container upsert failed")
 	}
 }
 

@@ -5,6 +5,7 @@ package models
 
 import (
 	"encoding/json"
+	"net"
 	"time"
 
 	"github.com/lib/pq"
@@ -44,23 +45,31 @@ type Event struct {
 
 // Alert represents a security alert.
 type Alert struct {
-	ID          string         `db:"id"          json:"id"`
-	Title       string         `db:"title"       json:"title"`
-	Description string         `db:"description" json:"description"`
-	Severity    int16          `db:"severity"    json:"severity"`
-	Status      string         `db:"status"      json:"status"`
-	RuleID      string         `db:"rule_id"     json:"rule_id"`
-	RuleName    string         `db:"rule_name"   json:"rule_name"`
-	MitreIDs    pq.StringArray `db:"mitre_ids"   json:"mitre_ids"`
-	EventIDs    pq.StringArray `db:"event_ids"   json:"event_ids"`
-	AgentID     string         `db:"agent_id"    json:"agent_id"`
-	Hostname    string         `db:"hostname"    json:"hostname"`
-	FirstSeen   time.Time      `db:"first_seen"  json:"first_seen"`
-	LastSeen    time.Time      `db:"last_seen"   json:"last_seen"`
-	Assignee    string         `db:"assignee"    json:"assignee"`
-	Notes       string         `db:"notes"       json:"notes"`
-	HitCount    int64          `db:"hit_count"   json:"hit_count"`
-	IncidentID  string         `db:"incident_id" json:"incident_id"`
+	ID          string         `db:"id"           json:"id"`
+	Title       string         `db:"title"        json:"title"`
+	Description string         `db:"description"  json:"description"`
+	Severity    int16          `db:"severity"     json:"severity"`
+	Status      string         `db:"status"       json:"status"`
+	RuleID      string         `db:"rule_id"      json:"rule_id"`
+	RuleName    string         `db:"rule_name"    json:"rule_name"`
+	MitreIDs    pq.StringArray `db:"mitre_ids"    json:"mitre_ids"`
+	EventIDs    pq.StringArray `db:"event_ids"    json:"event_ids"`
+	AgentID     string         `db:"agent_id"     json:"agent_id"`
+	Hostname    string         `db:"hostname"     json:"hostname"`
+	FirstSeen   time.Time      `db:"first_seen"   json:"first_seen"`
+	LastSeen    time.Time      `db:"last_seen"    json:"last_seen"`
+	Assignee    string         `db:"assignee"     json:"assignee"`
+	Notes       string         `db:"notes"        json:"notes"`
+	HitCount    int64          `db:"hit_count"    json:"hit_count"`
+	IncidentID  string         `db:"incident_id"  json:"incident_id"`
+	// XDR Phase 2 — cross-source identity correlation
+	UserUID     string         `db:"user_uid"     json:"user_uid"`
+	SourceTypes pq.StringArray `db:"source_types" json:"source_types"`
+	// Phase 5 — AI triage
+	TriageVerdict string     `db:"triage_verdict" json:"triage_verdict,omitempty"`
+	TriageScore   int16      `db:"triage_score"   json:"triage_score,omitempty"`
+	TriageNotes   string     `db:"triage_notes"   json:"triage_notes,omitempty"`
+	TriageAt      *time.Time `db:"triage_at"      json:"triage_at,omitempty"`
 }
 
 // Rule represents a detection rule.
@@ -83,6 +92,7 @@ type Rule struct {
 	SequenceSteps      json.RawMessage `db:"sequence_steps"      json:"sequence_steps,omitempty"`
 	SequenceWindowS    int             `db:"sequence_window_s"   json:"sequence_window_s"`
 	SequenceBy         string          `db:"sequence_by"         json:"sequence_by"`
+	SourceTypes        pq.StringArray  `db:"source_types"        json:"source_types"`
 }
 
 // SuppressionRule silences events that match its conditions before detection runs.
@@ -104,22 +114,26 @@ type SuppressionRule struct {
 
 // Incident groups related alerts into a single investigation unit.
 type Incident struct {
-	ID          string         `db:"id"          json:"id"`
-	Title       string         `db:"title"       json:"title"`
-	Description string         `db:"description" json:"description"`
-	Severity    int16          `db:"severity"    json:"severity"`
-	Status      string         `db:"status"      json:"status"`     // OPEN, INVESTIGATING, CLOSED
-	AlertIDs    pq.StringArray `db:"alert_ids"   json:"alert_ids"`
-	AgentIDs    pq.StringArray `db:"agent_ids"   json:"agent_ids"`
-	Hostnames   pq.StringArray `db:"hostnames"   json:"hostnames"`
-	MitreIDs    pq.StringArray `db:"mitre_ids"   json:"mitre_ids"`
-	AlertCount  int            `db:"alert_count" json:"alert_count"`
-	FirstSeen   time.Time      `db:"first_seen"  json:"first_seen"`
-	LastSeen    time.Time      `db:"last_seen"   json:"last_seen"`
-	Assignee    string         `db:"assignee"    json:"assignee"`
-	Notes       string         `db:"notes"       json:"notes"`
-	CreatedAt   time.Time      `db:"created_at"  json:"created_at"`
-	UpdatedAt   time.Time      `db:"updated_at"  json:"updated_at"`
+	ID          string         `db:"id"           json:"id"`
+	Title       string         `db:"title"        json:"title"`
+	Description string         `db:"description"  json:"description"`
+	Severity    int16          `db:"severity"     json:"severity"`
+	Status      string         `db:"status"       json:"status"`
+	AlertIDs    pq.StringArray `db:"alert_ids"    json:"alert_ids"`
+	AgentIDs    pq.StringArray `db:"agent_ids"    json:"agent_ids"`
+	Hostnames   pq.StringArray `db:"hostnames"    json:"hostnames"`
+	MitreIDs    pq.StringArray `db:"mitre_ids"    json:"mitre_ids"`
+	AlertCount  int            `db:"alert_count"  json:"alert_count"`
+	FirstSeen   time.Time      `db:"first_seen"   json:"first_seen"`
+	LastSeen    time.Time      `db:"last_seen"    json:"last_seen"`
+	Assignee    string         `db:"assignee"     json:"assignee"`
+	Notes       string         `db:"notes"        json:"notes"`
+	CreatedAt   time.Time      `db:"created_at"   json:"created_at"`
+	UpdatedAt   time.Time      `db:"updated_at"   json:"updated_at"`
+	// XDR Phase 2 — cross-source identity correlation
+	UserUIDs    pq.StringArray `db:"user_uids"    json:"user_uids"`
+	SrcIPs      pq.StringArray `db:"src_ips"      json:"src_ips"`
+	SourceTypes pq.StringArray `db:"source_types" json:"source_types"`
 }
 
 // AgentPackage represents an installed package on an endpoint.
@@ -242,6 +256,174 @@ func SeverityLabel(s int16) string {
 	}
 }
 
+// SequenceStep is one step in a sequence or sequence_cross detection rule.
+// SourceTypes restricts this step to events from specific source categories.
+type SequenceStep struct {
+	EventType   string   `json:"event_type"`
+	SourceTypes []string `json:"source_types,omitempty"` // empty = any
+	Conditions  []RuleCondition `json:"conditions,omitempty"`
+	MaxDelayS   int      `json:"max_delay_s,omitempty"`
+}
+
+// ─── XDR types ────────────────────────────────────────────────────────────────
+
+// XdrEvent is the normalized event envelope flowing through the NATS pipeline.
+// It embeds Event so all existing detection engine field access is unchanged.
+// New fields map to OCSF (Open Cybersecurity Schema Framework) for cross-source
+// interoperability. See §2.2 of xdr.md for column mappings.
+type XdrEvent struct {
+	Event                           // existing endpoint event (zero-copy embed)
+	ClassUID    int             `db:"class_uid"    json:"class_uid"`    // OCSF class
+	CategoryUID int16           `db:"category_uid" json:"category_uid"` // OCSF category
+	ActivityID  int16           `db:"activity_id"  json:"activity_id"`  // OCSF activity
+	SourceType  string          `db:"source_type"  json:"source_type"`  // endpoint|network|cloud|identity|email|saas
+	SourceID    string          `db:"source_id"    json:"source_id"`    // xdr_sources.id
+	TenantID    string          `db:"tenant_id"    json:"tenant_id"`    // multi-tenancy (Phase 4)
+	UserUID     string          `db:"user_uid"     json:"user_uid"`     // canonical identity (email/UPN)
+	SrcIP       *net.IP         `db:"src_ip"       json:"src_ip,omitempty"`
+	DstIP       *net.IP         `db:"dst_ip"       json:"dst_ip,omitempty"`
+	ProcessName string          `db:"process_name" json:"process_name"`
+	RawLog      string          `db:"raw_log"      json:"raw_log"`      // original connector log line
+	Enrichments json.RawMessage `db:"enrichments"  json:"enrichments"`  // {geo, threat_intel, ...}
+}
+
+// XdrSource maps to the xdr_sources table — connector registry.
+type XdrSource struct {
+	ID          string          `db:"id"           json:"id"`
+	Name        string          `db:"name"         json:"name"`
+	SourceType  string          `db:"source_type"  json:"source_type"`
+	Connector   string          `db:"connector"    json:"connector"`
+	Config      json.RawMessage `db:"config"       json:"config"`
+	Enabled     bool            `db:"enabled"      json:"enabled"`
+	LastSeenAt  *time.Time      `db:"last_seen_at" json:"last_seen_at,omitempty"`
+	EventsToday int64           `db:"events_today" json:"events_today"`
+	ErrorState  string          `db:"error_state"  json:"error_state"`
+	CreatedAt   time.Time       `db:"created_at"   json:"created_at"`
+	UpdatedAt   time.Time       `db:"updated_at"   json:"updated_at"`
+}
+
+
+// ── SOAR / Playbooks ──────────────────────────────────────────────────────────
+
+// PlaybookAction is one step in a playbook action chain.
+type PlaybookAction struct {
+	Type   string          `json:"type"`   // slack|pagerduty|email|isolate_host|block_ip|update_alert|run_hunt|webhook
+	Config json.RawMessage `json:"config"` // action-specific parameters
+}
+
+// PlaybookTriggerFilter specifies which alerts/events activate the playbook.
+type PlaybookTriggerFilter struct {
+	MinSeverity  int16    `json:"min_severity,omitempty"`
+	RuleIDs      []string `json:"rule_ids,omitempty"`
+	EventTypes   []string `json:"event_types,omitempty"`
+	SourceTypes  []string `json:"source_types,omitempty"`
+}
+
+// Playbook is a SOAR automation rule stored in the playbooks table.
+type Playbook struct {
+	ID            string          `db:"id"             json:"id"`
+	Name          string          `db:"name"           json:"name"`
+	Description   string          `db:"description"    json:"description"`
+	Enabled       bool            `db:"enabled"        json:"enabled"`
+	TriggerType   string          `db:"trigger_type"   json:"trigger_type"` // alert|xdr_event
+	TriggerFilter json.RawMessage `db:"trigger_filter" json:"trigger_filter"`
+	Actions       json.RawMessage `db:"actions"        json:"actions"`
+	RunCount      int64           `db:"run_count"      json:"run_count"`
+	LastRunAt     *time.Time      `db:"last_run_at"    json:"last_run_at,omitempty"`
+	CreatedAt     time.Time       `db:"created_at"     json:"created_at"`
+	UpdatedAt     time.Time       `db:"updated_at"     json:"updated_at"`
+	CreatedBy     string          `db:"created_by"     json:"created_by"`
+}
+
+// PlaybookRun is an execution record stored in playbook_runs.
+type PlaybookRun struct {
+	ID           string          `db:"id"            json:"id"`
+	PlaybookID   string          `db:"playbook_id"   json:"playbook_id"`
+	PlaybookName string          `db:"playbook_name" json:"playbook_name"`
+	TriggerType  string          `db:"trigger_type"  json:"trigger_type"`
+	TriggerID    string          `db:"trigger_id"    json:"trigger_id"`
+	Status       string          `db:"status"        json:"status"` // running|success|failed
+	StartedAt    time.Time       `db:"started_at"    json:"started_at"`
+	FinishedAt   *time.Time      `db:"finished_at"   json:"finished_at,omitempty"`
+	ActionsLog   json.RawMessage `db:"actions_log"   json:"actions_log"`
+	TriggeredBy  string          `db:"triggered_by"  json:"triggered_by"`
+	Error        string          `db:"error"         json:"error"`
+}
+
+// ExportDestination is a SIEM/notification sink.
+type ExportDestination struct {
+	ID          string          `db:"id"           json:"id"`
+	Name        string          `db:"name"         json:"name"`
+	DestType    string          `db:"dest_type"    json:"dest_type"` // slack|pagerduty|webhook|syslog_cef|email
+	Config      json.RawMessage `db:"config"       json:"config"`
+	Enabled     bool            `db:"enabled"      json:"enabled"`
+	FilterSev   int16           `db:"filter_sev"   json:"filter_sev"`
+	FilterTypes pq.StringArray  `db:"filter_types" json:"filter_types"`
+	CreatedAt   time.Time       `db:"created_at"   json:"created_at"`
+	UpdatedAt   time.Time       `db:"updated_at"   json:"updated_at"`
+}
+
+// ── Case Management (Phase 4) ──────────────────────────────────────────────
+
+// CaseStatus values
+const (
+	CaseStatusOpen         = "OPEN"
+	CaseStatusInvestigating = "INVESTIGATING"
+	CaseStatusContained    = "CONTAINED"
+	CaseStatusResolved     = "RESOLVED"
+	CaseStatusClosed       = "CLOSED"
+)
+
+type Case struct {
+	ID          string         `db:"id"          json:"id"`
+	Title       string         `db:"title"       json:"title"`
+	Description string         `db:"description" json:"description"`
+	Status      string         `db:"status"      json:"status"`
+	Severity    int16          `db:"severity"    json:"severity"`
+	Assignee    string         `db:"assignee"    json:"assignee"`
+	Tags        pq.StringArray `db:"tags"        json:"tags"`
+	MitreIDs    pq.StringArray `db:"mitre_ids"   json:"mitre_ids"`
+	AlertCount  int            `db:"alert_count" json:"alert_count"`
+	CreatedBy   string         `db:"created_by"  json:"created_by"`
+	CreatedAt   time.Time      `db:"created_at"  json:"created_at"`
+	UpdatedAt   time.Time      `db:"updated_at"  json:"updated_at"`
+	ClosedAt    *time.Time     `db:"closed_at"   json:"closed_at,omitempty"`
+}
+
+type CaseNote struct {
+	ID        string    `db:"id"         json:"id"`
+	CaseID    string    `db:"case_id"    json:"case_id"`
+	Body      string    `db:"body"       json:"body"`
+	Author    string    `db:"author"     json:"author"`
+	CreatedAt time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`
+}
+
+type CaseAlert struct {
+	CaseID    string    `db:"case_id"   json:"case_id"`
+	AlertID   string    `db:"alert_id"  json:"alert_id"`
+	LinkedAt  time.Time `db:"linked_at" json:"linked_at"`
+	LinkedBy  string    `db:"linked_by" json:"linked_by"`
+}
+
+// IdentityRecord maps to identity_graph — normalized cross-source user identity.
+type IdentityRecord struct {
+	ID           string          `db:"id"            json:"id"`
+	CanonicalUID string          `db:"canonical_uid" json:"canonical_uid"` // normalized lowercase email/UPN
+	DisplayName  string          `db:"display_name"  json:"display_name"`
+	Email        string          `db:"email"         json:"email"`
+	Department   string          `db:"department"    json:"department"`
+	AccountIDs   json.RawMessage `db:"account_ids"   json:"account_ids"` // {"okta":"...","ad":"..."}
+	Aliases      pq.StringArray  `db:"aliases"       json:"aliases"`     // alternate UIDs that map to this record
+	RiskScore    int16           `db:"risk_score"    json:"risk_score"`  // 0–100
+	RiskFactors  json.RawMessage `db:"risk_factors"  json:"risk_factors"`
+	IsPrivileged bool            `db:"is_privileged" json:"is_privileged"`
+	AgentIDs     pq.StringArray  `db:"agent_ids"     json:"agent_ids"`
+	LastLoginAt  *time.Time      `db:"last_login_at" json:"last_login_at,omitempty"`
+	LastLoginIP  string          `db:"last_seen_src" json:"last_login_ip"` // maps to last_seen_src column
+	UpdatedAt    time.Time       `db:"updated_at"    json:"updated_at"`
+}
+
 // PendingCommand is a queued command waiting for an agent to come online.
 type PendingCommand struct {
 	ID         string          `db:"id"          json:"id"`
@@ -253,4 +435,53 @@ type PendingCommand struct {
 	Status     string          `db:"status"      json:"status"` // pending, executed, failed, cancelled
 	Result     json.RawMessage `db:"result"      json:"result,omitempty"`
 	ExecutedAt *time.Time      `db:"executed_at" json:"executed_at,omitempty"`
+}
+
+// AssetRecord maps to the asset_inventory table (populated in XDR Phase 2).
+type AssetRecord struct {
+	ID              string         `db:"id"               json:"id"`
+	AssetType       string         `db:"asset_type"       json:"asset_type"`   // endpoint|server|container|vm|network_device|cloud_resource
+	Hostname        string         `db:"hostname"         json:"hostname"`
+	IPAddresses     pq.StringArray `db:"ip_addresses"     json:"ip_addresses"`
+	MACAddresses    pq.StringArray `db:"mac_addresses"    json:"mac_addresses"`
+	OS              string         `db:"os"               json:"os"`
+	OSVersion       string         `db:"os_version"       json:"os_version"`
+	CloudProvider   string         `db:"cloud_provider"   json:"cloud_provider"` // aws|azure|gcp|""
+	CloudRegion     string         `db:"cloud_region"     json:"cloud_region"`
+	CloudAccount    string         `db:"cloud_account"    json:"cloud_account"`
+	CloudResourceID string         `db:"cloud_resource_id" json:"cloud_resource_id"`
+	AgentID         string         `db:"agent_id"         json:"agent_id"`
+	Tags            pq.StringArray `db:"tags"             json:"tags"`
+	RiskScore       int16          `db:"risk_score"       json:"risk_score"`
+	Criticality     int16          `db:"criticality"      json:"criticality"` // 1=low … 4=critical
+	OwnerUID        string         `db:"owner_uid"        json:"owner_uid"`
+	FirstSeenAt     time.Time      `db:"first_seen_at"    json:"first_seen_at"`
+	LastSeenAt      time.Time      `db:"last_seen_at"     json:"last_seen_at"`
+	SourceID        string         `db:"source_id"        json:"source_id"`
+}
+
+// LoginEvent is used by the user risk scorer to represent a login attempt.
+type LoginEvent struct {
+	UserUID   string
+	SrcIP     string
+	Timestamp time.Time
+	Success   bool
+	Provider  string // "okta" | "ad" | "saml" | ...
+}
+
+// ResponseAction maps to the response_actions table — SOAR action audit trail.
+type ResponseAction struct {
+	ID             string          `db:"id"              json:"id"`
+	ActionType     string          `db:"action_type"     json:"action_type"`
+	TargetType     string          `db:"target_type"     json:"target_type"`
+	TargetID       string          `db:"target_id"       json:"target_id"`
+	Status         string          `db:"status"          json:"status"`
+	TriggeredBy    string          `db:"triggered_by"    json:"triggered_by"`
+	PlaybookRunID  string          `db:"playbook_run_id" json:"playbook_run_id"`
+	Params         json.RawMessage `db:"params"          json:"params"`
+	Result         json.RawMessage `db:"result"          json:"result"`
+	CreatedAt      time.Time       `db:"created_at"      json:"created_at"`
+	ReversedAt     *time.Time      `db:"reversed_at"     json:"reversed_at,omitempty"`
+	ReversedBy     string          `db:"reversed_by"     json:"reversed_by"`
+	Notes          string          `db:"notes"           json:"notes"`
 }

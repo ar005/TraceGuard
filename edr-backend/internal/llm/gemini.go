@@ -109,3 +109,52 @@ func (g *geminiProvider) ExplainAlert(ctx context.Context, alert *models.Alert, 
 	}
 	return strings.TrimSpace(result.Candidates[0].Content.Parts[0].Text), nil
 }
+
+func (g *geminiProvider) Complete(ctx context.Context, system, user string) (string, error) {
+	if system == "" {
+		system = "You are a senior security analyst specialising in endpoint detection and response."
+	}
+	body, _ := json.Marshal(map[string]interface{}{
+		"system_instruction": map[string]interface{}{
+			"parts": []map[string]string{{"text": system}},
+		},
+		"contents": []map[string]interface{}{
+			{"parts": []map[string]string{{"text": user}}},
+		},
+		"generationConfig": map[string]interface{}{
+			"temperature":     0.2,
+			"maxOutputTokens": 800,
+		},
+	})
+	endpoint := fmt.Sprintf("%s/v1beta/models/%s:generateContent?key=%s", g.baseURL, g.model, g.apiKey)
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := g.hc.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("gemini request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return "", fmt.Errorf("gemini HTTP %d: %s", resp.StatusCode, rb)
+	}
+	var result struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	if len(result.Candidates) == 0 || len(result.Candidates[0].Content.Parts) == 0 {
+		return "", fmt.Errorf("gemini: no candidates")
+	}
+	return strings.TrimSpace(result.Candidates[0].Content.Parts[0].Text), nil
+}

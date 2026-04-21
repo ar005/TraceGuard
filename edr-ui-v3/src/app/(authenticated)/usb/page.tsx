@@ -107,47 +107,38 @@ export default function USBDevicesPage() {
   );
   const { data: agents } = useApi(fetchAgents);
 
-  /* Fetch USB connect events */
-  const fetchConnects = useCallback(
+  /* Fetch USB connect + disconnect in a single parallel request pair */
+  const fetchUsbEvents = useCallback(
     () =>
-      api
-        .get<{ events?: Event[] } | Event[]>("/api/v1/events", {
-          event_type: "USB_CONNECT",
-          agent_id: selectedAgent || undefined,
-          limit: PAGE_SIZE,
-        })
-        .then((r) => (Array.isArray(r) ? r : r.events ?? [])),
+      Promise.all([
+        api
+          .get<{ events?: Event[] } | Event[]>("/api/v1/events", {
+            event_type: "USB_CONNECT",
+            agent_id: selectedAgent || undefined,
+            limit: PAGE_SIZE,
+          })
+          .then((r) => (Array.isArray(r) ? r : r.events ?? [])),
+        api
+          .get<{ events?: Event[] } | Event[]>("/api/v1/events", {
+            event_type: "USB_DISCONNECT",
+            agent_id: selectedAgent || undefined,
+            limit: PAGE_SIZE,
+          })
+          .then((r) => (Array.isArray(r) ? r : r.events ?? [])),
+      ]).then(([connects, disconnects]) => {
+        const merged = [...connects, ...disconnects];
+        merged.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        return merged;
+      }),
     [selectedAgent]
   );
-  const { data: connectEvents, loading: loadingConnects } = useApi(fetchConnects);
-
-  /* Fetch USB disconnect events */
-  const fetchDisconnects = useCallback(
-    () =>
-      api
-        .get<{ events?: Event[] } | Event[]>("/api/v1/events", {
-          event_type: "USB_DISCONNECT",
-          agent_id: selectedAgent || undefined,
-          limit: PAGE_SIZE,
-        })
-        .then((r) => (Array.isArray(r) ? r : r.events ?? [])),
-    [selectedAgent]
-  );
-  const { data: disconnectEvents, loading: loadingDisconnects } = useApi(fetchDisconnects);
-
-  const loading = loadingConnects || loadingDisconnects;
-
-  /* Merge and sort */
-  const allEvents = useMemo(() => {
-    const merged = [...(connectEvents ?? []), ...(disconnectEvents ?? [])];
-    merged.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-    return merged;
-  }, [connectEvents, disconnectEvents]);
+  const { data: allEvents, loading } = useApi(fetchUsbEvents);
 
   /* Apply device type filter */
   const filteredEvents = useMemo(() => {
-    if (!deviceTypeFilter) return allEvents;
-    return allEvents.filter((ev) => {
+    const list = allEvents ?? [];
+    if (!deviceTypeFilter) return list;
+    return list.filter((ev) => {
       const p = (ev.payload ?? {}) as USBPayload;
       return classifyDeviceType(p.dev_type ?? "") === deviceTypeFilter;
     });

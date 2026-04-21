@@ -1,20 +1,26 @@
 // internal/sse/broker.go
 //
-// Server-Sent Events broker.
-// The ingest pipeline publishes events here; connected HTTP clients receive
-// a real-time stream of JSON-encoded event envelopes via text/event-stream.
+// Server-Sent Events broker backed by PostgreSQL LISTEN/NOTIFY.
 //
-// Architecture:
-//   Broker.Publish(ev)  — called by ingest after every InsertEvent
-//   Broker.Handler()    — gin handler for GET /api/v1/events/stream
+// Architecture (single-node):
+//   Ingest calls Broker.Publish(ev) → pg_notify('edr_events', json)
+//   Broker's listener goroutine receives the notification and fans it out
+//   to all locally connected SSE clients.
 //
-// Each connected client gets its own buffered channel (size 256).
-// Slow clients are silently dropped (non-blocking send) — we never block
-// the hot ingest path for a lagging browser tab.
+// Architecture (multi-node):
+//   Every backend instance runs its own listener goroutine on the same PG
+//   channel. When ingest on node A fires pg_notify, ALL nodes (A, B, C …)
+//   receive the notification and fan it out to their own SSE clients.
+//   Browser clients connecting to any node therefore receive the full event
+//   stream regardless of which node holds the agent's gRPC connection.
+//
+// Note: live-response sessions are inherently streaming and require sticky
+// load-balancer routing per agent connection (standard layer-4 affinity).
 
 package sse
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -22,64 +28,147 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 	"github.com/rs/zerolog"
 
 	"github.com/youredr/edr-backend/internal/models"
 )
 
-// Broker fans out events to all connected SSE clients.
+const pgChannel = "edr_events"
+
+// Broker fans out events to all connected SSE clients via PostgreSQL LISTEN/NOTIFY.
 type Broker struct {
 	mu      sync.RWMutex
-	clients map[string]chan []byte // client-id → channel
+	clients map[string]chan []byte
 	log     zerolog.Logger
+	db      *sqlx.DB
+	dsn     string
 }
 
-// New creates an SSE Broker.
-func New(log zerolog.Logger) *Broker {
+// New creates an SSE Broker. Call Start(ctx) after creation to begin listening.
+func New(log zerolog.Logger, db *sqlx.DB, dsn string) *Broker {
 	return &Broker{
 		clients: make(map[string]chan []byte),
 		log:     log.With().Str("component", "sse").Logger(),
+		db:      db,
+		dsn:     dsn,
 	}
 }
 
-// Publish fans an event out to all connected clients.
-// Non-blocking: slow clients are dropped, never block ingest.
-func (b *Broker) Publish(ev *models.Event) {
-	data, err := json.Marshal(ev)
-	if err != nil {
+// newTestBroker creates a Broker with no database dependency, for unit tests only.
+// It bypasses the PG listener; Publish fans out directly to in-memory channels.
+func newTestBroker(log zerolog.Logger) *Broker {
+	return &Broker{
+		clients: make(map[string]chan []byte),
+		log:     log,
+	}
+}
+
+// Start begins the PostgreSQL LISTEN loop. It must be called once before
+// any SSE clients connect. The goroutine exits when ctx is cancelled.
+func (b *Broker) Start(ctx context.Context) {
+	go b.listenLoop(ctx)
+}
+
+// listenLoop subscribes to the PostgreSQL edr_events channel and fans each
+// notification payload to all locally registered SSE clients.
+func (b *Broker) listenLoop(ctx context.Context) {
+	reportProblem := func(ev pq.ListenerEventType, err error) {
+		if err != nil {
+			b.log.Warn().Err(err).Msg("SSE PG listener event")
+		}
+	}
+
+	listener := pq.NewListener(b.dsn, 5*time.Second, 90*time.Second, reportProblem)
+	if err := listener.Listen(pgChannel); err != nil {
+		b.log.Error().Err(err).Msg("SSE: failed to LISTEN on PG channel — SSE stream disabled")
 		return
 	}
-	msg := []byte(fmt.Sprintf("data: %s\n\n", data))
+	defer listener.Close()
 
+	b.log.Info().Str("channel", pgChannel).Msg("SSE broker listening on PostgreSQL channel")
+
+	ping := time.NewTicker(90 * time.Second)
+	defer ping.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case <-ping.C:
+			if err := listener.Ping(); err != nil {
+				b.log.Warn().Err(err).Msg("SSE PG listener ping failed")
+			}
+
+		case n, ok := <-listener.Notify:
+			if !ok {
+				b.log.Warn().Msg("SSE PG listener channel closed — restarting")
+				return
+			}
+			if n == nil {
+				continue
+			}
+			msg := []byte(fmt.Sprintf("data: %s\n\n", n.Extra))
+			b.fanOut(msg)
+		}
+	}
+}
+
+// fanOut delivers msg to all registered SSE clients. Non-blocking: slow clients
+// are dropped rather than blocking the notification path.
+func (b *Broker) fanOut(msg []byte) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	for _, ch := range b.clients {
 		select {
 		case ch <- msg:
 		default:
-			// Client is too slow — drop this event for that client.
 		}
 	}
 }
 
+// Publish fires a pg_notify so every backend node fans the event to its SSE clients.
+func (b *Broker) Publish(ev *models.Event) {
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return
+	}
+	// pg_notify payload limit is 8000 bytes.
+	if len(data) > 7900 {
+		slim, _ := json.Marshal(struct {
+			ID        string `json:"id"`
+			EventType string `json:"event_type"`
+			AgentID   string `json:"agent_id"`
+			Truncated bool   `json:"_truncated"`
+		}{ev.ID, ev.EventType, ev.AgentID, true})
+		data = slim
+	}
+	// When db is nil (test mode / no PG), fan out directly to in-memory clients.
+	if b.db == nil {
+		b.fanOut([]byte(fmt.Sprintf("data: %s\n\n", data)))
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := b.db.ExecContext(ctx, "SELECT pg_notify($1, $2)", pgChannel, string(data)); err != nil {
+		b.log.Warn().Err(err).Str("event_id", ev.ID).Msg("SSE pg_notify failed")
+	}
+}
+
 // Handler returns a gin.HandlerFunc for GET /api/v1/events/stream.
-// Streams events as SSE until the client disconnects.
-// Auth is handled by the standard authMiddleware wrapping this route.
 func (b *Broker) Handler() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// SSE requires flushing — check the ResponseWriter supports it.
-		//flusher, ok := c.Writer.ResponseWriter.(http.Flusher)
 		flusher, ok := c.Writer.(http.Flusher)
 		if !ok {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "streaming not supported"})
 			return
 		}
 
-		// Optional filter params: ?event_type=NET_CONNECT&agent_id=xxx
 		filterType  := c.Query("event_type")
 		filterAgent := c.Query("agent_id")
 
-		// Register this client.
 		clientID := fmt.Sprintf("%d", time.Now().UnixNano())
 		ch := make(chan []byte, 256)
 		b.mu.Lock()
@@ -99,18 +188,14 @@ func (b *Broker) Handler() gin.HandlerFunc {
 			Str("filter_agent", filterAgent).
 			Msg("SSE client connected")
 
-		// SSE headers.
-		c.Header("Content-Type",                "text/event-stream")
-		c.Header("Cache-Control",               "no-cache")
-		c.Header("Connection",                  "keep-alive")
-		c.Header("X-Accel-Buffering",           "no") // disable nginx buffering
-		// CORS is handled by TraceGuardMiddleware; don't override with wildcard.
+		c.Header("Content-Type",      "text/event-stream")
+		c.Header("Cache-Control",     "no-cache")
+		c.Header("Connection",        "keep-alive")
+		c.Header("X-Accel-Buffering", "no")
 
-		// Send a comment immediately so the browser knows the stream is alive.
 		fmt.Fprintf(c.Writer, ": connected\n\n")
 		flusher.Flush()
 
-		// Keepalive ticker — browsers disconnect if no data for ~30s.
 		keepalive := time.NewTicker(15 * time.Second)
 		defer keepalive.Stop()
 
@@ -120,7 +205,6 @@ func (b *Broker) Handler() gin.HandlerFunc {
 				return
 
 			case <-keepalive.C:
-				// SSE comment line — keeps connection alive without emitting an event.
 				fmt.Fprintf(c.Writer, ": keepalive\n\n")
 				flusher.Flush()
 
@@ -128,10 +212,8 @@ func (b *Broker) Handler() gin.HandlerFunc {
 				if !ok {
 					return
 				}
-				// Apply filters if specified.
 				if filterType != "" || filterAgent != "" {
 					var ev models.Event
-					// msg is "data: <json>\n\n" — extract the JSON portion.
 					prefix := []byte("data: ")
 					suffix := []byte("\n\n")
 					if len(msg) > len(prefix)+len(suffix) {
@@ -149,7 +231,7 @@ func (b *Broker) Handler() gin.HandlerFunc {
 	}
 }
 
-// ClientCount returns the number of currently connected SSE clients.
+// ClientCount returns the number of currently connected SSE clients on this node.
 func (b *Broker) ClientCount() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()

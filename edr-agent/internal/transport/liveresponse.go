@@ -9,11 +9,51 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"google.golang.org/grpc"
 )
+
+// sensitivePaths are prefixes that cat/stat/find must never expose.
+var sensitivePaths = []string{
+	"/etc/shadow", "/etc/gshadow", "/etc/master.passwd",
+	"/root/", "/home/", // private home dirs
+	"/proc/", "/sys/",  // kernel internals
+	"/.ssh/", "/.gnupg/",
+}
+
+var validPID = regexp.MustCompile(`^[1-9][0-9]{0,6}$`)
+var validSignal = regexp.MustCompile(`^(-[1-9][0-9]?|-SIG[A-Z]+)$`)
+
+// safePath rejects paths that resolve to sensitive locations.
+func safePath(p string) error {
+	clean := filepath.Clean(p)
+	for _, blocked := range sensitivePaths {
+		if strings.HasPrefix(clean, blocked) || clean == strings.TrimSuffix(blocked, "/") {
+			return fmt.Errorf("access to path %q is not permitted", clean)
+		}
+	}
+	return nil
+}
+
+// validateKillArgs ensures only valid signal + positive non-init PIDs are passed.
+func validateKillArgs(args []string) error {
+	for _, a := range args {
+		if validSignal.MatchString(a) {
+			continue
+		}
+		if !validPID.MatchString(a) {
+			return fmt.Errorf("invalid kill argument %q: must be a positive PID or signal flag", a)
+		}
+		if a == "1" {
+			return fmt.Errorf("killing PID 1 (init) is not permitted")
+		}
+	}
+	return nil
+}
 
 const methodLiveResponse = "/edr.v1.EventService/LiveResponse"
 
@@ -360,9 +400,26 @@ func (t *GRPCTransport) executeCommand(cmd *liveCommand) *liveResult {
 		cmdName = "ls"
 		cmdArgs = append([]string{"-la"}, cmd.Args...)
 	case "cat":
+		if len(cmd.Args) == 0 {
+			result.Status = "error"
+			result.Error = "cat requires a file path argument"
+			return result
+		}
+		for _, p := range cmd.Args {
+			if err := safePath(p); err != nil {
+				result.Status = "error"
+				result.Error = err.Error()
+				return result
+			}
+		}
 		cmdName = "cat"
 		cmdArgs = cmd.Args
 	case "kill":
+		if err := validateKillArgs(cmd.Args); err != nil {
+			result.Status = "error"
+			result.Error = err.Error()
+			return result
+		}
 		cmdName = "kill"
 		cmdArgs = cmd.Args
 	case "netstat":
@@ -387,6 +444,24 @@ func (t *GRPCTransport) executeCommand(cmd *liveCommand) *liveResult {
 		cmdName = "stat"
 		cmdArgs = cmd.Args
 	case "find":
+		// Block -exec / -execdir to prevent arbitrary command execution via find.
+		for _, a := range cmd.Args {
+			if a == "-exec" || a == "-execdir" || a == "-ok" || a == "-okdir" {
+				result.Status = "error"
+				result.Error = "find: -exec/-execdir flags are not permitted"
+				return result
+			}
+		}
+		// Validate any path-like arguments.
+		for _, a := range cmd.Args {
+			if !strings.HasPrefix(a, "-") {
+				if err := safePath(a); err != nil {
+					result.Status = "error"
+					result.Error = err.Error()
+					return result
+				}
+			}
+		}
 		cmdName = "find"
 		cmdArgs = cmd.Args
 	case "md5sum":

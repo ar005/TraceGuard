@@ -7,7 +7,7 @@ import { timeAgo, formatDate } from "@/lib/utils";
 import type { Alert, Event } from "@/types";
 import {
   ChevronDown, ChevronRight, Sparkles, Tag, Clock,
-  MonitorCheck, ArrowRight, RefreshCw, Search,
+  MonitorCheck, ArrowRight, RefreshCw, Search, ShieldCheck, ShieldX, HelpCircle,
 } from "lucide-react";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -31,6 +31,34 @@ function statusStyle(s: string): React.CSSProperties {
     default:
       return { background: "var(--surface-2)", color: "var(--fg-3)" };
   }
+}
+
+// ── AI triage ────────────────────────────────────────────────────────────────
+
+interface TriageResult {
+  verdict: string;
+  confidence: number;
+  reasoning: string;
+  mitre_ids: string[];
+  recommended: string;
+}
+
+const VERDICT_STYLE: Record<string, { label: string; cls: string; Icon: React.ElementType }> = {
+  true_positive:        { label: "True Positive",        cls: "text-red-400 bg-red-500/10",     Icon: ShieldX },
+  false_positive:       { label: "False Positive",       cls: "text-emerald-400 bg-emerald-500/10", Icon: ShieldCheck },
+  needs_investigation:  { label: "Needs Investigation",  cls: "text-amber-400 bg-amber-500/10", Icon: HelpCircle },
+};
+
+function TriageBadge({ verdict, score }: { verdict: string; score?: number }) {
+  const style = VERDICT_STYLE[verdict] ?? VERDICT_STYLE.needs_investigation;
+  const { Icon } = style;
+  return (
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${style.cls}`}>
+      <Icon size={10} />
+      {style.label}
+      {score != null && score > 0 && <span className="opacity-70 ml-0.5">·{score}/10</span>}
+    </span>
+  );
 }
 
 // ── AI explain stub ──────────────────────────────────────────────────────────
@@ -103,6 +131,13 @@ function AlertExpanded({ alert, onClose }: { alert: Alert; onClose: () => void }
   const [aiText, setAiText] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
+  const [triage, setTriage] = useState<TriageResult | null>(
+    alert.triage_verdict
+      ? { verdict: alert.triage_verdict, confidence: alert.triage_score ?? 0,
+          reasoning: alert.triage_notes ?? "", mitre_ids: [], recommended: "" }
+      : null
+  );
+  const [triageLoading, setTriageLoading] = useState(false);
 
   const fetchEvents = useCallback(
     () => api.get<Event[]>(`/api/v1/alerts/${alert.id}/events`).catch(() => []),
@@ -123,6 +158,18 @@ function AlertExpanded({ alert, onClose }: { alert: Alert; onClose: () => void }
     try {
       await api.patch(`/api/v1/alerts/${alert.id}`, { status });
     } catch {/* ignore */}
+  };
+
+  const handleRunTriage = async () => {
+    setTriageLoading(true);
+    try {
+      const res = await api.post<{ triage: TriageResult }>(`/api/v1/alerts/${alert.id}/triage`, {});
+      setTriage(res.triage);
+    } catch {
+      setTriage({ verdict: "needs_investigation", confidence: 0, reasoning: "AI triage unavailable", mitre_ids: [], recommended: "" });
+    } finally {
+      setTriageLoading(false);
+    }
   };
 
   return (
@@ -225,6 +272,43 @@ function AlertExpanded({ alert, onClose }: { alert: Alert; onClose: () => void }
                 </div>
               ) : (
                 <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>{aiText}</p>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* AI Triage */}
+        <div style={{ marginTop: "var(--space-4)" }}>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleRunTriage}
+              disabled={triageLoading}
+              className="flex items-center gap-1 transition-fast disabled:opacity-40"
+              style={{
+                background: "none", border: "none", padding: "0", cursor: "pointer",
+                fontSize: "var(--text-xs)", color: "oklch(0.65 0.16 150)",
+                fontFamily: "var(--font-onest)",
+              }}
+            >
+              <ShieldCheck size={11} />
+              {triageLoading ? "Running triage…" : triage ? "Re-run triage" : "AI Triage"}
+            </button>
+            {triage && <TriageBadge verdict={triage.verdict} score={triage.confidence} />}
+          </div>
+          {triage && (
+            <div className="mt-2 p-3 rounded-lg border border-neutral-800 bg-neutral-900/60 space-y-1.5">
+              {triage.reasoning && (
+                <p className="text-xs text-neutral-300 leading-relaxed">{triage.reasoning}</p>
+              )}
+              {triage.recommended && (
+                <p className="text-xs text-neutral-500"><span className="text-neutral-400 font-medium">Action: </span>{triage.recommended}</p>
+              )}
+              {triage.mitre_ids && triage.mitre_ids.length > 0 && (
+                <div className="flex flex-wrap gap-1 pt-1">
+                  {triage.mitre_ids.map((m) => (
+                    <span key={m} className="px-1.5 py-0.5 rounded bg-neutral-800 text-xs font-mono text-purple-400">{m}</span>
+                  ))}
+                </div>
               )}
             </div>
           )}
@@ -420,6 +504,11 @@ function AlertRow({
           {(alert.status ?? "open").toUpperCase()}
         </span>
 
+        {/* Triage badge (if already triaged) */}
+        {alert.triage_verdict && (
+          <TriageBadge verdict={alert.triage_verdict} score={alert.triage_score} />
+        )}
+
         {/* Time */}
         <span
           style={{
@@ -464,9 +553,10 @@ export default function AlertsPage() {
     () => api.get<{ alerts?: Alert[] } | Alert[]>("/api/v1/alerts", {
       status: statusFilter || undefined,
       severity: sevFilter >= 0 ? sevFilter : undefined,
-      limit: 200,
+      search: searchQuery.trim() || undefined,
+      limit: 100,
     }).then(r => Array.isArray(r) ? r : r.alerts ?? []),
-    [statusFilter, sevFilter]
+    [statusFilter, sevFilter, searchQuery]
   );
   const { data: alerts, loading, refetch: refresh } = useApi(fetchAlerts);
 

@@ -8,6 +8,8 @@ package llm
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -15,6 +17,53 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/youredr/edr-backend/internal/models"
 )
+
+// privateIPBlocks lists CIDR ranges that must not be reached via user-supplied URLs.
+var privateIPBlocks []*net.IPNet
+
+func init() {
+	for _, cidr := range []string{
+		"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+		"127.0.0.0/8", "::1/128", "fc00::/7",
+		"169.254.0.0/16", "fe80::/10", // link-local / cloud metadata
+		"0.0.0.0/8", "100.64.0.0/10", // carrier-grade NAT
+	} {
+		_, block, _ := net.ParseCIDR(cidr)
+		privateIPBlocks = append(privateIPBlocks, block)
+	}
+}
+
+// validateLLMBaseURL blocks SSRF by rejecting private/internal targets.
+func validateLLMBaseURL(rawURL string) error {
+	if rawURL == "" {
+		return nil
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("URL scheme must be http or https")
+	}
+	host := u.Hostname()
+	addrs, err := net.LookupHost(host)
+	if err != nil {
+		// DNS failure — allow (will fail at request time); don't block valid offline configs.
+		return nil
+	}
+	for _, addr := range addrs {
+		ip := net.ParseIP(addr)
+		if ip == nil {
+			continue
+		}
+		for _, block := range privateIPBlocks {
+			if block.Contains(ip) {
+				return fmt.Errorf("LLM base_url must not target private/internal networks (%s resolves to %s)", host, addr)
+			}
+		}
+	}
+	return nil
+}
 
 // Client wraps the active LLM provider and supports hot-swapping.
 type Client struct {
@@ -88,6 +137,9 @@ func (c *Client) Configure(cfg Config) error {
 	// Normalize base URL: ensure it has a scheme.
 	if cfg.BaseURL != "" && !strings.Contains(cfg.BaseURL, "://") {
 		cfg.BaseURL = "http://" + cfg.BaseURL
+	}
+	if err := validateLLMBaseURL(cfg.BaseURL); err != nil {
+		return fmt.Errorf("LLM base_url rejected: %w", err)
 	}
 
 	c.mu.Lock()

@@ -10,6 +10,7 @@
 package buffer
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -39,6 +40,8 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_sent     ON events(sent);
 CREATE INDEX IF NOT EXISTS idx_events_type     ON events(event_type);
 CREATE INDEX IF NOT EXISTS idx_events_created  ON events(created_at);
+CREATE INDEX IF NOT EXISTS idx_events_event_id ON events(event_id);
+CREATE INDEX IF NOT EXISTS idx_events_sent_ts  ON events(sent, timestamp);
 `
 
 // Config controls the local buffer.
@@ -48,13 +51,23 @@ type Config struct {
 	FlushEvery time.Duration // how often to mark old events as expired
 }
 
+// writeRequest is a single event pending async write to SQLite.
+type writeRequest struct {
+	id        string
+	eventType string
+	ts        int64
+	severity  int
+	payload   []byte
+}
+
 // LocalBuffer is a persistent event queue backed by SQLite.
 type LocalBuffer struct {
-	cfg    Config
-	db     *sql.DB
-	log    zerolog.Logger
-	mu     sync.Mutex
-	stopCh chan struct{}
+	cfg     Config
+	db      *sql.DB
+	log     zerolog.Logger
+	mu      sync.Mutex
+	stopCh  chan struct{}
+	writeCh chan writeRequest
 }
 
 // New opens (or creates) the SQLite buffer.
@@ -88,39 +101,90 @@ func New(cfg Config, log zerolog.Logger) (*LocalBuffer, error) {
 	}
 
 	buf := &LocalBuffer{
-		cfg:    cfg,
-		db:     db,
-		log:    log.With().Str("component", "buffer").Logger(),
-		stopCh: make(chan struct{}),
+		cfg:     cfg,
+		db:      db,
+		log:     log.With().Str("component", "buffer").Logger(),
+		stopCh:  make(chan struct{}),
+		writeCh: make(chan writeRequest, 8192),
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-buf.stopCh
+		cancel()
+	}()
+	go buf.flushLoop(ctx)
 	go buf.evictionLoop()
 	return buf, nil
 }
 
-// Write persists an event to the buffer.
-// Called synchronously from the event bus subscriber.
+// Write persists an event to the buffer asynchronously via writeCh.
+// Non-blocking: drops and logs a warning if the channel is full.
 func (b *LocalBuffer) Write(ev events.Event) {
 	payload, err := json.Marshal(ev)
 	if err != nil {
-		b.log.Error().Err(err).Msg("marshal event for buffer")
+		b.log.Error().Err(err).Msg("buffer: marshal event")
 		return
 	}
+	req := writeRequest{
+		id:        ev.EventID(),
+		eventType: string(ev.EventType()),
+		ts:        time.Now().UnixNano(),
+		severity:  0,
+		payload:   payload,
+	}
+	select {
+	case b.writeCh <- req:
+	default:
+		b.log.Warn().Str("event_id", req.id).Msg("buffer: write channel full, event dropped")
+	}
+}
 
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	_, err = b.db.Exec(
-		`INSERT INTO events (event_id, event_type, timestamp, severity, payload)
-		 VALUES (?, ?, ?, ?, ?)`,
-		ev.EventID(),
-		ev.EventType(),
-		time.Now().UnixNano(),
-		0, // severity extracted from payload — simplified
-		payload,
-	)
-	if err != nil {
-		b.log.Error().Err(err).Msg("write event to buffer")
+// flushLoop accumulates up to 500 events or 500ms and writes them in a single
+// batched INSERT transaction for throughput.
+func (b *LocalBuffer) flushLoop(ctx context.Context) {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	batch := make([]writeRequest, 0, 500)
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		tx, err := b.db.Begin()
+		if err != nil {
+			b.log.Error().Err(err).Msg("buffer: begin tx")
+			batch = batch[:0]
+			return
+		}
+		stmt, err := tx.Prepare(`INSERT OR IGNORE INTO events(event_id,event_type,timestamp,severity,payload) VALUES(?,?,?,?,?)`)
+		if err != nil {
+			tx.Rollback()
+			b.log.Error().Err(err).Msg("buffer: prepare stmt")
+			batch = batch[:0]
+			return
+		}
+		for _, r := range batch {
+			stmt.Exec(r.id, r.eventType, r.ts, r.severity, r.payload)
+		}
+		stmt.Close()
+		if err := tx.Commit(); err != nil {
+			b.log.Error().Err(err).Msg("buffer: commit batch")
+		}
+		batch = batch[:0]
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			flush()
+			return
+		case r := <-b.writeCh:
+			batch = append(batch, r)
+			if len(batch) >= 500 {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
+		}
 	}
 }
 

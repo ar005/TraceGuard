@@ -54,6 +54,7 @@ type User struct {
 	TOTPSecret      string     `db:"totp_secret"      json:"-"`
 	TOTPEnabled     bool       `db:"totp_enabled"     json:"totp_enabled"`
 	TOTPBackupCodes string     `db:"totp_backup_codes" json:"-"`
+	TenantID        string     `db:"tenant_id"        json:"tenant_id"`
 }
 
 // Claims is the JWT payload.
@@ -61,6 +62,7 @@ type Claims struct {
 	jwt.RegisteredClaims
 	Username string `json:"username"`
 	Role     string `json:"role"`
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // Manager provides user CRUD, auth, and JWT operations.
@@ -244,6 +246,9 @@ func (m *Manager) ValidateToken(tokenString string) (*Claims, error) {
 	if err != nil || !token.Valid {
 		return nil, fmt.Errorf("invalid token")
 	}
+	if claims.Issuer != "TraceGuard" {
+		return nil, fmt.Errorf("invalid token issuer")
+	}
 	return claims, nil
 }
 
@@ -300,6 +305,10 @@ func (m *Manager) IssueToken(u *User) (string, error) {
 }
 
 func (m *Manager) issueJWT(u *User) (string, error) {
+	tenantID := u.TenantID
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	claims := Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   u.ID,
@@ -309,6 +318,7 @@ func (m *Manager) issueJWT(u *User) (string, error) {
 		},
 		Username: u.Username,
 		Role:     u.Role,
+		TenantID: tenantID,
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(m.jwtSecret)

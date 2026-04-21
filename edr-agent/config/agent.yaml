@@ -17,7 +17,7 @@ agent:
     cert:     ""                      # leave empty unless using mutual TLS
     key:      ""
     ca:       ""                      # /etc/edr/tls/ca.crt
-    insecure: true                    # CHANGE TO false IN PRODUCTION
+    insecure: false                   # Set to true only for local dev (no TLS)
 
 monitors:
   process:

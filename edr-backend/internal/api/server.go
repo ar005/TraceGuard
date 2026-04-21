@@ -34,6 +34,8 @@ import (
 	"github.com/youredr/edr-backend/internal/iocfeed"
 	"github.com/youredr/edr-backend/internal/migrate"
 	"github.com/youredr/edr-backend/internal/models"
+	"github.com/youredr/edr-backend/internal/sigma"
+	"github.com/youredr/edr-backend/internal/stix"
 	"github.com/youredr/edr-backend/internal/store"
 	"github.com/youredr/edr-backend/internal/users"
 )
@@ -49,10 +51,14 @@ type Server struct {
 	lr       *liveresponse.Manager
 	iocSync  *iocfeed.Syncer
 	sse      *sse.Broker
+	xdrSink  XdrEventSink // optional; nil when NATS is disabled
+	playbookRunner PlaybookRunner // optional; nil when NATS is disabled
+	exportMgr      ExportManager  // optional; nil when not configured
 	log      zerolog.Logger
 	router   *gin.Engine
 	http     *http.Server
-	apiKey     string // legacy single-key fallback
+	nodeID     string
+	apiKey     string
 	rateLimit  RateLimitConfig
 	cveFetcher *cvecache.Fetcher
 }
@@ -61,7 +67,7 @@ type Server struct {
 func New(st *store.Store, eng *detection.Engine, km *apikeys.Manager,
 	um *users.Manager, al *audit.Logger,
 	lc *llm.Client, lr *liveresponse.Manager, is *iocfeed.Syncer, sb *sse.Broker,
-	log zerolog.Logger, apiKey string, rlCfg ...RateLimitConfig) *Server {
+	log zerolog.Logger, nodeID string, apiKey string, rlCfg ...RateLimitConfig) *Server {
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -88,6 +94,7 @@ func New(st *store.Store, eng *detection.Engine, km *apikeys.Manager,
 		sse:       sb,
 		log:       log.With().Str("component", "api").Logger(),
 		router:    r,
+		nodeID:    nodeID,
 		apiKey:    apiKey,
 		rateLimit: rl,
 	}
@@ -111,20 +118,17 @@ func (s *Server) registerRoutes() {
 
 	// Health / status (no auth)
 	r.GET("/health",  s.handleHealth)
+	r.GET("/healthz", s.handleHealth)
 	r.GET("/metrics", s.handleMetrics)
 	r.GET("/metrics/prometheus", gin.WrapH(promhttp.Handler()))
 	r.GET("/api/v1/metrics/prometheus", gin.WrapH(promhttp.Handler()))
 
-	// ── Setup endpoints (no auth — only work when no users exist) ───────────
-	// NOTE: intentionally under /api/v1/setup, NOT /api/v1/admin,
-	// to avoid collision with the authenticated admin group below.
 	setupGrp := r.Group("/api/v1/setup")
 	{
 		setupGrp.GET("/status",  s.handleSetupStatus)
 		setupGrp.POST("",        s.handleSetup)
 	}
 
-	// ── Public auth endpoints ──────────────────────────────────────────────
 	auth := r.Group("/api/v1/auth")
 	{
 		auth.POST("/login",              s.handleLogin)
@@ -133,13 +137,10 @@ func (s *Server) registerRoutes() {
 		auth.POST("/totp/verify-login",  s.handleTOTPVerifyLogin)
 	}
 
-	// ── Authenticated routes (JWT or API key) ─────────────────────────────
 	v1 := r.Group("/api/v1", s.authMiddleware())
 	{
 		v1.GET("/dashboard", s.handleDashboard)
 		v1.GET("/me",        s.handleMe)
-
-		// ── Read-only routes (all authenticated users) ──────────────
 
 		// Agents
 		v1.GET("/agents",          s.handleListAgents)
@@ -155,26 +156,45 @@ func (s *Server) registerRoutes() {
 		// Process tree
 		v1.GET("/processes/:pid/tree", s.handleGetProcessTree)
 
-		// Alerts (read)
+		// Alerts (read + analyst write)
 		v1.GET("/alerts",             s.handleListAlerts)
 		v1.GET("/alerts/:id",         s.handleGetAlert)
 		v1.GET("/alerts/:id/events",   s.handleGetAlertEvents)
 		v1.GET("/alerts/:id/timeline", s.handleGetAlertTimeline)
+		v1.PATCH("/alerts/:id",        s.handleUpdateAlert)
+		v1.POST("/alerts/:id/explain", s.handleExplainAlert)
+		v1.POST("/alerts/:id/triage",  s.handleTriageAlert)
 
 		// Live Response (read)
-		v1.GET("/liveresponse/agents",          s.handleLRAgents)
+		v1.GET("/liveresponse/agents", s.handleLRAgents)
 
-		// Incidents (read)
-		v1.GET("/incidents",             s.handleListIncidents)
-		v1.GET("/incidents/:id",         s.handleGetIncident)
-		v1.GET("/incidents/:id/alerts",  s.handleGetIncidentAlerts)
+		// Incidents
+		v1.GET("/incidents",            s.handleListIncidents)
+		v1.GET("/incidents/:id",        s.handleGetIncident)
+		v1.GET("/incidents/:id/alerts", s.handleGetIncidentAlerts)
+		v1.PATCH("/incidents/:id",      s.handleUpdateIncident)
+
+		// Cases (all authenticated — SOC workflow)
+		v1.GET("/cases",                         s.handleListCases)
+		v1.GET("/cases/:id",                     s.handleGetCase)
+		v1.GET("/cases/:id/alerts",              s.handleListCaseAlerts)
+		v1.GET("/cases/:id/notes",               s.handleListCaseNotes)
+		v1.POST("/cases",                        s.handleCreateCase)
+		v1.PUT("/cases/:id",                     s.handleUpdateCase)
+		v1.DELETE("/cases/:id",                  s.handleDeleteCase)
+		v1.POST("/cases/:id/alerts",             s.handleLinkAlert)
+		v1.DELETE("/cases/:id/alerts/:alert_id", s.handleUnlinkAlert)
+		v1.POST("/cases/:id/notes",              s.handleAddCaseNote)
+		v1.PUT("/cases/:id/notes/:note_id",      s.handleUpdateCaseNote)
+		v1.DELETE("/cases/:id/notes/:note_id",   s.handleDeleteCaseNote)
+		v1.POST("/cases/:id/summarise",          s.handleSummariseCase)
 
 		// Rules (read)
-		v1.GET("/rules",              s.handleListRules)
-		v1.GET("/rules/:id",          s.handleGetRule)
+		v1.GET("/rules",   s.handleListRules)
+		v1.GET("/rules/:id", s.handleGetRule)
 
 		// Suppression rules (read)
-		v1.GET("/suppressions",        s.handleListSuppressions)
+		v1.GET("/suppressions", s.handleListSuppressions)
 
 		// Package inventory & vulnerabilities (read)
 		v1.GET("/agents/:id/packages",        s.handleListAgentPackages)
@@ -183,81 +203,67 @@ func (s *Server) registerRoutes() {
 		v1.GET("/cve/:id",                    s.handleGetCVE)
 
 		// IOC / Threat Intelligence (read)
-		v1.GET("/iocs",           s.handleListIOCs)
-		v1.GET("/iocs/stats",     s.handleIOCStats)
-		v1.GET("/iocs/:id",       s.handleGetIOC)
-		v1.GET("/iocs/feeds",     s.handleListFeeds)
-		v1.GET("/iocs/sources",   s.handleIOCSourceStats)
+		v1.GET("/iocs",         s.handleListIOCs)
+		v1.GET("/iocs/stats",   s.handleIOCStats)
+		v1.GET("/iocs/:id",     s.handleGetIOC)
+		v1.GET("/iocs/feeds",   s.handleListFeeds)
+		v1.GET("/iocs/sources", s.handleIOCSourceStats)
 
-		// Threat Hunting (read — parameterized queries only, strict rate limit)
-		v1.POST("/hunt", strictRateLimitMiddleware(), s.handleHunt)
+		// Threat Hunting
+		v1.POST("/hunt",          strictRateLimitMiddleware(), s.handleHunt)
+		v1.POST("/hunt/generate", strictRateLimitMiddleware(), s.handleGenerateHuntQuery)
 
 		// Settings (read)
-		v1.GET("/settings/retention",   s.handleGetRetention)
-		v1.GET("/settings/llm",         s.handleGetLLMSettings)
+		v1.GET("/settings/retention", s.handleGetRetention)
+		v1.GET("/settings/llm",       s.handleGetLLMSettings)
 
 		// Database size metrics
 		v1.GET("/metrics/db-size", s.handleDBSize)
-		// v1.GET("/me",                   s.handleMe)
-		// v1.GET("/dashboard",            s.handleDashboard)
 
-		// ── Analyst + admin write routes (incident response) ─────
-		v1.PATCH("/alerts/:id",        s.handleUpdateAlert)
-		v1.POST("/alerts/:id/explain", s.handleExplainAlert)
-		v1.POST("/liveresponse/command", s.handleLRCommand)
-		v1.PATCH("/incidents/:id", s.handleUpdateIncident)
+		// Admin-only live-response & pending-command routes
+		v1.POST("/liveresponse/command",      s.adminOnly(), s.handleLRCommand)
+		v1.POST("/pending-commands",          s.adminOnly(), s.handleCreatePendingCommand)
+		v1.GET("/pending-commands/:agent_id", s.handleListPendingCommands)
+		v1.DELETE("/pending-commands/:id",    s.adminOnly(), s.handleCancelPendingCommand)
 
-		// Pending commands (queued for offline agents)
-		v1.POST("/pending-commands",           s.handleCreatePendingCommand)
-		v1.GET("/pending-commands/:agent_id",  s.handleListPendingCommands)
-		v1.DELETE("/pending-commands/:id",      s.handleCancelPendingCommand)
-
-		// Agent containment audit log (all authenticated users)
+		// Agent containment audit log
 		v1.GET("/agents/:id/audit", s.handleAgentAudit)
 
-		// ── Admin-only write routes ──────────────────────────────
+		// Admin-only write routes
 		w := v1.Group("", s.adminOnly())
 		{
-			// Agents (write)
 			w.PATCH("/agents/:id",    s.handleUpdateAgent)
 			w.PATCH("/agents/:id/winevent-config", s.handleUpdateAgentWinEventConfig)
 
-			// Events (write — strict rate limit)
 			w.POST("/events/inject", strictRateLimitMiddleware(), s.handleInjectEvent)
 
-			// Rules (write)
 			w.POST("/rules",              s.handleCreateRule)
 			w.PUT("/rules/:id",           s.handleUpdateRule)
 			w.DELETE("/rules/:id",        s.handleDeleteRule)
 			w.POST("/rules/reload",       s.handleReloadRules)
 			w.POST("/rules/:id/backtest", s.handleBacktestRule)
 
-			// Suppression rules (write)
 			w.POST("/suppressions",       s.handleCreateSuppression)
 			w.PUT("/suppressions/:id",    s.handleUpdateSuppression)
 			w.DELETE("/suppressions/:id", s.handleDeleteSuppression)
 
-			// Package scanning (write)
 			w.POST("/agents/:id/scan-packages", s.handleScanPackages)
 
-			// IOC / Threat Intelligence (write — bulk ops have strict rate limit)
 			w.POST("/iocs",          s.handleCreateIOC)
 			w.POST("/iocs/bulk",     strictRateLimitMiddleware(), s.handleBulkImportIOCs)
 			w.DELETE("/iocs/:id",    s.handleDeleteIOC)
 			w.DELETE("/iocs/source/:source", s.handleDeleteIOCsBySource)
 			w.POST("/iocs/feeds/sync",       strictRateLimitMiddleware(), s.handleSyncFeeds)
 
-			// Settings (write)
 			w.POST("/settings/retention",  s.handleSetRetention)
 			w.POST("/settings/llm",        s.handleSetLLMSettings)
 			w.POST("/settings/llm/test",   s.handleTestLLM)
 
-			// Migration (write — strict rate limit)
 			w.POST("/migrate/export", strictRateLimitMiddleware(), s.handleMigrateExport)
 			w.POST("/migrate/import", strictRateLimitMiddleware(), s.handleMigrateImport)
 		}
 
-		// API key management (admin only)
+		// API key management
 		kg := v1.Group("/keys", s.adminOnly())
 		{
 			kg.GET("",             s.handleListKeys)
@@ -265,12 +271,71 @@ func (s *Server) registerRoutes() {
 			kg.POST("/:id/revoke", s.handleRevokeKey)
 			kg.DELETE("/:id",      s.handleDeleteKey)
 		}
+
+		// XDR Sources
+		v1.GET("/sources",            s.handleListSources)
+		v1.GET("/sources/:id",        s.handleGetSource)
+		v1.GET("/sources/:id/health", s.handleGetSourceHealth)
+		sw := v1.Group("/sources", s.adminOnly())
+		{
+			sw.POST("",       s.handleCreateSource)
+			sw.PUT("/:id",    s.handleUpdateSource)
+			sw.DELETE("/:id", s.handleDeleteSource)
+		}
+
+		r.POST("/api/v1/ingest/webhook/:source_id", s.handleWebhookIngest)
+
+		// XDR Identity graph
+		v1.GET("/identity",          s.handleListIdentities)
+		v1.GET("/identity/top-risk", s.handleTopRiskyIdentities)
+		v1.GET("/identity/:uid",     s.handleGetIdentity)
+
+		// Container & Kubernetes inventory
+		v1.GET("/containers",            s.handleListContainers)
+		v1.GET("/containers/stats",      s.handleGetContainerStats)
+		v1.GET("/containers/:id/events", s.handleGetContainerEvents)
+
+		// XDR Asset inventory
+		v1.GET("/assets",     s.handleListAssets)
+		v1.GET("/assets/:id", s.handleGetAsset)
+
+		// XDR Network events
+		v1.GET("/xdr/events", s.handleListXdrEvents)
+
+		// SOAR Playbooks
+		v1.GET("/playbooks",          s.handleListPlaybooks)
+		v1.GET("/playbooks/runs",     s.handleListAllPlaybookRuns)
+		v1.GET("/response/actions",   s.handleListResponseActions)
+		v1.GET("/playbooks/:id",      s.handleGetPlaybook)
+		v1.GET("/playbooks/:id/runs", s.handleListPlaybookRuns)
+		pbw := v1.Group("/playbooks", s.adminOnly())
+		{
+			pbw.POST("",          s.handleCreatePlaybook)
+			pbw.PUT("/:id",       s.handleUpdatePlaybook)
+			pbw.DELETE("/:id",    s.handleDeletePlaybook)
+			pbw.POST("/:id/test", s.handleTestPlaybook)
+		}
+
+		// XDR Phase 4 — import endpoints (admin only)
+		importw := v1.Group("", s.adminOnly())
+		{
+			importw.POST("/rules/import/sigma",   s.handleImportSigma)
+			importw.POST("/threat-intel/stix",    s.handleImportSTIX)
+		}
+
+		// Export destinations
+		expw := v1.Group("/export", s.adminOnly())
+		{
+			expw.GET("",        s.handleListExportDests)
+			expw.POST("",       s.handleUpsertExportDest)
+			expw.PUT("/:id",    s.handleUpsertExportDest)
+			expw.DELETE("/:id", s.handleDeleteExportDest)
+		}
 	}
 
-	// ── Admin-only routes (user management, audit log) ─────────────────────
+	// Admin-only user management + audit log
 	adm := r.Group("/api/v1/admin", s.authMiddleware(), s.adminOnly())
 	{
-		// Users
 		adm.GET("/users",                  s.handleAdminListUsers)
 		adm.POST("/users",                 s.handleAdminCreateUser)
 		adm.GET("/users/:id",              s.handleAdminGetUser)
@@ -282,13 +347,11 @@ func (s *Server) registerRoutes() {
 		adm.POST("/users/:id/totp/disable",   s.handleAdminTOTPDisable)
 		adm.DELETE("/reset-all-users",        s.handleSetupReset)
 
-		// API Keys (also available under /keys above, duplicated for admin portal convenience)
 		adm.GET("/keys",             s.handleListKeys)
 		adm.POST("/keys",            s.handleCreateKey)
 		adm.POST("/keys/:id/revoke", s.handleRevokeKey)
 		adm.DELETE("/keys/:id",      s.handleDeleteKey)
 
-		// Audit log
 		adm.GET("/audit", s.handleAuditLog)
 	}
 }
@@ -366,6 +429,11 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 		if s.um != nil && raw != "" {
 			if claims, err := s.um.ValidateToken(raw); err == nil {
 				c.Set(string(ctxClaims), claims)
+				tid := claims.TenantID
+				if tid == "" {
+					tid = "default"
+				}
+				c.Set("tenant_id", tid)
 				c.Next()
 				return
 			}
@@ -414,7 +482,7 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 // for backward compatibility (keys are managed by admins anyway).
 func (s *Server) adminOnly() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// If there's a JWT, enforce role
+		// JWT auth: enforce admin role.
 		if raw, exists := c.Get(string(ctxClaims)); exists {
 			if claims, ok := raw.(*users.Claims); ok {
 				if claims.Role != users.RoleAdmin {
@@ -423,8 +491,20 @@ func (s *Server) adminOnly() gin.HandlerFunc {
 					return
 				}
 			}
+			c.Next()
+			return
 		}
-		// API keys and legacy key pass through
+		// API key auth: check key's role field.
+		if raw, exists := c.Get(string(ctxApiKey)); exists {
+			if key, ok := raw.(*apikeys.Key); ok && key.Role != users.RoleAdmin {
+				c.AbortWithStatusJSON(http.StatusForbidden,
+					gin.H{"error": "admin role required"})
+				return
+			}
+			c.Next()
+			return
+		}
+		// Legacy single-key fallback — treated as admin (backwards compat).
 		c.Next()
 	}
 }
@@ -883,7 +963,20 @@ func (s *Server) handleAuditLog(c *gin.Context) {
 // ─── Health ───────────────────────────────────────────────────────────────────
 
 func (s *Server) handleHealth(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "time": time.Now().UTC()})
+	dbOK := s.store.DB().PingContext(c.Request.Context()) == nil
+	status := "ok"
+	code := http.StatusOK
+	if !dbOK {
+		status = "degraded"
+		code = http.StatusServiceUnavailable
+	}
+	c.JSON(code, gin.H{
+		"status":      status,
+		"node_id":     s.nodeID,
+		"sse_clients": s.sse.ClientCount(),
+		"db":          dbOK,
+		"time":        time.Now().UTC(),
+	})
 }
 
 func (s *Server) handleMetrics(c *gin.Context) {
@@ -948,17 +1041,50 @@ func (s *Server) handleDashboard(c *gin.Context) {
 	recentAlerts, _ := s.store.QueryAlerts(ctx, store.QueryAlertsParams{
 		Status: "OPEN", Severity: 3, Limit: 10,
 	})
-	since24h := sinceTime
-	eventCount, _ := s.store.CountEvents(ctx, "", since24h)
+	eventCount, _ := s.store.CountEvents(ctx, "", sinceTime)
+	timeline, _   := s.store.EventsTimeline(ctx, sinceTime)
+
+	// critical open count — severity 4 (CRITICAL) with OPEN status
+	var criticalOpen int64
+	_ = s.store.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM alerts WHERE status='OPEN' AND severity=4`,
+	).Scan(&criticalOpen)
+
+	openCount := alertStats["OPEN"]
+
+	// XDR summary — non-fatal; zero values if tables empty.
+	sources, _     := s.store.ListSources(ctx)
+	sourcesOnline  := 0
+	for _, src := range sources {
+		if src.ErrorState == "" && src.LastSeenAt != nil {
+			sourcesOnline++
+		}
+	}
+	topRiskyUsers, _ := s.store.TopRiskyIdentities(ctx, 5)
+	totalAssets, _    := s.store.AssetCount(ctx, "")
+	coveredAssets, _  := s.store.AssetCount(ctx, "endpoint") // assets with an agent
 
 	c.JSON(http.StatusOK, gin.H{
-		"agents_total":  len(agents),
-		"agents_online": online,
-		"events_24h":    eventCount,
-		"alert_stats":   alertStats,
-		"recent_alerts": recentAlerts,
-		"range":         c.Query("range"),
-		"since":         sinceTime,
+		// frontend-expected field names
+		"total_agents":    len(agents),
+		"online_agents":   online,
+		"events_today":    eventCount,
+		"open_alerts":     openCount,
+		"critical_alerts": criticalOpen,
+		"recent_alerts":   recentAlerts,
+		"timeline":        timeline,
+		// extras
+		"alert_stats": alertStats,
+		"range":       c.Query("range"),
+		"since":       sinceTime,
+		// XDR summary widgets
+		"xdr": gin.H{
+			"sources_total":   len(sources),
+			"sources_online":  sourcesOnline,
+			"top_risky_users": topRiskyUsers,
+			"total_assets":    totalAssets,
+			"covered_assets":  coveredAssets,
+		},
 	})
 }
 
@@ -1704,6 +1830,38 @@ func (s *Server) handleGetRule(c *gin.Context) {
 	c.JSON(http.StatusOK, rule)
 }
 
+// validateConditions parses rule conditions and pre-compiles any regex patterns,
+// returning a user-facing error on invalid syntax or oversized patterns.
+func validateConditions(raw json.RawMessage) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	var conds []struct {
+		Field string      `json:"field"`
+		Op    string      `json:"op"`
+		Value interface{} `json:"value"`
+	}
+	if err := json.Unmarshal(raw, &conds); err != nil {
+		return nil // non-array conditions are accepted as-is
+	}
+	for _, c := range conds {
+		if c.Op != "regex" {
+			continue
+		}
+		pattern, ok := c.Value.(string)
+		if !ok {
+			return fmt.Errorf("condition %q: regex value must be a string", c.Field)
+		}
+		if len(pattern) > 500 {
+			return fmt.Errorf("condition %q: regex pattern exceeds 500-character limit", c.Field)
+		}
+		if _, err := regexp.Compile(pattern); err != nil {
+			return fmt.Errorf("condition %q: invalid regex: %v", c.Field, err)
+		}
+	}
+	return nil
+}
+
 func (s *Server) handleCreateRule(c *gin.Context) {
 	var body struct {
 		Name             string      `json:"name"              binding:"required"`
@@ -1725,6 +1883,10 @@ func (s *Server) handleCreateRule(c *gin.Context) {
 	}
 
 	import_json, _ := marshalToRaw(body.Conditions)
+	if err := validateConditions(import_json); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	if body.RuleType == "" { body.RuleType = "match" }
 	if body.GroupBy  == "" { body.GroupBy  = "agent_id" }
 	rule := &models.Rule{
@@ -1789,8 +1951,12 @@ func (s *Server) handleUpdateRule(c *gin.Context) {
 	if body.ThresholdCount   != nil { existing.ThresholdCount   = *body.ThresholdCount   }
 	if body.ThresholdWindowS != nil { existing.ThresholdWindowS = *body.ThresholdWindowS }
 	if body.GroupBy          != nil { existing.GroupBy          = *body.GroupBy          }
-	if body.Conditions       != nil {
+	if body.Conditions != nil {
 		if raw, err := marshalToRaw(body.Conditions); err == nil {
+			if err := validateConditions(raw); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
 			existing.Conditions = raw
 		}
 	}
@@ -2300,6 +2466,38 @@ func (s *Server) SetCVEFetcher(f *cvecache.Fetcher) {
 	s.cveFetcher = f
 }
 
+// XdrEventSink is the interface the API uses to forward webhook events to the XDR pipeline.
+// natsbus.NATSSink implements this; nil disables webhook publishing.
+type XdrEventSink interface {
+	Publish(ev *models.XdrEvent) error
+}
+
+// SetXdrSink wires in the NATS (or other) sink for webhook-ingested events.
+func (s *Server) SetXdrSink(sink XdrEventSink) {
+	s.xdrSink = sink
+}
+
+
+// PlaybookRunner is the interface for triggering playbooks from API handlers.
+type PlaybookRunner interface {
+	OnAlert(ctx context.Context, alert *models.Alert)
+}
+
+// ExportManager is the interface for exporting alerts/events to SIEM destinations.
+type ExportManager interface {
+	ExportAlert(ctx context.Context, alert *models.Alert)
+}
+
+// SetPlaybookRunner wires the SOAR playbook runner into the API server.
+func (s *Server) SetPlaybookRunner(r PlaybookRunner) {
+	s.playbookRunner = r
+}
+
+// SetExportManager wires the export/SIEM manager into the API server.
+func (s *Server) SetExportManager(m ExportManager) {
+	s.exportMgr = m
+}
+
 // GET /api/v1/cve/:id
 func (s *Server) handleGetCVE(c *gin.Context) {
 	cveID := strings.ToUpper(c.Param("id"))
@@ -2562,4 +2760,104 @@ func (s *Server) handleDeleteIOCsBySource(c *gin.Context) {
 	actorID, actorName := currentUser(c)
 	s.al.Log(c.Request.Context(), actorID, actorName, "ioc_delete_source", "iocs", source, "", c.ClientIP(), fmt.Sprintf("deleted %d IOCs", count))
 	c.JSON(http.StatusOK, gin.H{"deleted": count, "source": source})
+}
+
+// ── XDR Phase 4: Import endpoints ─────────────────────────────────────────────
+
+// POST /api/v1/rules/import/sigma  — convert Sigma YAML to TraceGuard rules
+func (s *Server) handleImportSigma(c *gin.Context) {
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 2<<20)) // 2 MB
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "read body: " + err.Error()})
+		return
+	}
+	if len(body) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "empty body"})
+		return
+	}
+
+	results := sigma.Import(body)
+	ctx := c.Request.Context()
+
+	var imported, errCount int
+	var errMsgs []string
+	for _, r := range results {
+		if r.Error != "" {
+			errCount++
+			errMsgs = append(errMsgs, r.Error)
+			continue
+		}
+		if err := s.store.UpsertRule(ctx, r.Rule); err != nil {
+			errCount++
+			errMsgs = append(errMsgs, fmt.Sprintf("upsert %s: %v", r.Rule.ID, err))
+		} else {
+			imported++
+		}
+	}
+
+	importID := uuid.New().String()
+	errStr := strings.Join(errMsgs, "; ")
+	_, _ = s.store.DB().ExecContext(ctx,
+		`INSERT INTO sigma_imports (id, rule_count, errors, imported_by, imported_at)
+		 VALUES ($1, $2, $3, $4, NOW())`,
+		importID, imported, errStr, actorName(c))
+
+	actorID, actorUser := currentUser(c)
+	s.al.Log(ctx, actorID, actorUser, "sigma_import", "rules", importID, "", c.ClientIP(),
+		fmt.Sprintf("imported %d rules, %d errors", imported, errCount))
+
+	c.JSON(http.StatusOK, gin.H{
+		"imported": imported,
+		"errors":   errMsgs,
+		"import_id": importID,
+	})
+}
+
+// POST /api/v1/threat-intel/stix  — import STIX 2.1 bundle as IOCs
+func (s *Server) handleImportSTIX(c *gin.Context) {
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 10<<20)) // 10 MB
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "read body: " + err.Error()})
+		return
+	}
+	if len(body) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "empty body"})
+		return
+	}
+
+	source := c.DefaultQuery("source", "stix-import")
+	result, err := stix.Import(body, source)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx := c.Request.Context()
+	imported, insertErr := s.store.InsertIOCBatch(ctx, result.IOCs)
+	if insertErr != nil {
+		result.Errors = append(result.Errors, "batch insert: "+insertErr.Error())
+	}
+
+	importID := uuid.New().String()
+	errStr := strings.Join(result.Errors, "; ")
+	_, _ = s.store.DB().ExecContext(ctx,
+		`INSERT INTO stix_imports (id, bundle_id, source, ioc_count, errors, imported_by, imported_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+		importID, result.BundleID, source, imported, errStr, actorName(c))
+
+	actorID, actorUser := currentUser(c)
+	s.al.Log(ctx, actorID, actorUser, "stix_import", "iocs", importID, "", c.ClientIP(),
+		fmt.Sprintf("imported %d IOCs from bundle %s", imported, result.BundleID))
+
+	c.JSON(http.StatusOK, gin.H{
+		"imported":  imported,
+		"bundle_id": result.BundleID,
+		"errors":    result.Errors,
+		"import_id": importID,
+	})
+}
+
+func actorName(c *gin.Context) string {
+	_, name := currentUser(c)
+	return name
 }

@@ -113,7 +113,7 @@ func (b *DefaultBus) Publish(event Event) {
 // Subscribe registers a handler. The handler runs in its own goroutine.
 // bufSize controls the channel buffer depth.
 func (b *DefaultBus) Subscribe(eventType string, handler Handler) func() {
-	const bufSize = 4096
+	const bufSize = 16384
 
 	entry := subscriberEntry{
 		id:      newID(),

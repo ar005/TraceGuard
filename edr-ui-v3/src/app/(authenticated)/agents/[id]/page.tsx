@@ -1107,13 +1107,15 @@ export default function AgentDetailPage() {
   );
   const { data: agent, loading, error } = useApi(fetchAgent);
 
-  // Fetch last 200 events for overview breakdown (only when on overview tab)
+  // Fetch events for overview breakdown — only when the overview tab is active
   const fetchOverviewEvents = useCallback(
-    () =>
-      api
-        .get<{ events?: Event[] } | Event[]>("/api/v1/events", { agent_id: agentId, limit: 200 })
-        .then((r) => (Array.isArray(r) ? r : r.events ?? [])),
-    [agentId]
+    () => {
+      if (activeTab !== "overview") return Promise.resolve([] as Event[]);
+      return api
+        .get<{ events?: Event[] } | Event[]>("/api/v1/events", { agent_id: agentId, limit: 50 })
+        .then((r) => (Array.isArray(r) ? r : r.events ?? []));
+    },
+    [agentId, activeTab]
   );
   const { data: overviewEvents } = useApi(fetchOverviewEvents);
 

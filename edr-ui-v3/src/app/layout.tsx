@@ -7,7 +7,7 @@ import "./globals.css";
 const archivo = Archivo({
   variable: "--font-archivo",
   subsets: ["latin"],
-  weight: ["400", "500", "600", "700", "900"],
+  weight: ["700", "900"],
   display: "swap",
 });
 
@@ -21,7 +21,7 @@ const onest = Onest({
 const firaCode = Fira_Code({
   variable: "--font-fira-code",
   subsets: ["latin"],
-  weight: ["400", "500"],
+  weight: ["400"],
   display: "swap",
 });
 

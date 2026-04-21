@@ -10,12 +10,12 @@ import (
 	"github.com/youredr/edr-backend/internal/models"
 )
 
-func newTestBroker() *Broker {
-	return New(zerolog.New(os.Stderr).Level(zerolog.Disabled))
+func newTestBrokerForTest() *Broker {
+	return newTestBroker(zerolog.New(os.Stderr).Level(zerolog.Disabled))
 }
 
 func TestPublishToSubscriber(t *testing.T) {
-	b := newTestBroker()
+	b := newTestBrokerForTest()
 
 	// Manually register a client channel.
 	ch := make(chan []byte, 16)
@@ -51,7 +51,7 @@ func TestPublishToSubscriber(t *testing.T) {
 }
 
 func TestMultipleSubscribersReceiveSameEvent(t *testing.T) {
-	b := newTestBroker()
+	b := newTestBrokerForTest()
 
 	ch1 := make(chan []byte, 16)
 	ch2 := make(chan []byte, 16)
@@ -76,7 +76,7 @@ func TestMultipleSubscribersReceiveSameEvent(t *testing.T) {
 }
 
 func TestUnsubscribeStopsDelivery(t *testing.T) {
-	b := newTestBroker()
+	b := newTestBrokerForTest()
 
 	ch := make(chan []byte, 16)
 	b.mu.Lock()
@@ -100,7 +100,7 @@ func TestUnsubscribeStopsDelivery(t *testing.T) {
 }
 
 func TestNonBlockingPublish(t *testing.T) {
-	b := newTestBroker()
+	b := newTestBrokerForTest()
 
 	// Create a channel with buffer size 1 so it fills quickly.
 	ch := make(chan []byte, 1)
@@ -128,7 +128,7 @@ func TestNonBlockingPublish(t *testing.T) {
 }
 
 func TestClientCount(t *testing.T) {
-	b := newTestBroker()
+	b := newTestBrokerForTest()
 	if b.ClientCount() != 0 {
 		t.Errorf("initial ClientCount = %d, want 0", b.ClientCount())
 	}

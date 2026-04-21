@@ -1,5 +1,26 @@
 services:
 
+  # ── NATS JetStream (XDR pipeline backbone) ──────────────────────────────────
+  # Required when nats.enabled: true in server.yaml.
+  # Start with: docker compose up -d nats
+  # Monitor at: http://localhost:8222
+  nats:
+    image: nats:2-alpine
+    container_name: edr-nats
+    restart: unless-stopped
+    command: ["-c", "/etc/nats/nats.conf"]
+    volumes:
+      - ./config/nats.conf:/etc/nats/nats.conf:ro
+      - nats_data:/var/lib/nats/jetstream
+    ports:
+      - "4222:4222"   # client connections
+      - "8222:8222"   # HTTP monitoring
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   # ── PostgreSQL ──────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
@@ -41,6 +62,9 @@ services:
       EDR_LOG_LEVEL:         info
       EDR_LOG_FORMAT:        json
       EDR_JWT_SECRET:         change-this-to-a-long-random-secret-in-production
+      # XDR pipeline — set to "true" and add nats dependency to enable
+      EDR_NATS_ENABLED:      "false"
+      EDR_NATS_URL:          "nats://nats:4222"
     ports:
       - "50051:50051"   # gRPC (agents connect here)
       - "8080:8080"     # REST API
@@ -50,3 +74,4 @@ services:
 
 volumes:
   postgres_data:
+  nats_data:
