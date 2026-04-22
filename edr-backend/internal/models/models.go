@@ -376,6 +376,7 @@ const (
 
 type Case struct {
 	ID          string         `db:"id"          json:"id"`
+	TenantID    string         `db:"tenant_id"   json:"tenant_id,omitempty"`
 	Title       string         `db:"title"       json:"title"`
 	Description string         `db:"description" json:"description"`
 	Status      string         `db:"status"      json:"status"`

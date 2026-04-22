@@ -15,11 +15,13 @@ import (
 // ── Cases ─────────────────────────────────────────────────────────────────────
 
 func (s *Server) handleListCases(c *gin.Context) {
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
 	status := c.Query("status")
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 
-	cases, total, err := s.store.ListCases(c.Request.Context(), status, limit, offset)
+	cases, total, err := s.store.ListCases(c.Request.Context(), tid, status, limit, offset)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -69,6 +71,9 @@ func (s *Server) handleCreateCase(c *gin.Context) {
 			if cs.Assignee == "" {
 				cs.Assignee = claims.Subject
 			}
+			if claims.TenantID != "" {
+				cs.TenantID = claims.TenantID
+			}
 		}
 	}
 	if err := s.store.CreateCase(c.Request.Context(), &cs); err != nil {
@@ -83,6 +88,15 @@ func (s *Server) handleUpdateCase(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "case not found"})
 		return
+	}
+	// Only the case creator or an admin may overwrite a case.
+	if raw, ok := c.Get(string(ctxClaims)); ok {
+		if claims, ok := raw.(*users.Claims); ok {
+			if claims.Role != users.RoleAdmin && claims.Subject != cs.CreatedBy {
+				c.JSON(http.StatusForbidden, gin.H{"error": "only the case creator or an admin may update this case"})
+				return
+			}
+		}
 	}
 	if err := c.ShouldBindJSON(cs); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})

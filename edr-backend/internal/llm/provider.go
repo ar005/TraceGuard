@@ -32,38 +32,44 @@ type Config struct {
 
 // BuildPrompt constructs the shared prompt used by all providers.
 func BuildPrompt(alert *models.Alert, events []models.Event) string {
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf(
-		"You are a security analyst assistant. Explain this EDR alert in plain English.\n\n"+
-			"Alert: %s\nSeverity: %s\nHost: %s\nMITRE: %s\nFirst seen: %s\n\n",
-		alert.Title,
-		models.SeverityLabel(alert.Severity),
-		alert.Hostname,
-		strings.Join(alert.MitreIDs, ", "),
-		alert.FirstSeen.Format("2006-01-02 15:04:05 UTC"),
-	))
-
-	if len(events) > 0 {
-		sb.WriteString("Triggering events:\n")
-		max := 5
-		if len(events) < max {
-			max = len(events)
-		}
-		for _, ev := range events[:max] {
-			var p map[string]interface{}
-			_ = json.Unmarshal(ev.Payload, &p)
-			summary := SummarisePayload(ev.EventType, p)
-			sb.WriteString(fmt.Sprintf("  - [%s] %s\n", ev.EventType, summary))
+	// All alert fields are JSON-encoded to prevent prompt injection via
+	// agent-controlled strings (hostname, title, MITRE IDs, etc.).
+	type eventSummary struct {
+		EventType string `json:"event_type"`
+		Summary   string `json:"summary"`
+		Time      string `json:"time"`
+	}
+	max := 5
+	if len(events) < max {
+		max = len(events)
+	}
+	evSummaries := make([]eventSummary, max)
+	for i, ev := range events[:max] {
+		var p map[string]interface{}
+		_ = json.Unmarshal(ev.Payload, &p)
+		evSummaries[i] = eventSummary{
+			EventType: ev.EventType,
+			Summary:   SummarisePayload(ev.EventType, p),
+			Time:      ev.Timestamp.Format("15:04:05"),
 		}
 	}
+	data := map[string]interface{}{
+		"title":      alert.Title,
+		"severity":   models.SeverityLabel(alert.Severity),
+		"host":       alert.Hostname,
+		"mitre_ids":  alert.MitreIDs,
+		"first_seen": alert.FirstSeen.Format("2006-01-02 15:04:05 UTC"),
+		"events":     evSummaries,
+	}
+	b, _ := json.Marshal(data)
 
-	sb.WriteString("\nIn 3-5 sentences:\n" +
+	return "You are a security analyst assistant. Explain this EDR alert in plain English.\n\n" +
+		"Alert data (JSON):\n" + string(b) + "\n\n" +
+		"In 3-5 sentences:\n" +
 		"1. What likely happened?\n" +
 		"2. What is the attacker trying to achieve?\n" +
 		"3. What should the analyst check next?\n" +
-		"Keep the response concise and technical. Do not include disclaimers.")
-
-	return sb.String()
+		"Keep the response concise and technical. Do not include disclaimers."
 }
 
 // SummarisePayload extracts a human-readable summary from an event payload.

@@ -20,8 +20,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/smtp"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -107,6 +109,75 @@ type slackConfig struct {
 	Username   string `json:"username"`
 }
 
+// validateOutboundURL rejects private/loopback/metadata addresses and non-https schemes
+// to prevent SSRF via playbook webhook and Slack actions.
+func validateOutboundURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("outbound URL must use https")
+	}
+	host := u.Hostname()
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsMulticast() {
+			return fmt.Errorf("outbound URL must not point to a private/loopback address")
+		}
+	}
+	// Block common cloud metadata endpoints by hostname
+	blocked := []string{"169.254.169.254", "metadata.google.internal", "fd00:ec2::254"}
+	for _, b := range blocked {
+		if host == b {
+			return fmt.Errorf("outbound URL target is blocked")
+		}
+	}
+	return nil
+}
+
+// isAllowedIP checks that a resolved IP is not private/loopback/metadata.
+func isAllowedIP(ip net.IP) bool {
+	blocked := []net.IP{
+		net.ParseIP("169.254.169.254"),
+		net.ParseIP("fd00:ec2::254"),
+	}
+	for _, b := range blocked {
+		if ip.Equal(b) {
+			return false
+		}
+	}
+	return !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast() && !ip.IsMulticast()
+}
+
+// safeHTTPClient returns an http.Client whose dialer re-validates the resolved IP
+// after DNS lookup to prevent DNS-rebinding SSRF attacks.
+var safeHTTPClient = &http.Client{
+	Timeout: 15 * time.Second,
+	Transport: &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+			if err != nil {
+				return nil, err
+			}
+			for _, resolved := range ips {
+				if !isAllowedIP(resolved.IP) {
+					return nil, fmt.Errorf("resolved address %s is not allowed (SSRF protection)", resolved.IP)
+				}
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+		},
+	},
+}
+
+// sanitizeHeaderValue strips CR and LF to prevent email/HTTP header injection.
+func sanitizeHeaderValue(s string) string {
+	return strings.NewReplacer("\r", "", "\n", "").Replace(s)
+}
+
 func execSlack(ctx context.Context, cfg json.RawMessage, ac ActionContext) error {
 	var c slackConfig
 	if err := json.Unmarshal(cfg, &c); err != nil {
@@ -114,6 +185,9 @@ func execSlack(ctx context.Context, cfg json.RawMessage, ac ActionContext) error
 	}
 	if c.WebhookURL == "" {
 		return fmt.Errorf("slack: webhook_url required")
+	}
+	if err := validateOutboundURL(c.WebhookURL); err != nil {
+		return fmt.Errorf("slack: %w", err)
 	}
 
 	text := buildAlertMessage(ac)
@@ -174,6 +248,9 @@ func execWebhook(ctx context.Context, cfg json.RawMessage, ac ActionContext) err
 	if c.URL == "" {
 		return fmt.Errorf("webhook: url required")
 	}
+	if err := validateOutboundURL(c.URL); err != nil {
+		return fmt.Errorf("webhook: %w", err)
+	}
 
 	var body interface{}
 	if ac.Alert != nil {
@@ -193,7 +270,7 @@ func execWebhook(ctx context.Context, cfg json.RawMessage, ac ActionContext) err
 		req.Header.Set(k, v)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := safeHTTPClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -232,8 +309,16 @@ func execEmail(cfg json.RawMessage, ac ActionContext) error {
 	}
 	body := buildAlertMessage(ac)
 
+	// Sanitise header values to prevent CRLF injection.
+	safeFrom := sanitizeHeaderValue(c.From)
+	safeTo := make([]string, len(c.To))
+	for i, t := range c.To {
+		safeTo[i] = sanitizeHeaderValue(t)
+	}
+	safeSubject := sanitizeHeaderValue(subject)
+
 	msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\n\r\n%s",
-		c.From, strings.Join(c.To, ", "), subject, body)
+		safeFrom, strings.Join(safeTo, ", "), safeSubject, body)
 
 	addr := fmt.Sprintf("%s:%d", c.SMTPHost, c.SMTPPort)
 	var auth smtp.Auth
@@ -257,10 +342,10 @@ func execEmail(cfg json.RawMessage, ac ActionContext) error {
 				return err
 			}
 		}
-		if err := client.Mail(c.From); err != nil {
+		if err := client.Mail(safeFrom); err != nil {
 			return err
 		}
-		for _, to := range c.To {
+		for _, to := range safeTo {
 			if err := client.Rcpt(to); err != nil {
 				return err
 			}
@@ -274,7 +359,7 @@ func execEmail(cfg json.RawMessage, ac ActionContext) error {
 		return err
 	}
 
-	return smtp.SendMail(addr, auth, c.From, c.To, []byte(msg))
+	return smtp.SendMail(addr, auth, safeFrom, safeTo, []byte(msg))
 }
 
 type isolateConfig struct {
@@ -353,7 +438,7 @@ func postJSON(ctx context.Context, url string, payload []byte, token string) err
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := safeHTTPClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -435,8 +520,14 @@ func execDisableIdentity(ctx context.Context, cfg json.RawMessage, ac ActionCont
 		return fmt.Errorf("disable_identity: OKTA_DOMAIN / OKTA_TOKEN not configured — would disable %s", uid)
 	}
 
-	// Step 1: look up user by login/email.
-	userURL := fmt.Sprintf("https://%s/api/v1/users/%s", domain, uid)
+	// Validate user UID to prevent path injection
+	for _, r := range uid {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
+			r == '@' || r == '.' || r == '-' || r == '_') {
+			return fmt.Errorf("disable_identity: invalid characters in user_uid %q", uid)
+		}
+	}
+	userURL := fmt.Sprintf("https://%s/api/v1/users/%s", domain, url.PathEscape(uid))
 	req, _ := http.NewRequestWithContext(ctx, "POST",
 		userURL+"/lifecycle/deactivate", nil)
 	req.Header.Set("Authorization", "SSWS "+token)

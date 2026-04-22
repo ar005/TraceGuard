@@ -15,22 +15,27 @@ import (
 
 // ── Cases ─────────────────────────────────────────────────────────────────────
 
-func (s *Store) ListCases(ctx context.Context, status string, limit, offset int) ([]models.Case, int, error) {
+func (s *Store) ListCases(ctx context.Context, tenantID, status string, limit, offset int) ([]models.Case, int, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 50
 	}
-
-	countQ := `SELECT COUNT(*) FROM cases`
-	listQ := `SELECT id, title, description, status, severity, assignee, tags,
-	                 mitre_ids, alert_count, created_by, created_at, updated_at, closed_at
-	          FROM cases`
+	if tenantID == "" {
+		tenantID = "default"
+	}
 
 	var args []interface{}
-	var where string
+	args = append(args, tenantID)
+	where := fmt.Sprintf(" WHERE tenant_id = $%d", len(args))
+
 	if status != "" {
 		args = append(args, status)
-		where = fmt.Sprintf(" WHERE status = $%d", len(args))
+		where += fmt.Sprintf(" AND status = $%d", len(args))
 	}
+
+	countQ := `SELECT COUNT(*) FROM cases`
+	listQ := `SELECT id, tenant_id, title, description, status, severity, assignee, tags,
+	                 mitre_ids, alert_count, created_by, created_at, updated_at, closed_at
+	          FROM cases`
 
 	var total int
 	if err := s.db.QueryRowContext(ctx, countQ+where, args...).Scan(&total); err != nil {
@@ -50,7 +55,7 @@ func (s *Store) ListCases(ctx context.Context, status string, limit, offset int)
 	for rows.Next() {
 		var c models.Case
 		if err := rows.Scan(
-			&c.ID, &c.Title, &c.Description, &c.Status, &c.Severity, &c.Assignee,
+			&c.ID, &c.TenantID, &c.Title, &c.Description, &c.Status, &c.Severity, &c.Assignee,
 			pq.Array(&c.Tags), pq.Array(&c.MitreIDs), &c.AlertCount,
 			&c.CreatedBy, &c.CreatedAt, &c.UpdatedAt, &c.ClosedAt,
 		); err != nil {
@@ -82,6 +87,9 @@ func (s *Store) CreateCase(ctx context.Context, c *models.Case) error {
 	if c.ID == "" {
 		c.ID = "case-" + uuid.New().String()
 	}
+	if c.TenantID == "" {
+		c.TenantID = "default"
+	}
 	now := time.Now().UTC()
 	c.CreatedAt = now
 	c.UpdatedAt = now
@@ -89,10 +97,10 @@ func (s *Store) CreateCase(ctx context.Context, c *models.Case) error {
 		c.Status = models.CaseStatusOpen
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO cases (id, title, description, status, severity, assignee, tags,
+		`INSERT INTO cases (id, tenant_id, title, description, status, severity, assignee, tags,
 		                    mitre_ids, alert_count, created_by, created_at, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-		c.ID, c.Title, c.Description, c.Status, c.Severity, c.Assignee,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		c.ID, c.TenantID, c.Title, c.Description, c.Status, c.Severity, c.Assignee,
 		pq.Array(c.Tags), pq.Array(c.MitreIDs), c.AlertCount,
 		c.CreatedBy, c.CreatedAt, c.UpdatedAt,
 	)

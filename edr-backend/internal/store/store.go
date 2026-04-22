@@ -214,6 +214,9 @@ func (s *Store) QueryEvents(ctx context.Context, p QueryEventsParams) ([]models.
 	// Filter by process PID — used for process tree correlation in the UI.
 	// Matches payload->>'process' JSONB field containing "pid":<value>.
 	if p.PID != "" {
+		if _, pidErr := strconv.Atoi(p.PID); pidErr != nil {
+			return nil, fmt.Errorf("invalid pid: must be a number")
+		}
 		query += fmt.Sprintf(` AND payload::text ILIKE $%d`, argN)
 		args = append(args, `%"pid":`+p.PID+`%`)
 		argN++
@@ -338,6 +341,7 @@ type QueryAlertsParams struct {
 	Severity int16
 	RuleID   string
 	Search   string
+	TenantID string
 	Limit    int
 	Offset   int
 }
@@ -376,6 +380,11 @@ func (s *Store) QueryAlerts(ctx context.Context, p QueryAlertsParams) ([]models.
 		args = append(args, "%"+p.Search+"%")
 		argN++
 	}
+	if p.TenantID != "" {
+		query += fmt.Sprintf(" AND tenant_id = $%d", argN)
+		args = append(args, p.TenantID)
+		argN++
+	}
 
 	query += fmt.Sprintf(` ORDER BY first_seen DESC LIMIT $%d OFFSET $%d`, argN, argN+1)
 	args = append(args, p.Limit, p.Offset)
@@ -385,9 +394,11 @@ func (s *Store) QueryAlerts(ctx context.Context, p QueryAlertsParams) ([]models.
 	return alerts, err
 }
 
-func (s *Store) GetAlert(ctx context.Context, id string) (*models.Alert, error) {
+func (s *Store) GetAlert(ctx context.Context, id string, tenantID string) (*models.Alert, error) {
 	var a models.Alert
-	err := s.rdb().GetContext(ctx, &a, `SELECT * FROM alerts WHERE id=$1`, id)
+	err := s.rdb().GetContext(ctx, &a,
+		`SELECT * FROM alerts WHERE id=$1 AND (tenant_id=$2 OR tenant_id='default' OR $2='default')`,
+		id, tenantID)
 	return &a, err
 }
 
@@ -396,7 +407,8 @@ func (s *Store) GetAlert(ctx context.Context, id string) (*models.Alert, error) 
 // deduplicating by event ID.
 func (s *Store) GetAlertEvents(ctx context.Context, alertID string) ([]models.Event, error) {
 	// First get the alert to retrieve its event_ids list.
-	alert, err := s.GetAlert(ctx, alertID)
+	// Pass "default" as tenantID for internal cross-tenant lookups (e.g. engine callbacks).
+	alert, err := s.GetAlert(ctx, alertID, "default")
 	if err != nil {
 		return nil, fmt.Errorf("get alert: %w", err)
 	}
@@ -877,6 +889,28 @@ func splitOnConjunctions(query string) ([]string, []string) {
 
 // parseFilterPart parses a single filter expression like "hostname = 'web01'"
 // and returns parameterized SQL.
+// indexOperator finds op in s only at a word boundary (surrounded by spaces or string edges).
+// This prevents substring matches like "exeLike" being mistaken for "LIKE" operator.
+func indexOperator(s, op string) int {
+	idx := 0
+	for {
+		i := strings.Index(s[idx:], op)
+		if i < 0 {
+			return -1
+		}
+		abs := idx + i
+		before := abs == 0 || s[abs-1] == ' '
+		after := abs+len(op) >= len(s) || s[abs+len(op)] == ' ' || s[abs+len(op)] == '\''
+		if before && after {
+			return abs
+		}
+		idx = abs + 1
+		if idx >= len(s) {
+			return -1
+		}
+	}
+}
+
 func parseFilterPart(part string, paramIdx int) (string, []interface{}, int, error) {
 	part = strings.TrimSpace(part)
 
@@ -941,12 +975,11 @@ func parseFilterPart(part string, paramIdx int) (string, []interface{}, int, err
 		opUpper := strings.ToUpper(op)
 		var idx int
 		if len(op) > 1 && (op[0] >= 'A' && op[0] <= 'Z' || op[0] >= 'a' && op[0] <= 'z') {
-			// Word operators: need space boundaries.
-			search := " " + opUpper + " "
-			idx = strings.Index(upperPart, search)
+			// Word operators: use indexOperator for strict word-boundary matching.
+			idx = indexOperator(upperPart, opUpper)
 			if idx >= 0 {
 				col := strings.TrimSpace(part[:idx])
-				val := strings.TrimSpace(part[idx+len(search):])
+				val := strings.TrimSpace(part[idx+len(op):])
 				return buildComparison(col, op, val, paramIdx)
 			}
 		} else {

@@ -15,6 +15,7 @@ package detection
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"sync"
 	"time"
@@ -112,6 +113,27 @@ func (b *BehavioralAnalyzer) Observe(ctx context.Context, userUID, tenantID stri
 	b.mu.Unlock()
 
 	if n < behavioralMinN {
+		// During warm-up, fire a low-severity alert if absolute rate is clearly anomalous
+		if n >= 3 && float64(n) > ewma*4+2 {
+			now := time.Now()
+			warmAlert := &models.Alert{
+				ID:          "beh-warmup-" + userUID + "-" + now.Format("20060102T150405"),
+				RuleID:      "rule-behavioral-login-anomaly",
+				RuleName:    "Behavioral: Login Burst (warm-up)",
+				Title:       "Login burst during baseline warm-up for user " + userUID,
+				Description: fmt.Sprintf(`{"n":%d,"ewma":%.3f}`, n, ewma),
+				Severity:    2,
+				Status:      "OPEN",
+				UserUID:     userUID,
+				SourceTypes: pq.StringArray{"identity"},
+				MitreIDs:    pq.StringArray{"T1078"},
+				FirstSeen:   now,
+				LastSeen:    now,
+			}
+			if b.alertFn != nil {
+				b.alertFn(ctx, warmAlert)
+			}
+		}
 		return
 	}
 	stddev := math.Sqrt(ewmaSq)

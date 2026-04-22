@@ -15,7 +15,9 @@ func (s *Server) handleTriageAlert(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	alert, err := s.store.GetAlert(ctx, c.Param("id"))
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	alert, err := s.store.GetAlert(ctx, c.Param("id"), tid)
 	if err != nil {
 		s.jsonError(c, err)
 		return

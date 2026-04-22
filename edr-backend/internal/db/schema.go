@@ -1433,6 +1433,14 @@ var migrations = []struct {
     );
     `,
 	},
+	{
+		name: "xdr_phase5_case_tenancy",
+		sql: `
+    -- XDR Phase 5: add tenant isolation to the cases table.
+    ALTER TABLE cases ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
+    CREATE INDEX IF NOT EXISTS cases_tenant_idx ON cases(tenant_id);
+    `,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.

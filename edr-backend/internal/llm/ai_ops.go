@@ -151,26 +151,34 @@ func (c *Client) SummariseCase(ctx context.Context, cs *models.Case, alerts []mo
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func buildTriagePrompt(alert *models.Alert, events []models.Event) string {
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Alert: %s\nSeverity: %s\nHost: %s\nRule: %s\nMITRE: %s\nHit count: %d\n",
-		alert.Title,
-		models.SeverityLabel(alert.Severity),
-		alert.Hostname,
-		alert.RuleName,
-		strings.Join(alert.MitreIDs, ", "),
-		alert.HitCount,
-	))
-	if len(events) > 0 {
-		sb.WriteString("Events:\n")
-		max := 5
-		if len(events) < max {
-			max = len(events)
-		}
-		for _, ev := range events[:max] {
-			sb.WriteString(fmt.Sprintf("  %s on %s\n", ev.EventType, ev.Timestamp.Format("15:04:05")))
+	// All alert field values are JSON-encoded to prevent prompt injection via
+	// agent-controlled strings (hostname, title, rule name, etc.).
+	type eventSummary struct {
+		EventType string `json:"event_type"`
+		Time      string `json:"time"`
+	}
+	max := 5
+	if len(events) < max {
+		max = len(events)
+	}
+	evSummaries := make([]eventSummary, max)
+	for i, ev := range events[:max] {
+		evSummaries[i] = eventSummary{
+			EventType: ev.EventType,
+			Time:      ev.Timestamp.Format("15:04:05"),
 		}
 	}
-	return sb.String()
+	data := map[string]interface{}{
+		"title":     alert.Title,
+		"severity":  models.SeverityLabel(alert.Severity),
+		"host":      alert.Hostname,
+		"rule":      alert.RuleName,
+		"mitre_ids": alert.MitreIDs,
+		"hit_count": alert.HitCount,
+		"events":    evSummaries,
+	}
+	b, _ := json.Marshal(data)
+	return "Alert data (JSON):\n" + string(b)
 }
 
 // cleanJSON strips markdown code fences from LLM output before JSON parsing.

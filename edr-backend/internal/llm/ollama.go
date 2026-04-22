@@ -39,7 +39,7 @@ func newOllamaProvider(cfg Config, log zerolog.Logger) *ollamaProvider {
 	return &ollamaProvider{
 		baseURL: strings.TrimSuffix(url, "/"),
 		model:   model,
-		hc:      &http.Client{Timeout: 120 * time.Second},
+		hc:      safeLLMHTTPClient(120 * time.Second),
 		log:     log,
 	}
 }

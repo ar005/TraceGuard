@@ -234,8 +234,9 @@ func (m *Manager) Authenticate(ctx context.Context, username, password string) (
 	return u, token, nil
 }
 
-// ValidateToken parses and validates a JWT, returning its claims.
-func (m *Manager) ValidateToken(tokenString string) (*Claims, error) {
+// parseJWT validates the JWT signature and returns claims without enforcing the issuer.
+// Call-site methods must check the issuer themselves.
+func (m *Manager) parseJWT(tokenString string) (*Claims, error) {
 	claims := &Claims{}
 	token, err := jwt.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (interface{}, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -245,6 +246,15 @@ func (m *Manager) ValidateToken(tokenString string) (*Claims, error) {
 	})
 	if err != nil || !token.Valid {
 		return nil, fmt.Errorf("invalid token")
+	}
+	return claims, nil
+}
+
+// ValidateToken parses and validates a JWT, returning its claims.
+func (m *Manager) ValidateToken(tokenString string) (*Claims, error) {
+	claims, err := m.parseJWT(tokenString)
+	if err != nil {
+		return nil, err
 	}
 	if claims.Issuer != "TraceGuard" {
 		return nil, fmt.Errorf("invalid token issuer")
@@ -275,7 +285,7 @@ func (m *Manager) IssueSSETicket(claims *Claims) (string, error) {
 // ConsumeSSETicket validates an SSE ticket and marks it as used.
 // Returns the claims if valid and unused, or an error if already consumed/expired.
 func (m *Manager) ConsumeSSETicket(tokenStr string) (*Claims, error) {
-	claims, err := m.ValidateToken(tokenStr)
+	claims, err := m.parseJWT(tokenStr)
 	if err != nil {
 		return nil, err
 	}
@@ -446,14 +456,8 @@ func (m *Manager) IssueMFAToken(u *User) (string, error) {
 
 // ValidateMFAToken parses a short-lived MFA token (issuer must be "TraceGuard-mfa").
 func (m *Manager) ValidateMFAToken(tokenString string) (*Claims, error) {
-	claims := &Claims{}
-	token, err := jwt.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (interface{}, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method")
-		}
-		return m.jwtSecret, nil
-	})
-	if err != nil || !token.Valid {
+	claims, err := m.parseJWT(tokenString)
+	if err != nil {
 		return nil, fmt.Errorf("invalid MFA token")
 	}
 	if claims.Issuer != "TraceGuard-mfa" {

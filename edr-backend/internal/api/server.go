@@ -174,19 +174,16 @@ func (s *Server) registerRoutes() {
 		v1.GET("/incidents/:id/alerts", s.handleGetIncidentAlerts)
 		v1.PATCH("/incidents/:id",      s.handleUpdateIncident)
 
-		// Cases (all authenticated — SOC workflow)
+		// Cases — reads and analyst writes
 		v1.GET("/cases",                         s.handleListCases)
 		v1.GET("/cases/:id",                     s.handleGetCase)
 		v1.GET("/cases/:id/alerts",              s.handleListCaseAlerts)
 		v1.GET("/cases/:id/notes",               s.handleListCaseNotes)
 		v1.POST("/cases",                        s.handleCreateCase)
 		v1.PUT("/cases/:id",                     s.handleUpdateCase)
-		v1.DELETE("/cases/:id",                  s.handleDeleteCase)
 		v1.POST("/cases/:id/alerts",             s.handleLinkAlert)
-		v1.DELETE("/cases/:id/alerts/:alert_id", s.handleUnlinkAlert)
 		v1.POST("/cases/:id/notes",              s.handleAddCaseNote)
 		v1.PUT("/cases/:id/notes/:note_id",      s.handleUpdateCaseNote)
-		v1.DELETE("/cases/:id/notes/:note_id",   s.handleDeleteCaseNote)
 		v1.POST("/cases/:id/summarise",          s.handleSummariseCase)
 
 		// Rules (read)
@@ -247,6 +244,11 @@ func (s *Server) registerRoutes() {
 			w.PUT("/suppressions/:id",    s.handleUpdateSuppression)
 			w.DELETE("/suppressions/:id", s.handleDeleteSuppression)
 
+			// Cases — destructive ops (admin only)
+			w.DELETE("/cases/:id",                  s.handleDeleteCase)
+			w.DELETE("/cases/:id/alerts/:alert_id", s.handleUnlinkAlert)
+			w.DELETE("/cases/:id/notes/:note_id",   s.handleDeleteCaseNote)
+
 			w.POST("/agents/:id/scan-packages", s.handleScanPackages)
 
 			w.POST("/iocs",          s.handleCreateIOC)
@@ -283,7 +285,7 @@ func (s *Server) registerRoutes() {
 			sw.DELETE("/:id", s.handleDeleteSource)
 		}
 
-		r.POST("/api/v1/ingest/webhook/:source_id", s.handleWebhookIngest)
+		v1.POST("/ingest/webhook/:source_id", s.handleWebhookIngest)
 
 		// XDR Identity graph
 		v1.GET("/identity",          s.handleListIdentities)
@@ -666,12 +668,8 @@ func (s *Server) handleRefresh(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found or disabled"})
 		return
 	}
-	u2, token, err := s.um.Authenticate(c.Request.Context(), u.Username, "")
-	// Authenticate with empty password will fail — we need to issue directly
-	_ = u2
-	_ = err
-	// Issue token directly since we already validated
-	if token, err = s.um.IssueToken(u); err != nil {
+	token, err := s.um.IssueToken(u)
+	if err != nil {
 		s.jsonError(c, err)
 		return
 	}
@@ -1256,13 +1254,17 @@ func (s *Server) handleHunt(c *gin.Context) {
 // ─── Alerts ───────────────────────────────────────────────────────────────────
 
 func (s *Server) handleListAlerts(c *gin.Context) {
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+
 	p := store.QueryAlertsParams{
-		AgentID: c.Query("agent_id"),
-		Status:  c.Query("status"),
-		RuleID:  c.Query("rule_id"),
-		Search:  c.Query("search"),
-		Limit:   intQuery(c, "limit", 50),
-		Offset:  intQuery(c, "offset", 0),
+		AgentID:  c.Query("agent_id"),
+		Status:   c.Query("status"),
+		RuleID:   c.Query("rule_id"),
+		Search:   c.Query("search"),
+		TenantID: tid,
+		Limit:    intQuery(c, "limit", 50),
+		Offset:   intQuery(c, "offset", 0),
 	}
 	if sv := c.Query("min_severity"); sv != "" {
 		n, err := strconv.Atoi(sv)
@@ -1279,7 +1281,10 @@ func (s *Server) handleListAlerts(c *gin.Context) {
 }
 
 func (s *Server) handleGetAlert(c *gin.Context) {
-	alert, err := s.store.GetAlert(c.Request.Context(), c.Param("id"))
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+
+	alert, err := s.store.GetAlert(c.Request.Context(), c.Param("id"), tid)
 	if err != nil {
 		s.jsonError(c, err)
 		return
@@ -1370,7 +1375,9 @@ func (s *Server) handleInjectEvent(c *gin.Context) {
 //   GET /api/v1/alerts/:id/timeline?window_minutes=30
 func (s *Server) handleGetAlertTimeline(c *gin.Context) {
 	ctx := c.Request.Context()
-	alert, err := s.store.GetAlert(ctx, c.Param("id"))
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	alert, err := s.store.GetAlert(ctx, c.Param("id"), tid)
 	if err != nil {
 		s.jsonError(c, err)
 		return
@@ -1636,7 +1643,9 @@ func (s *Server) handleExplainAlert(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	alert, err := s.store.GetAlert(ctx, c.Param("id"))
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	alert, err := s.store.GetAlert(ctx, c.Param("id"), tid)
 	if err != nil {
 		s.jsonError(c, err)
 		return
@@ -2001,7 +2010,8 @@ func (s *Server) handleMigrateExport(c *gin.Context) {
 }
 
 func (s *Server) handleMigrateImport(c *gin.Context) {
-	result, err := migrate.Import(c.Request.Context(), s.store.DB(), c.Request.Body, s.log)
+	const maxMigrateBody = 256 << 20 // 256 MB
+	result, err := migrate.Import(c.Request.Context(), s.store.DB(), io.LimitReader(c.Request.Body, maxMigrateBody), s.log)
 	if err != nil {
 		s.log.Error().Err(err).Msg("migrate import failed")
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})

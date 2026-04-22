@@ -9,10 +9,12 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/youredr/edr-backend/internal/models"
@@ -63,6 +65,39 @@ func validateLLMBaseURL(rawURL string) error {
 		}
 	}
 	return nil
+}
+
+// safeLLMHTTPClient returns an HTTP client that re-validates the resolved IP at
+// dial time, closing the DNS rebinding window that validateLLMBaseURL leaves open.
+func safeLLMHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				host, port, err := net.SplitHostPort(addr)
+				if err != nil {
+					return nil, err
+				}
+				ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+				if err != nil {
+					return nil, err
+				}
+				for _, resolved := range ips {
+					ip := resolved.IP
+					blocked := []net.IP{net.ParseIP("169.254.169.254"), net.ParseIP("fd00:ec2::254")}
+					for _, b := range blocked {
+						if ip.Equal(b) {
+							return nil, fmt.Errorf("resolved address %s is not allowed (SSRF protection)", ip)
+						}
+					}
+					if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsMulticast() {
+						return nil, fmt.Errorf("resolved address %s is not allowed (SSRF protection)", ip)
+					}
+				}
+				return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+			},
+		},
+	}
 }
 
 // Client wraps the active LLM provider and supports hot-swapping.

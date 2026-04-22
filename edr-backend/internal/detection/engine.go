@@ -62,6 +62,10 @@ type Engine struct {
 
 	// Live response manager for auto-response actions (quarantine, block_ip).
 	lr *liveresponse.Manager
+
+	// dedupMu serialises the FindOpenAlert+insert pair per (rule_id, agent_id) to
+	// prevent duplicate alerts when two events match the same rule concurrently.
+	dedupMu sync.Map // map[string]*sync.Mutex
 }
 
 // New creates a detection Engine. Call Reload() to load rules from DB.
@@ -546,7 +550,20 @@ func (e *Engine) fireAlert(ctx context.Context, ev *models.Event, rule *models.R
 	e.fireAlertWithContext(ctx, ev, rule, "")
 }
 
+// dedupLock returns the per-(rule, agent) mutex, creating it on first use.
+func (e *Engine) dedupLock(ruleID, agentID string) *sync.Mutex {
+	key := ruleID + "\x00" + agentID
+	mu, _ := e.dedupMu.LoadOrStore(key, &sync.Mutex{})
+	return mu.(*sync.Mutex)
+}
+
 func (e *Engine) fireAlertWithContext(ctx context.Context, ev *models.Event, rule *models.Rule, extraCtx string) {
+	// Serialise the read-then-insert per (rule, agent) so concurrent events for
+	// the same rule cannot both pass the dedup check and create duplicate alerts.
+	mu := e.dedupLock(rule.ID, ev.AgentID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	// Deduplication check.
 	existing, err := e.store.FindOpenAlert(ctx, rule.ID, ev.AgentID, dedupeWindow)
 	if err != nil {

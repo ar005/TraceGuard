@@ -112,6 +112,8 @@ func New(st *store.Store, eng *detection.Engine, sb *sse.Broker, lr *liverespons
 		}
 		commonOpts = append([]grpc.ServerOption{grpc.Creds(creds)}, commonOpts...)
 		log.Info().Str("cert", tls.CertFile).Msg("gRPC TLS enabled")
+	} else {
+		log.Warn().Msg("gRPC ingest running WITHOUT TLS — any host reaching :50051 can register as an agent and inject events; set grpc.tls.enabled=true in production")
 	}
 	s.grpc = grpc.NewServer(commonOpts...)
 	pb.RegisterEventServiceServer(s.grpc, s)

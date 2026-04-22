@@ -153,6 +153,48 @@ func sendPagerDuty(ctx context.Context, cfg json.RawMessage, alert *models.Alert
 	return postJSON(ctx, "https://events.pagerduty.com/v2/enqueue", payload)
 }
 
+// ── SSRF protection ───────────────────────────────────────────────────────────
+
+func isAllowedExportIP(ip net.IP) bool {
+	blocked := []net.IP{
+		net.ParseIP("169.254.169.254"),
+		net.ParseIP("fd00:ec2::254"),
+	}
+	for _, b := range blocked {
+		if ip.Equal(b) {
+			return false
+		}
+	}
+	return !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast() && !ip.IsMulticast()
+}
+
+// safeExportClient re-validates the resolved IP at dial time, preventing DNS rebinding.
+var safeExportClient = &http.Client{
+	Timeout: 15 * time.Second,
+	Transport: &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+			if err != nil {
+				return nil, err
+			}
+			for _, resolved := range ips {
+				if !isAllowedExportIP(resolved.IP) {
+					return nil, fmt.Errorf("resolved address %s is not allowed (SSRF protection)", resolved.IP)
+				}
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+		},
+	},
+}
+
+func sanitizeExportHeader(s string) string {
+	return strings.NewReplacer("\r", "", "\n", "").Replace(s)
+}
+
 // ── Generic webhook ───────────────────────────────────────────────────────────
 
 type webhookCfg struct {
@@ -183,7 +225,7 @@ func sendWebhook(ctx context.Context, cfg json.RawMessage, alert *models.Alert, 
 	for k, v := range c.Headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := safeExportClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -285,17 +327,22 @@ func sendEmail(cfg json.RawMessage, alert *models.Alert) error {
 		c.SMTPPort = 587
 	}
 
-	subject := fmt.Sprintf("TraceGuard Alert [%s]: %s", sevLabel(alert.Severity), alert.Title)
+	subject := sanitizeExportHeader(fmt.Sprintf("TraceGuard Alert [%s]: %s", sevLabel(alert.Severity), alert.Title))
+	from := sanitizeExportHeader(c.From)
+	to := make([]string, len(c.To))
+	for i, t := range c.To {
+		to[i] = sanitizeExportHeader(t)
+	}
 	body := buildText(alert, nil)
 	msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\n\r\n%s",
-		c.From, strings.Join(c.To, ", "), subject, body)
+		from, strings.Join(to, ", "), subject, body)
 
 	addr := fmt.Sprintf("%s:%d", c.SMTPHost, c.SMTPPort)
 	var auth smtp.Auth
 	if c.Username != "" {
 		auth = smtp.PlainAuth("", c.Username, c.Password, c.SMTPHost)
 	}
-	return smtp.SendMail(addr, auth, c.From, c.To, []byte(msg))
+	return smtp.SendMail(addr, auth, from, to, []byte(msg))
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -306,7 +353,7 @@ func postJSON(ctx context.Context, url string, payload []byte) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := safeExportClient.Do(req)
 	if err != nil {
 		return err
 	}
