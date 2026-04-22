@@ -46,6 +46,7 @@ type Event struct {
 // Alert represents a security alert.
 type Alert struct {
 	ID          string         `db:"id"           json:"id"`
+	TenantID    string         `db:"tenant_id"    json:"tenant_id,omitempty"`
 	Title       string         `db:"title"        json:"title"`
 	Description string         `db:"description"  json:"description"`
 	Severity    int16          `db:"severity"     json:"severity"`
@@ -115,6 +116,7 @@ type SuppressionRule struct {
 // Incident groups related alerts into a single investigation unit.
 type Incident struct {
 	ID          string         `db:"id"           json:"id"`
+	TenantID    string         `db:"tenant_id"    json:"tenant_id,omitempty"`
 	Title       string         `db:"title"        json:"title"`
 	Description string         `db:"description"  json:"description"`
 	Severity    int16          `db:"severity"     json:"severity"`

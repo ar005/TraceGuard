@@ -1302,8 +1302,10 @@ func (s *Server) handleUpdateAlert(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
 	if err := s.store.UpdateAlertStatus(c.Request.Context(),
-		c.Param("id"), body.Status, body.Assignee, body.Notes,
+		c.Param("id"), tid, body.Status, body.Assignee, body.Notes,
 	); err != nil {
 		s.jsonError(c, err)
 		return
@@ -1766,8 +1768,11 @@ func (s *Server) handleCancelPendingCommand(c *gin.Context) {
 // ─── Incidents ────────────────────────────────────────────────────────────────
 
 func (s *Server) handleListIncidents(c *gin.Context) {
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
 	sev, _ := strconv.Atoi(c.Query("min_severity"))
 	incidents, err := s.store.QueryIncidents(c.Request.Context(), store.QueryIncidentsParams{
+		TenantID: tid,
 		Search:   c.Query("search"),
 		Status:   c.Query("status"),
 		Severity: int16(sev),
@@ -1783,7 +1788,9 @@ func (s *Server) handleListIncidents(c *gin.Context) {
 }
 
 func (s *Server) handleGetIncident(c *gin.Context) {
-	inc, err := s.store.GetIncident(c.Request.Context(), c.Param("id"))
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	inc, err := s.store.GetIncident(c.Request.Context(), c.Param("id"), tid)
 	if err != nil {
 		s.jsonError(c, err)
 		return
@@ -1801,8 +1808,10 @@ func (s *Server) handleUpdateIncident(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
 	if err := s.store.UpdateIncident(c.Request.Context(),
-		c.Param("id"), body.Status, body.Assignee, body.Notes,
+		c.Param("id"), tid, body.Status, body.Assignee, body.Notes,
 	); err != nil {
 		s.jsonError(c, err)
 		return
@@ -1811,6 +1820,13 @@ func (s *Server) handleUpdateIncident(c *gin.Context) {
 }
 
 func (s *Server) handleGetIncidentAlerts(c *gin.Context) {
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	// Verify incident belongs to the caller's tenant before returning its alerts.
+	if _, err := s.store.GetIncident(c.Request.Context(), c.Param("id"), tid); err != nil {
+		s.jsonError(c, err)
+		return
+	}
 	alerts, err := s.store.GetIncidentAlerts(c.Request.Context(), c.Param("id"))
 	if err != nil {
 		s.jsonError(c, err)

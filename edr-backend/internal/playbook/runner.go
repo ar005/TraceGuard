@@ -22,7 +22,7 @@ type RunnerStore interface {
 	InsertPlaybookRun(ctx context.Context, r *models.PlaybookRun) error
 	UpdatePlaybookRun(ctx context.Context, id, status, errMsg string, actionsLog []byte) error
 	IncrPlaybookRunCount(ctx context.Context, id string) error
-	UpdateAlertStatus(ctx context.Context, id, status, assignee, notes string) error
+	UpdateAlertStatus(ctx context.Context, id, tenantID, status, assignee, notes string) error
 }
 
 // Runner dispatches playbooks in response to alerts and XDR events.

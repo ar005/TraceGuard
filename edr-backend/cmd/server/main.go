@@ -202,9 +202,9 @@ func main() {
 		var existing *models.Incident
 		var err error
 		if userUID != "" || srcIPStr != "" {
-			existing, err = st.FindOpenIncidentXdr(ctx, alert.AgentID, userUID, srcIPStr, incidentWindow)
+			existing, err = st.FindOpenIncidentXdr(ctx, alert.AgentID, userUID, srcIPStr, alert.TenantID, incidentWindow)
 		} else {
-			existing, err = st.FindOpenIncident(ctx, alert.AgentID, incidentWindow)
+			existing, err = st.FindOpenIncident(ctx, alert.AgentID, alert.TenantID, incidentWindow)
 		}
 		if err != nil {
 			logger.Warn().Err(err).Msg("incident lookup failed — creating new incident")
@@ -230,6 +230,7 @@ func main() {
 			}
 			inc := &models.Incident{
 				ID:          incID,
+				TenantID:    alert.TenantID,
 				Title:       title,
 				Description: fmt.Sprintf("Auto-correlated incident starting with: %s", alert.Title),
 				Severity:    alert.Severity,

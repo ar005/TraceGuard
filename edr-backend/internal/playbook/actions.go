@@ -55,7 +55,7 @@ type LiveResponder interface {
 
 // PlaybookStore is the subset of store.Store used during action execution.
 type PlaybookStore interface {
-	UpdateAlertStatus(ctx context.Context, id, status, assignee, notes string) error
+	UpdateAlertStatus(ctx context.Context, id, tenantID, status, assignee, notes string) error
 }
 
 // ── dispatcher ────────────────────────────────────────────────────────────────
@@ -424,7 +424,7 @@ func execUpdateAlert(ctx context.Context, cfg json.RawMessage, ac ActionContext)
 	if err := json.Unmarshal(cfg, &c); err != nil {
 		return err
 	}
-	return ac.Store.UpdateAlertStatus(ctx, ac.Alert.ID, c.Status, c.Assignee, "")
+	return ac.Store.UpdateAlertStatus(ctx, ac.Alert.ID, ac.Alert.TenantID, c.Status, c.Assignee, "")
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -600,7 +600,7 @@ func execEnrich(ctx context.Context, cfg json.RawMessage, ac ActionContext) erro
 	// Append enrichment summary to alert description (best-effort).
 	if len(enriched) > 0 {
 		if sum, err := json.Marshal(enriched); err == nil {
-			_ = ac.Store.UpdateAlertStatus(ctx, ac.Alert.ID, "", "", "Enrichment: "+string(sum))
+			_ = ac.Store.UpdateAlertStatus(ctx, ac.Alert.ID, ac.Alert.TenantID, "", "", "Enrichment: "+string(sum))
 		}
 	}
 	return nil

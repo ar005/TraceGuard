@@ -31,7 +31,7 @@ func (s *Server) handleTriageAlert(c *gin.Context) {
 		return
 	}
 
-	if err := s.store.UpdateAlertTriage(ctx, alert.ID, result.Verdict, int16(result.Confidence), result.Reasoning); err != nil {
+	if err := s.store.UpdateAlertTriage(ctx, alert.ID, tid, result.Verdict, int16(result.Confidence), result.Reasoning); err != nil {
 		s.log.Warn().Err(err).Str("alert", alert.ID).Msg("persist triage failed")
 	}
 

@@ -451,17 +451,19 @@ func (s *Store) GetAlertEvents(ctx context.Context, alertID string) ([]models.Ev
 	return result, nil
 }
 
-func (s *Store) UpdateAlertStatus(ctx context.Context, id, status, assignee, notes string) error {
+func (s *Store) UpdateAlertStatus(ctx context.Context, id, tenantID, status, assignee, notes string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE alerts SET status=$2, assignee=$3, notes=$4 WHERE id=$1`,
-		id, status, assignee, notes)
+		`UPDATE alerts SET status=$3, assignee=$4, notes=$5
+		 WHERE id=$1 AND (tenant_id=$2 OR tenant_id='default' OR $2='default')`,
+		id, tenantID, status, assignee, notes)
 	return err
 }
 
-func (s *Store) UpdateAlertTriage(ctx context.Context, id, verdict string, score int16, notes string) error {
+func (s *Store) UpdateAlertTriage(ctx context.Context, id, tenantID, verdict string, score int16, notes string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE alerts SET triage_verdict=$2, triage_score=$3, triage_notes=$4, triage_at=NOW() WHERE id=$1`,
-		id, verdict, score, notes)
+		`UPDATE alerts SET triage_verdict=$3, triage_score=$4, triage_notes=$5, triage_at=NOW()
+		 WHERE id=$1 AND (tenant_id=$2 OR tenant_id='default' OR $2='default')`,
+		id, tenantID, verdict, score, notes)
 	return err
 }
 
@@ -1460,12 +1462,15 @@ func (s *Store) GetProcessAncestors(ctx context.Context, agentID string, pid int
 
 // InsertIncident creates a new incident.
 func (s *Store) InsertIncident(ctx context.Context, inc *models.Incident) error {
+	if inc.TenantID == "" {
+		inc.TenantID = "default"
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO incidents
-		  (id, title, description, severity, status, alert_ids, agent_ids, hostnames, mitre_ids,
+		  (id, tenant_id, title, description, severity, status, alert_ids, agent_ids, hostnames, mitre_ids,
 		   user_uids, src_ips, source_types, alert_count, first_seen, last_seen, assignee, notes, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW(),NOW())`,
-		inc.ID, inc.Title, inc.Description, inc.Severity, inc.Status,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW(),NOW())`,
+		inc.ID, inc.TenantID, inc.Title, inc.Description, inc.Severity, inc.Status,
 		pq.Array(inc.AlertIDs), pq.Array(inc.AgentIDs), pq.Array(inc.Hostnames), pq.Array(inc.MitreIDs),
 		pq.Array(inc.UserUIDs), pq.Array(inc.SrcIPs), pq.Array(inc.SourceTypes),
 		inc.AlertCount, inc.FirstSeen, inc.LastSeen, inc.Assignee, inc.Notes)
@@ -1474,6 +1479,7 @@ func (s *Store) InsertIncident(ctx context.Context, inc *models.Incident) error 
 
 // QueryIncidentsParams defines filter/pagination for incident queries.
 type QueryIncidentsParams struct {
+	TenantID string
 	Search   string
 	Status   string
 	Severity int16
@@ -1487,9 +1493,12 @@ func (s *Store) QueryIncidents(ctx context.Context, p QueryIncidentsParams) ([]m
 	if p.Limit == 0 {
 		p.Limit = 50
 	}
-	query := `SELECT * FROM incidents WHERE 1=1`
-	args := []interface{}{}
-	n := 0
+	if p.TenantID == "" {
+		p.TenantID = "default"
+	}
+	query := `SELECT * FROM incidents WHERE (tenant_id=$1 OR tenant_id='default' OR $1='default')`
+	args := []interface{}{p.TenantID}
+	n := 1
 	if p.Status != "" {
 		n++
 		query += fmt.Sprintf(` AND status=$%d`, n)
@@ -1524,31 +1533,44 @@ func (s *Store) QueryIncidents(ctx context.Context, p QueryIncidentsParams) ([]m
 }
 
 // GetIncident returns a single incident by ID.
-func (s *Store) GetIncident(ctx context.Context, id string) (*models.Incident, error) {
+func (s *Store) GetIncident(ctx context.Context, id, tenantID string) (*models.Incident, error) {
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	var inc models.Incident
-	err := s.rdb().GetContext(ctx, &inc, `SELECT * FROM incidents WHERE id=$1`, id)
+	err := s.rdb().GetContext(ctx, &inc,
+		`SELECT * FROM incidents WHERE id=$1 AND (tenant_id=$2 OR tenant_id='default' OR $2='default')`,
+		id, tenantID)
 	return &inc, err
 }
 
 // UpdateIncident updates mutable incident fields.
-func (s *Store) UpdateIncident(ctx context.Context, id, status, assignee, notes string) error {
+func (s *Store) UpdateIncident(ctx context.Context, id, tenantID, status, assignee, notes string) error {
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE incidents SET status=$2, assignee=$3, notes=$4, updated_at=NOW()
-		WHERE id=$1`, id, status, assignee, notes)
+		UPDATE incidents SET status=$3, assignee=$4, notes=$5, updated_at=NOW()
+		WHERE id=$1 AND (tenant_id=$2 OR tenant_id='default' OR $2='default')`,
+		id, tenantID, status, assignee, notes)
 	return err
 }
 
 // FindOpenIncident finds an existing OPEN/INVESTIGATING incident for the given
 // agent_id that was last seen within the correlation window.
-func (s *Store) FindOpenIncident(ctx context.Context, agentID string, window time.Duration) (*models.Incident, error) {
+func (s *Store) FindOpenIncident(ctx context.Context, agentID, tenantID string, window time.Duration) (*models.Incident, error) {
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	var inc models.Incident
 	cutoff := time.Now().Add(-window)
 	err := s.rdb().GetContext(ctx, &inc, `
 		SELECT * FROM incidents
 		WHERE $1 = ANY(agent_ids)
+		  AND (tenant_id=$3 OR tenant_id='default' OR $3='default')
 		  AND status IN ('OPEN','INVESTIGATING')
 		  AND last_seen >= $2
-		ORDER BY last_seen DESC LIMIT 1`, agentID, cutoff)
+		ORDER BY last_seen DESC LIMIT 1`, agentID, cutoff, tenantID)
 	if err != nil {
 		if err.Error() == "sql: no rows in result set" {
 			return nil, nil
@@ -1560,19 +1582,23 @@ func (s *Store) FindOpenIncident(ctx context.Context, agentID string, window tim
 
 // FindOpenIncidentXdr looks up an open incident matching by user_uid or src_ip
 // in addition to agent_id. Used for cross-source incident correlation.
-func (s *Store) FindOpenIncidentXdr(ctx context.Context, agentID, userUID, srcIP string, window time.Duration) (*models.Incident, error) {
+func (s *Store) FindOpenIncidentXdr(ctx context.Context, agentID, userUID, srcIP, tenantID string, window time.Duration) (*models.Incident, error) {
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	var inc models.Incident
 	cutoff := time.Now().Add(-window)
 	err := s.rdb().GetContext(ctx, &inc, `
 		SELECT * FROM incidents
 		WHERE status IN ('OPEN','INVESTIGATING')
+		  AND (tenant_id=$5 OR tenant_id='default' OR $5='default')
 		  AND last_seen >= $4
 		  AND (
 		      ($1 != '' AND $1 = ANY(agent_ids))
 		   OR ($2 != '' AND $2 = ANY(user_uids))
 		   OR ($3 != '' AND $3::inet = ANY(src_ips))
 		  )
-		ORDER BY last_seen DESC LIMIT 1`, agentID, userUID, srcIP, cutoff)
+		ORDER BY last_seen DESC LIMIT 1`, agentID, userUID, srcIP, cutoff, tenantID)
 	if err != nil {
 		if err.Error() == "sql: no rows in result set" {
 			return nil, nil

@@ -1441,6 +1441,14 @@ var migrations = []struct {
     CREATE INDEX IF NOT EXISTS cases_tenant_idx ON cases(tenant_id);
     `,
 	},
+	{
+		name: "xdr_phase6_incident_tenancy",
+		sql: `
+    -- XDR Phase 6: add tenant isolation to the incidents table.
+    ALTER TABLE incidents ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
+    CREATE INDEX IF NOT EXISTS incidents_tenant_idx ON incidents(tenant_id);
+    `,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.
