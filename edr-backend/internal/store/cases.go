@@ -66,14 +66,18 @@ func (s *Store) ListCases(ctx context.Context, tenantID, status string, limit, o
 	return cases, total, rows.Err()
 }
 
-func (s *Store) GetCase(ctx context.Context, id string) (*models.Case, error) {
+func (s *Store) GetCase(ctx context.Context, id, tenantID string) (*models.Case, error) {
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	var c models.Case
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, title, description, status, severity, assignee, tags,
+		`SELECT id, tenant_id, title, description, status, severity, assignee, tags,
 		        mitre_ids, alert_count, created_by, created_at, updated_at, closed_at
-		 FROM cases WHERE id = $1`, id,
+		 FROM cases
+		 WHERE id = $1 AND (tenant_id = $2 OR tenant_id = 'default' OR $2 = 'default')`, id, tenantID,
 	).Scan(
-		&c.ID, &c.Title, &c.Description, &c.Status, &c.Severity, &c.Assignee,
+		&c.ID, &c.TenantID, &c.Title, &c.Description, &c.Status, &c.Severity, &c.Assignee,
 		pq.Array(&c.Tags), pq.Array(&c.MitreIDs), &c.AlertCount,
 		&c.CreatedBy, &c.CreatedAt, &c.UpdatedAt, &c.ClosedAt,
 	)
@@ -123,22 +127,32 @@ func (s *Store) UpdateCase(ctx context.Context, c *models.Case) error {
 	return err
 }
 
-func (s *Store) DeleteCase(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM cases WHERE id = $1`, id)
+func (s *Store) DeleteCase(ctx context.Context, id, tenantID string) error {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM cases WHERE id = $1 AND (tenant_id = $2 OR tenant_id = 'default' OR $2 = 'default')`,
+		id, tenantID)
 	return err
 }
 
 // ── Case Alerts ───────────────────────────────────────────────────────────────
 
-func (s *Store) ListCaseAlerts(ctx context.Context, caseID string) ([]models.Alert, error) {
+func (s *Store) ListCaseAlerts(ctx context.Context, caseID, tenantID string) ([]models.Alert, error) {
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT a.id, a.title, a.description, a.severity, a.status, a.rule_id, a.rule_name,
 		        a.mitre_ids, a.event_ids, a.agent_id, a.hostname, a.first_seen, a.last_seen,
 		        a.assignee, a.notes, a.hit_count, a.incident_id
 		 FROM alerts a
 		 JOIN case_alerts ca ON ca.alert_id = a.id
+		 JOIN cases c ON c.id = ca.case_id
 		 WHERE ca.case_id = $1
-		 ORDER BY a.last_seen DESC`, caseID)
+		   AND (c.tenant_id = $2 OR c.tenant_id = 'default' OR $2 = 'default')
+		 ORDER BY a.last_seen DESC`, caseID, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -208,10 +222,17 @@ func (s *Store) UnlinkAlertFromCase(ctx context.Context, caseID, alertID string)
 
 // ── Case Notes ────────────────────────────────────────────────────────────────
 
-func (s *Store) ListCaseNotes(ctx context.Context, caseID string) ([]models.CaseNote, error) {
+func (s *Store) ListCaseNotes(ctx context.Context, caseID, tenantID string) ([]models.CaseNote, error) {
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, case_id, body, author, created_at, updated_at
-		 FROM case_notes WHERE case_id = $1 ORDER BY created_at ASC`, caseID)
+		`SELECT cn.id, cn.case_id, cn.body, cn.author, cn.created_at, cn.updated_at
+		 FROM case_notes cn
+		 JOIN cases c ON c.id = cn.case_id
+		 WHERE cn.case_id = $1
+		   AND (c.tenant_id = $2 OR c.tenant_id = 'default' OR $2 = 'default')
+		 ORDER BY cn.created_at ASC`, caseID, tenantID)
 	if err != nil {
 		return nil, err
 	}

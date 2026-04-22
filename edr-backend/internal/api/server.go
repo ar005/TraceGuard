@@ -1314,7 +1314,9 @@ func (s *Server) handleUpdateAlert(c *gin.Context) {
 }
 
 func (s *Server) handleGetAlertEvents(c *gin.Context) {
-	events, err := s.store.GetAlertEvents(c.Request.Context(), c.Param("id"))
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	events, err := s.store.GetAlertEvents(c.Request.Context(), c.Param("id"), tid)
 	if err != nil {
 		s.jsonError(c, err)
 		return
@@ -1652,7 +1654,7 @@ func (s *Server) handleExplainAlert(c *gin.Context) {
 		s.jsonError(c, err)
 		return
 	}
-	events, err := s.store.GetAlertEvents(ctx, c.Param("id"))
+	events, err := s.store.GetAlertEvents(ctx, c.Param("id"), tid)
 	if err != nil {
 		events = nil // non-fatal
 	}

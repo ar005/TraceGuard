@@ -33,13 +33,15 @@ func (s *Server) handleListCases(c *gin.Context) {
 }
 
 func (s *Server) handleGetCase(c *gin.Context) {
-	cs, err := s.store.GetCase(c.Request.Context(), c.Param("id"))
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	cs, err := s.store.GetCase(c.Request.Context(), c.Param("id"), tid)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "case not found"})
 		return
 	}
-	notes, _ := s.store.ListCaseNotes(c.Request.Context(), cs.ID)
-	alerts, _ := s.store.ListCaseAlerts(c.Request.Context(), cs.ID)
+	notes, _ := s.store.ListCaseNotes(c.Request.Context(), cs.ID, tid)
+	alerts, _ := s.store.ListCaseAlerts(c.Request.Context(), cs.ID, tid)
 	if notes == nil {
 		notes = []models.CaseNote{}
 	}
@@ -84,7 +86,9 @@ func (s *Server) handleCreateCase(c *gin.Context) {
 }
 
 func (s *Server) handleUpdateCase(c *gin.Context) {
-	cs, err := s.store.GetCase(c.Request.Context(), c.Param("id"))
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	cs, err := s.store.GetCase(c.Request.Context(), c.Param("id"), tid)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "case not found"})
 		return
@@ -111,7 +115,9 @@ func (s *Server) handleUpdateCase(c *gin.Context) {
 }
 
 func (s *Server) handleDeleteCase(c *gin.Context) {
-	if err := s.store.DeleteCase(c.Request.Context(), c.Param("id")); err != nil {
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	if err := s.store.DeleteCase(c.Request.Context(), c.Param("id"), tid); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -121,7 +127,9 @@ func (s *Server) handleDeleteCase(c *gin.Context) {
 // ── Case Alerts ───────────────────────────────────────────────────────────────
 
 func (s *Server) handleListCaseAlerts(c *gin.Context) {
-	alerts, err := s.store.ListCaseAlerts(c.Request.Context(), c.Param("id"))
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	alerts, err := s.store.ListCaseAlerts(c.Request.Context(), c.Param("id"), tid)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -164,7 +172,9 @@ func (s *Server) handleUnlinkAlert(c *gin.Context) {
 // ── Case Notes ────────────────────────────────────────────────────────────────
 
 func (s *Server) handleListCaseNotes(c *gin.Context) {
-	notes, err := s.store.ListCaseNotes(c.Request.Context(), c.Param("id"))
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	notes, err := s.store.ListCaseNotes(c.Request.Context(), c.Param("id"), tid)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

@@ -22,7 +22,7 @@ func (s *Server) handleTriageAlert(c *gin.Context) {
 		s.jsonError(c, err)
 		return
 	}
-	events, _ := s.store.GetAlertEvents(ctx, alert.ID) // non-fatal
+	events, _ := s.store.GetAlertEvents(ctx, alert.ID, tid) // non-fatal
 
 	result, err := s.llm.TriageAlert(ctx, alert, events)
 	if err != nil {
@@ -36,10 +36,10 @@ func (s *Server) handleTriageAlert(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"alert_id":    alert.ID,
-		"triage":      result,
-		"model":       s.llm.ModelName(),
-		"provider":    s.llm.ProviderName(),
+		"alert_id": alert.ID,
+		"triage":   result,
+		"model":    s.llm.ModelName(),
+		"provider": s.llm.ProviderName(),
 	})
 }
 
@@ -79,13 +79,15 @@ func (s *Server) handleSummariseCase(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	cs, err := s.store.GetCase(ctx, c.Param("id"))
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	cs, err := s.store.GetCase(ctx, c.Param("id"), tid)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "case not found"})
 		return
 	}
-	alerts, _ := s.store.ListCaseAlerts(ctx, cs.ID)
-	notes, _ := s.store.ListCaseNotes(ctx, cs.ID)
+	alerts, _ := s.store.ListCaseAlerts(ctx, cs.ID, tid)
+	notes, _ := s.store.ListCaseNotes(ctx, cs.ID, tid)
 
 	narrative, err := s.llm.SummariseCase(ctx, cs, alerts, notes)
 	if err != nil {

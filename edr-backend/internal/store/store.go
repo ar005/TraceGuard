@@ -405,19 +405,14 @@ func (s *Store) GetAlert(ctx context.Context, id string, tenantID string) (*mode
 // GetAlertEvents returns all events associated with an alert.
 // It queries by both alert_id column and the alert's event_ids array,
 // deduplicating by event ID.
-func (s *Store) GetAlertEvents(ctx context.Context, alertID string) ([]models.Event, error) {
-	// First get the alert to retrieve its event_ids list.
-	// Pass "default" as tenantID for internal cross-tenant lookups (e.g. engine callbacks).
-	alert, err := s.GetAlert(ctx, alertID, "default")
+func (s *Store) GetAlertEvents(ctx context.Context, alertID, tenantID string) ([]models.Event, error) {
+	alert, err := s.GetAlert(ctx, alertID, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("get alert: %w", err)
 	}
 
-	// Query by alert_id column (events tagged during ingest) UNION
-	// query by explicit event_ids array (events captured at detection time).
 	eventIDs := []string(alert.EventIDs)
 	if len(eventIDs) == 0 {
-		// Fall back to alert_id column only
 		var events []models.Event
 		err = s.rdb().SelectContext(ctx, &events,
 			`SELECT * FROM events WHERE alert_id=$1 ORDER BY timestamp DESC LIMIT 500`,
@@ -425,7 +420,6 @@ func (s *Store) GetAlertEvents(ctx context.Context, alertID string) ([]models.Ev
 		return events, err
 	}
 
-	// Fetch by event IDs first (exact match), then also by alert_id, union them.
 	var byID, byAlertID []models.Event
 	if err2 := s.rdb().SelectContext(ctx, &byID,
 		`SELECT * FROM events WHERE id = ANY($1) ORDER BY timestamp DESC`,
@@ -438,7 +432,6 @@ func (s *Store) GetAlertEvents(ctx context.Context, alertID string) ([]models.Ev
 		return nil, err2
 	}
 
-	// Merge and deduplicate.
 	seen := make(map[string]bool)
 	all := append(byID, byAlertID...)
 	result := make([]models.Event, 0, len(all))
