@@ -267,13 +267,32 @@ func (s *Store) AddCaseNote(ctx context.Context, note *models.CaseNote) error {
 	return err
 }
 
-func (s *Store) UpdateCaseNote(ctx context.Context, id, body string) error {
+func (s *Store) UpdateCaseNote(ctx context.Context, noteID, caseID, tenantID, body string) error {
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE case_notes SET body=$2, updated_at=NOW() WHERE id=$1`, id, body)
+		`UPDATE case_notes SET body=$2, updated_at=NOW()
+		 WHERE id=$1
+		   AND case_id=$3
+		   AND EXISTS (
+		       SELECT 1 FROM cases c
+		       WHERE c.id = $3
+		         AND (c.tenant_id=$4 OR c.tenant_id='default' OR $4='default')
+		   )`,
+		noteID, body, caseID, tenantID)
 	return err
 }
 
-func (s *Store) DeleteCaseNote(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM case_notes WHERE id=$1`, id)
+func (s *Store) DeleteCaseNote(ctx context.Context, noteID, caseID, tenantID string) error {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM case_notes
+		 WHERE id=$1 AND case_id=$2
+		   AND EXISTS (SELECT 1 FROM cases c WHERE c.id=$2
+		     AND (c.tenant_id=$3 OR c.tenant_id='default' OR $3='default'))`,
+		noteID, caseID, tenantID)
 	return err
 }

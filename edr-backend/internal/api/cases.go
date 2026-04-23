@@ -148,13 +148,25 @@ func (s *Server) handleLinkAlert(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "alert_id required"})
 		return
 	}
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	ctx := c.Request.Context()
+	caseID := c.Param("id")
+	if _, err := s.store.GetCase(ctx, caseID, tid); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "case not found"})
+		return
+	}
+	if _, err := s.store.GetAlert(ctx, body.AlertID, tid); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "alert not found"})
+		return
+	}
 	actor := ""
 	if raw, ok := c.Get(string(ctxClaims)); ok {
 		if claims, ok := raw.(*users.Claims); ok {
 			actor = claims.Subject
 		}
 	}
-	if err := s.store.LinkAlertToCase(c.Request.Context(), c.Param("id"), body.AlertID, actor); err != nil {
+	if err := s.store.LinkAlertToCase(ctx, caseID, body.AlertID, actor); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -195,13 +207,21 @@ func (s *Server) handleAddCaseNote(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "body required"})
 		return
 	}
-	note.CaseID = c.Param("id")
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	ctx := c.Request.Context()
+	caseID := c.Param("id")
+	if _, err := s.store.GetCase(ctx, caseID, tid); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "case not found"})
+		return
+	}
+	note.CaseID = caseID
 	if raw, ok := c.Get(string(ctxClaims)); ok {
 		if claims, ok := raw.(*users.Claims); ok {
 			note.Author = claims.Subject
 		}
 	}
-	if err := s.store.AddCaseNote(c.Request.Context(), &note); err != nil {
+	if err := s.store.AddCaseNote(ctx, &note); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -216,7 +236,9 @@ func (s *Server) handleUpdateCaseNote(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "body required"})
 		return
 	}
-	if err := s.store.UpdateCaseNote(c.Request.Context(), c.Param("note_id"), body.Body); err != nil {
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	if err := s.store.UpdateCaseNote(c.Request.Context(), c.Param("note_id"), c.Param("id"), tid, body.Body); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -224,7 +246,9 @@ func (s *Server) handleUpdateCaseNote(c *gin.Context) {
 }
 
 func (s *Server) handleDeleteCaseNote(c *gin.Context) {
-	if err := s.store.DeleteCaseNote(c.Request.Context(), c.Param("note_id")); err != nil {
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	if err := s.store.DeleteCaseNote(c.Request.Context(), c.Param("note_id"), c.Param("id"), tid); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

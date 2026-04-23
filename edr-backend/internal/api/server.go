@@ -1462,6 +1462,10 @@ func (s *Server) handleCreateSuppression(c *gin.Context) {
 		return
 	}
 	raw, _ := marshalToRaw(body.Conditions)
+	if err := validateConditions(raw); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid conditions: " + err.Error()})
+		return
+	}
 	r := &models.SuppressionRule{
 		ID:          "sup-" + uuid.New().String(),
 		Name:        body.Name,
@@ -1507,6 +1511,10 @@ func (s *Server) handleUpdateSuppression(c *gin.Context) {
 	if body.EventTypes  != nil { existing.EventTypes  = pq.StringArray(body.EventTypes) }
 	if body.Conditions  != nil {
 		if raw, err := marshalToRaw(body.Conditions); err == nil {
+			if err := validateConditions(raw); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid conditions: " + err.Error()})
+				return
+			}
 			existing.Conditions = raw
 		}
 	}
