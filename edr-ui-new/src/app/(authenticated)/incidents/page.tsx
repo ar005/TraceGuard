@@ -11,7 +11,7 @@ import {
   timeAgo,
   formatDate,
 } from "@/lib/utils";
-import type { Alert, Incident } from "@/types";
+import type { Alert, Incident, IncidentGraph, GraphNode, GraphEdge } from "@/types";
 
 /* ---------- Constants ---------- */
 const STATUS_FILTERS = [
@@ -66,6 +66,130 @@ function SkeletonRow() {
       <div className="animate-shimmer h-4 w-28 rounded" />
       <div className="animate-shimmer h-4 w-20 rounded" />
       <div className="animate-shimmer h-4 w-16 rounded" />
+    </div>
+  );
+}
+
+/* ---------- Attack Graph -------------------------------------------------------- */
+const NODE_COLORS: Record<string, string> = {
+  host: "#3b82f6",
+  user: "#8b5cf6",
+  alert: "#f97316",
+  process: "#22c55e",
+  ip: "#06b6d4",
+};
+
+function AttackGraph({ incidentId }: { incidentId: string }) {
+  const fetchGraph = useCallback(
+    () => api.get<IncidentGraph>(`/api/v1/incidents/${incidentId}/graph`),
+    [incidentId]
+  );
+  const { data: graph, loading, error } = useApi(fetchGraph);
+
+  if (loading) {
+    return <div className="text-xs text-neutral-400 py-4 text-center">Loading graph…</div>;
+  }
+  if (error) {
+    return <div className="text-xs text-red-400 py-2">{error}</div>;
+  }
+  if (!graph || graph.nodes.length === 0) {
+    return <div className="text-xs text-neutral-500 py-2">No graph data available yet.</div>;
+  }
+
+  // Simple force-free layout: place nodes in a circle
+  const nodes = graph.nodes;
+  const edges = graph.edges;
+  const W = 420, H = 280, cx = W / 2, cy = H / 2;
+  const r = Math.min(cx, cy) - 40;
+
+  const positions: Record<string, { x: number; y: number }> = {};
+  nodes.forEach((n: GraphNode, i: number) => {
+    const angle = (2 * Math.PI * i) / nodes.length - Math.PI / 2;
+    positions[n.id] = {
+      x: cx + r * Math.cos(angle),
+      y: cy + r * Math.sin(angle),
+    };
+  });
+
+  // Alert nodes go in center
+  const alertNodes = nodes.filter((n: GraphNode) => n.type === "alert");
+  const otherNodes = nodes.filter((n: GraphNode) => n.type !== "alert");
+  otherNodes.forEach((n: GraphNode, i: number) => {
+    const angle = (2 * Math.PI * i) / Math.max(otherNodes.length, 1) - Math.PI / 2;
+    positions[n.id] = {
+      x: cx + r * Math.cos(angle),
+      y: cy + r * Math.sin(angle),
+    };
+  });
+  const ar = Math.min(60, r * 0.4);
+  alertNodes.forEach((n: GraphNode, i: number) => {
+    const angle = (2 * Math.PI * i) / Math.max(alertNodes.length, 1);
+    positions[n.id] = {
+      x: cx + ar * Math.cos(angle),
+      y: cy + ar * Math.sin(angle),
+    };
+  });
+
+  return (
+    <div className="overflow-x-auto">
+      <svg width={W} height={H} className="block mx-auto">
+        <defs>
+          <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#6b7280" />
+          </marker>
+        </defs>
+        {edges.map((e: GraphEdge) => {
+          const s = positions[e.source];
+          const t = positions[e.target];
+          if (!s || !t) return null;
+          return (
+            <line
+              key={e.id}
+              x1={s.x} y1={s.y} x2={t.x} y2={t.y}
+              stroke="#4b5563"
+              strokeWidth={1.5}
+              markerEnd="url(#arrowhead)"
+            />
+          );
+        })}
+        {nodes.map((n: GraphNode) => {
+          const pos = positions[n.id];
+          if (!pos) return null;
+          const color = NODE_COLORS[n.type] ?? "#9ca3af";
+          return (
+            <g key={n.id} transform={`translate(${pos.x},${pos.y})`}>
+              <circle r={14} fill={color} fillOpacity={0.2} stroke={color} strokeWidth={1.5} />
+              <text
+                textAnchor="middle"
+                dominantBaseline="central"
+                fontSize={9}
+                fill={color}
+                fontWeight="600"
+              >
+                {n.type.slice(0, 2).toUpperCase()}
+              </text>
+              <text
+                textAnchor="middle"
+                y={22}
+                fontSize={8}
+                fill="#9ca3af"
+                className="select-none"
+              >
+                {n.label.length > 14 ? n.label.slice(0, 13) + "…" : n.label}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+      {/* Legend */}
+      <div className="flex flex-wrap gap-3 mt-2 px-1">
+        {Object.entries(NODE_COLORS).map(([type, color]) => (
+          <div key={type} className="flex items-center gap-1">
+            <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: color }} />
+            <span className="text-[10px] text-neutral-400">{type}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -395,6 +519,25 @@ function IncidentDetail({
                 No related alerts found.
               </p>
             )}
+        </div>
+
+        {/* Attack story graph */}
+        <div>
+          <div
+            className="text-xs font-semibold mb-2"
+            style={{
+              fontFamily: "var(--font-space-grotesk)",
+              color: "var(--fg)",
+            }}
+          >
+            Attack Story Graph
+          </div>
+          <div
+            className="rounded border p-2"
+            style={{ borderColor: "var(--border)", background: "var(--surface-1)" }}
+          >
+            <AttackGraph incidentId={incident.id} />
+          </div>
         </div>
       </div>
     </div>

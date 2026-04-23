@@ -21,6 +21,8 @@ import {
   Settings,
   Shield,
   ShieldOff,
+  ScanSearch,
+  Mail,
   Terminal,
   Usb,
 } from "lucide-react";
@@ -54,6 +56,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { label: "Search", href: "/search", icon: Search },
       { label: "Incidents", href: "/incidents", icon: Layers },
+      { label: "Email Threats", href: "/email-threats", icon: Mail },
       { label: "Hunt", href: "/hunt", icon: Crosshair },
     ],
   },
@@ -61,6 +64,7 @@ const NAV_SECTIONS: NavSection[] = [
     title: "Detection",
     items: [
       { label: "Rules", href: "/rules", icon: Shield },
+      { label: "YARA Rules", href: "/yara", icon: ScanSearch },
       { label: "Suppressions", href: "/suppressions", icon: ShieldOff },
       { label: "IOCs", href: "/iocs", icon: Database },
       { label: "Vulnerabilities", href: "/vulnerabilities", icon: Bug },
