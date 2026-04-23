@@ -1449,6 +1449,115 @@ var migrations = []struct {
     CREATE INDEX IF NOT EXISTS incidents_tenant_idx ON incidents(tenant_id);
     `,
 	},
+	{
+		name: "xdr_phase7_alerts_tenant_idx",
+		sql: `
+    -- XDR Phase 7: index alerts by tenant_id for efficient multi-tenant queries.
+    ALTER TABLE alerts ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
+    CREATE INDEX IF NOT EXISTS alerts_tenant_id_idx     ON alerts(tenant_id);
+    CREATE INDEX IF NOT EXISTS alerts_tenant_status_idx ON alerts(tenant_id, status);
+    CREATE INDEX IF NOT EXISTS alerts_tenant_created_idx ON alerts(tenant_id, first_seen DESC);
+    `,
+	},
+	{
+		name: "yara_rules_table",
+		sql: `
+    -- YARA rule management: agents pull enabled rules and scan files/memory locally.
+    CREATE TABLE IF NOT EXISTS yara_rules (
+        id          TEXT PRIMARY KEY,
+        name        TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        rule_text   TEXT NOT NULL,
+        enabled     BOOLEAN NOT NULL DEFAULT TRUE,
+        severity    SMALLINT NOT NULL DEFAULT 2,
+        mitre_ids   TEXT[] NOT NULL DEFAULT '{}',
+        tags        TEXT[] NOT NULL DEFAULT '{}',
+        author      TEXT NOT NULL DEFAULT 'system',
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS yara_rules_enabled_idx ON yara_rules(enabled);
+    `,
+	},
+	{
+		name: "email_endpoint_detection_rules",
+		sql: `
+    -- Email endpoint detection: catch malicious activity triggered by email clients
+    -- (Outlook, Thunderbird, Evolution) without requiring email gateway access.
+    INSERT INTO rules (id, name, description, severity, event_types, conditions, mitre_ids, author, rule_type)
+    VALUES
+    (
+        'rule-email-client-suspicious-child',
+        'Email Client Spawning Suspicious Process',
+        'An email client (Outlook, Thunderbird, Evolution, Mutt) spawned a shell, script interpreter, or LOLBin — classic spear-phishing attachment execution.',
+        4,
+        ARRAY['PROCESS_EXEC'],
+        '[
+            {"field":"process.parent_comm","op":"in","value":["outlook.exe","OUTLOOK.EXE","thunderbird","evolution","mutt","claws-mail","geary","kmail","sylpheed","balsa"]},
+            {"field":"process.comm","op":"in","value":["bash","sh","dash","zsh","ksh","python","python3","python2","perl","ruby","node","nodejs","powershell","pwsh","cmd.exe","wscript.exe","cscript.exe","mshta.exe","regsvr32.exe","rundll32.exe","certutil.exe","bitsadmin.exe","curl","wget","nc","ncat","netcat"]}
+        ]',
+        ARRAY['T1566.001','T1059','T1204.002'],
+        'system',
+        'match'
+    ),
+    (
+        'rule-email-attachment-temp-exec',
+        'Process Executed from Email Attachment Temp Path',
+        'A process was spawned from a path commonly used for email attachment staging: Outlook temp, Downloads, or browser download directories.',
+        3,
+        ARRAY['PROCESS_EXEC'],
+        '[
+            {"field":"process.exe_path","op":"regex","value":"(?i)(/tmp/|/var/tmp/|\\.thunderbird/|Content\\.Outlook|AppData.Local.Temp|AppData.Roaming.Microsoft.Windows.Recent|Downloads/).*\\.(sh|py|pl|rb|js|vbs|ps1|bat|cmd|exe|elf|bin)"}
+        ]',
+        ARRAY['T1566.001','T1204.002'],
+        'system',
+        'match'
+    ),
+    (
+        'rule-email-browser-phishing-download',
+        'Suspicious Executable Downloaded via Browser from Email Provider',
+        'A file with an executable extension was downloaded from a known webmail or file-sharing domain — possible phishing delivery.',
+        3,
+        ARRAY['FILE_CREATE'],
+        '[
+            {"field":"path","op":"regex","value":"(?i)(Downloads|/tmp|/var/tmp)/.*\\.(sh|py|pl|rb|elf|bin|deb|rpm|appimage|exe|dll|ps1|vbs|js|hta|jar|msi)$"}
+        ]',
+        ARRAY['T1566.002','T1105'],
+        'system',
+        'match'
+    ),
+    (
+        'rule-email-client-network-c2',
+        'Email Client Making Unexpected Outbound Connection',
+        'An email client process connected to an unusual port — not SMTP (25/465/587) or IMAP/POP3 (143/993/110/995). Possible C2 initiated from a malicious attachment.',
+        3,
+        ARRAY['NET_CONNECT'],
+        '[
+            {"field":"process.comm","op":"in","value":["outlook.exe","thunderbird","evolution","mutt","claws-mail"]},
+            {"field":"direction","op":"eq","value":"OUTBOUND"},
+            {"field":"dst_port","op":"not_in","value":[25,465,587,143,993,110,995,80,443,53]}
+        ]',
+        ARRAY['T1071','T1566'],
+        'system',
+        'match'
+    ),
+    (
+        'rule-office-macro-exec',
+        'Office Application Spawning Script Interpreter',
+        'LibreOffice, OnlyOffice, or Microsoft Office spawned a script interpreter — macro execution from a malicious document.',
+        4,
+        ARRAY['PROCESS_EXEC'],
+        '[
+            {"field":"process.parent_comm","op":"in","value":["soffice.bin","soffice","libreoffice","oosplash","python3","onlyoffice","WINWORD.EXE","EXCEL.EXE","POWERPNT.EXE","MSPUB.EXE","MSACCESS.EXE"]},
+            {"field":"process.comm","op":"in","value":["bash","sh","dash","zsh","python","python3","perl","ruby","powershell","pwsh","cmd.exe","wscript.exe","cscript.exe","mshta.exe","curl","wget","nc","ncat"]}
+        ]',
+        ARRAY['T1566.001','T1059','T1137'],
+        'system',
+        'match'
+    )
+    ON CONFLICT (id) DO NOTHING;
+    `,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.

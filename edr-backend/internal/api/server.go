@@ -74,6 +74,10 @@ func New(st *store.Store, eng *detection.Engine, km *apikeys.Manager,
 	r.Use(ginLogger(log), gin.Recovery())
 	r.Use(TraceGuardMiddleware())
 
+	// Don't trust X-Forwarded-For from arbitrary clients — only loopback.
+	// Operators behind a known reverse proxy should set this to their proxy IP(s).
+	r.SetTrustedProxies([]string{"127.0.0.1", "::1"})
+
 	rl := DefaultRateLimitConfig()
 	if len(rlCfg) > 0 {
 		rl = rlCfg[0]
@@ -169,10 +173,11 @@ func (s *Server) registerRoutes() {
 		v1.GET("/liveresponse/agents", s.handleLRAgents)
 
 		// Incidents
-		v1.GET("/incidents",            s.handleListIncidents)
-		v1.GET("/incidents/:id",        s.handleGetIncident)
-		v1.GET("/incidents/:id/alerts", s.handleGetIncidentAlerts)
-		v1.PATCH("/incidents/:id",      s.handleUpdateIncident)
+		v1.GET("/incidents",              s.handleListIncidents)
+		v1.GET("/incidents/:id",          s.handleGetIncident)
+		v1.GET("/incidents/:id/alerts",   s.handleGetIncidentAlerts)
+		v1.GET("/incidents/:id/graph",    s.handleGetIncidentGraph)
+		v1.PATCH("/incidents/:id",        s.handleUpdateIncident)
 
 		// Cases — reads and analyst writes
 		v1.GET("/cases",                         s.handleListCases)
@@ -192,6 +197,11 @@ func (s *Server) registerRoutes() {
 
 		// Suppression rules (read)
 		v1.GET("/suppressions", s.handleListSuppressions)
+
+		// YARA rules (read — agents + analysts)
+		v1.GET("/yara/rules",         s.handleListYARARules)
+		v1.GET("/yara/rules/enabled", s.handleListEnabledYARARules)
+		v1.GET("/yara/rules/:id",     s.handleGetYARARule)
 
 		// Package inventory & vulnerabilities (read)
 		v1.GET("/agents/:id/packages",        s.handleListAgentPackages)
@@ -256,6 +266,11 @@ func (s *Server) registerRoutes() {
 			w.DELETE("/iocs/:id",    s.handleDeleteIOC)
 			w.DELETE("/iocs/source/:source", s.handleDeleteIOCsBySource)
 			w.POST("/iocs/feeds/sync",       strictRateLimitMiddleware(), s.handleSyncFeeds)
+
+			// YARA rules (write — admin only)
+			w.POST("/yara/rules",       s.handleCreateYARARule)
+			w.PUT("/yara/rules/:id",    s.handleUpdateYARARule)
+			w.DELETE("/yara/rules/:id", s.handleDeleteYARARule)
 
 			w.POST("/settings/retention",  s.handleSetRetention)
 			w.POST("/settings/llm",        s.handleSetLLMSettings)
@@ -430,6 +445,12 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 		// ── Try JWT first ──────────────────────────────────────────────────
 		if s.um != nil && raw != "" {
 			if claims, err := s.um.ValidateToken(raw); err == nil {
+				// Verify the user still exists and is enabled (revocation check).
+				u, err := s.um.Get(c.Request.Context(), claims.Subject)
+				if err != nil || !u.Enabled {
+					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+					return
+				}
 				c.Set(string(ctxClaims), claims)
 				tid := claims.TenantID
 				if tid == "" {
@@ -1843,6 +1864,138 @@ func (s *Server) handleGetIncidentAlerts(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"alerts": alerts, "total": len(alerts)})
+}
+
+
+// handleGetIncidentGraph returns an attack story graph for an incident.
+func (s *Server) handleGetIncidentGraph(c *gin.Context) {
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	graph, err := s.store.GetIncidentGraph(c.Request.Context(), c.Param("id"), tid)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, graph)
+}
+
+// ─── YARA Rule handlers ────────────────────────────────────────────────────────
+
+func (s *Server) handleListYARARules(c *gin.Context) {
+	rules, err := s.store.ListYARARules(c.Request.Context())
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	if rules == nil {
+		rules = []models.YARARule{}
+	}
+	c.JSON(http.StatusOK, gin.H{"rules": rules, "total": len(rules)})
+}
+
+// handleListEnabledYARARules is called by agents to pull rules; no write capability.
+func (s *Server) handleListEnabledYARARules(c *gin.Context) {
+	rules, err := s.store.ListEnabledYARARules(c.Request.Context())
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	if rules == nil {
+		rules = []models.YARARule{}
+	}
+	c.JSON(http.StatusOK, gin.H{"rules": rules})
+}
+
+func (s *Server) handleGetYARARule(c *gin.Context) {
+	r, err := s.store.GetYARARule(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, r)
+}
+
+func (s *Server) handleCreateYARARule(c *gin.Context) {
+	var body struct {
+		Name        string   `json:"name"        binding:"required"`
+		Description string   `json:"description"`
+		RuleText    string   `json:"rule_text"   binding:"required"`
+		Enabled     bool     `json:"enabled"`
+		Severity    int16    `json:"severity"`
+		MitreIDs    []string `json:"mitre_ids"`
+		Tags        []string `json:"tags"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	r := &models.YARARule{
+		ID:          "yara-" + uuid.New().String(),
+		Name:        body.Name,
+		Description: body.Description,
+		RuleText:    body.RuleText,
+		Enabled:     body.Enabled,
+		Severity:    body.Severity,
+		MitreIDs:    pq.StringArray(body.MitreIDs),
+		Tags:        pq.StringArray(body.Tags),
+	}
+	if r.Severity == 0 {
+		r.Severity = 2
+	}
+	if raw, ok := c.Get(string(ctxClaims)); ok {
+		if claims, ok := raw.(*users.Claims); ok {
+			r.Author = claims.Subject
+		}
+	}
+	if r.Author == "" {
+		r.Author = "api"
+	}
+	if err := s.store.UpsertYARARule(c.Request.Context(), r); err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, r)
+}
+
+func (s *Server) handleUpdateYARARule(c *gin.Context) {
+	existing, err := s.store.GetYARARule(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	var body struct {
+		Name        *string  `json:"name"`
+		Description *string  `json:"description"`
+		RuleText    *string  `json:"rule_text"`
+		Enabled     *bool    `json:"enabled"`
+		Severity    *int16   `json:"severity"`
+		MitreIDs    []string `json:"mitre_ids"`
+		Tags        []string `json:"tags"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if body.Name        != nil { existing.Name        = *body.Name }
+	if body.Description != nil { existing.Description = *body.Description }
+	if body.RuleText    != nil { existing.RuleText    = *body.RuleText }
+	if body.Enabled     != nil { existing.Enabled     = *body.Enabled }
+	if body.Severity    != nil { existing.Severity    = *body.Severity }
+	if body.MitreIDs    != nil { existing.MitreIDs    = pq.StringArray(body.MitreIDs) }
+	if body.Tags        != nil { existing.Tags        = pq.StringArray(body.Tags) }
+	if err := s.store.UpsertYARARule(c.Request.Context(), existing); err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, existing)
+}
+
+func (s *Server) handleDeleteYARARule(c *gin.Context) {
+	if err := s.store.DeleteYARARule(c.Request.Context(), c.Param("id")); err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 // ─── Rules ────────────────────────────────────────────────────────────────────

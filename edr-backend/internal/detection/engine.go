@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -65,7 +66,13 @@ type Engine struct {
 
 	// dedupMu serialises the FindOpenAlert+insert pair per (rule_id, agent_id) to
 	// prevent duplicate alerts when two events match the same rule concurrently.
-	dedupMu sync.Map // map[string]*sync.Mutex
+	dedupMu sync.Map // map[string]*dedupEntry
+}
+
+// dedupEntry wraps a per-(rule,agent) mutex with an access timestamp for eviction.
+type dedupEntry struct {
+	mu       sync.Mutex
+	lastSeen int64 // Unix nano, updated atomically
 }
 
 // New creates a detection Engine. Call Reload() to load rules from DB.
@@ -86,6 +93,21 @@ func New(st *store.Store, log zerolog.Logger, onAlert AlertCallback) *Engine {
 		defer t.Stop()
 		for range t.C {
 			e.pruneAllWindows()
+		}
+	}()
+	// Evict dedup mutexes not used in the last hour to prevent sync.Map growth.
+	go func() {
+		t := time.NewTicker(1 * time.Hour)
+		defer t.Stop()
+		cutoff := int64(time.Hour)
+		for range t.C {
+			now := time.Now().UnixNano()
+			e.dedupMu.Range(func(k, v any) bool {
+				if now-atomic.LoadInt64(&v.(*dedupEntry).lastSeen) > cutoff {
+					e.dedupMu.Delete(k)
+				}
+				return true
+			})
 		}
 	}()
 	// Refresh IOC cache every 60 seconds.
@@ -553,8 +575,10 @@ func (e *Engine) fireAlert(ctx context.Context, ev *models.Event, rule *models.R
 // dedupLock returns the per-(rule, agent) mutex, creating it on first use.
 func (e *Engine) dedupLock(ruleID, agentID string) *sync.Mutex {
 	key := ruleID + "\x00" + agentID
-	mu, _ := e.dedupMu.LoadOrStore(key, &sync.Mutex{})
-	return mu.(*sync.Mutex)
+	v, _ := e.dedupMu.LoadOrStore(key, &dedupEntry{})
+	entry := v.(*dedupEntry)
+	atomic.StoreInt64(&entry.lastSeen, time.Now().UnixNano())
+	return &entry.mu
 }
 
 func (e *Engine) fireAlertWithContext(ctx context.Context, ev *models.Event, rule *models.Rule, extraCtx string) {

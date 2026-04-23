@@ -187,6 +187,23 @@ type IOC struct {
 	LastHitAt   *time.Time `db:"last_hit_at" json:"last_hit_at,omitempty"`
 }
 
+
+// YARARule is a YARA signature stored in the database.
+// Agents pull all enabled rules and scan files/memory locally.
+type YARARule struct {
+	ID          string         `db:"id"          json:"id"`
+	Name        string         `db:"name"        json:"name"`
+	Description string         `db:"description" json:"description"`
+	RuleText    string         `db:"rule_text"   json:"rule_text"`
+	Enabled     bool           `db:"enabled"     json:"enabled"`
+	Severity    int16          `db:"severity"    json:"severity"`
+	MitreIDs    pq.StringArray `db:"mitre_ids"   json:"mitre_ids"`
+	Tags        pq.StringArray `db:"tags"        json:"tags"`
+	Author      string         `db:"author"      json:"author"`
+	CreatedAt   time.Time      `db:"created_at"  json:"created_at"`
+	UpdatedAt   time.Time      `db:"updated_at"  json:"updated_at"`
+}
+
 // IOCStats holds IOC counts by type.
 type IOCStats struct {
 	TotalIOCs    int64 `db:"total_iocs"    json:"total_iocs"`

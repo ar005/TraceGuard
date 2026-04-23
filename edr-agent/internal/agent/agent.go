@@ -36,6 +36,7 @@ import (
 	"github.com/youredr/edr-agent/internal/monitor/process"
 	"github.com/youredr/edr-agent/internal/monitor/registry"
 	"github.com/youredr/edr-agent/internal/monitor/vuln"
+	"github.com/youredr/edr-agent/internal/monitor/yarascan"
 	"github.com/youredr/edr-agent/internal/selfprotect"
 	"github.com/youredr/edr-agent/internal/transport"
 	"github.com/youredr/edr-agent/internal/version"
@@ -54,21 +55,22 @@ type Agent struct {
 	transport *transport.GRPCTransport
 	protect   *selfprotect.Provider
 
-	processMonitor  *process.Monitor
-	networkMonitor  *network.Monitor
-	fileMonitor     *file.Monitor
-	registryMonitor *registry.Monitor
-	cmdMonitor      *cmd.Monitor
-	authMonitor     *auth.Monitor
-	vulnMonitor     *vuln.Monitor
-	browserMonitor  *browser.Monitor
-	kmodMonitor        *kmod.Monitor
-	usbMonitor         *usb.Monitor
-	pipeMonitor        *pipemon.Monitor
-	shareMountMonitor  *sharemount.Monitor
-	memMonitor         *memmon.Monitor
-	cronMonitor        *cronmon.Monitor
-	tlssniMonitor      *tlssni.Monitor
+	processMonitor    *process.Monitor
+	networkMonitor    *network.Monitor
+	fileMonitor       *file.Monitor
+	registryMonitor   *registry.Monitor
+	cmdMonitor        *cmd.Monitor
+	authMonitor       *auth.Monitor
+	vulnMonitor       *vuln.Monitor
+	browserMonitor    *browser.Monitor
+	kmodMonitor       *kmod.Monitor
+	usbMonitor        *usb.Monitor
+	pipeMonitor       *pipemon.Monitor
+	shareMountMonitor *sharemount.Monitor
+	memMonitor        *memmon.Monitor
+	cronMonitor       *cronmon.Monitor
+	tlssniMonitor     *tlssni.Monitor
+	yaraScanMonitor   *yarascan.Monitor
 }
 
 // New creates a new Agent from configuration.
@@ -268,6 +270,16 @@ func New(cfg *config.Config) (*Agent, error) {
 		a.tlssniMonitor = tlssni.New(tlssni.DefaultConfig(), bus, log)
 	}
 
+	// YARA file scanner — requires file monitor to be enabled (feeds off FILE_CREATE/FILE_WRITE).
+	if cfg.Monitors.YARA.Enabled && cfg.Agent.RESTBackendURL != "" {
+		a.yaraScanMonitor = yarascan.New(yarascan.Config{
+			Enabled:     true,
+			BackendURL:  cfg.Agent.RESTBackendURL,
+			APIKey:      cfg.Agent.APIKey,
+			WorkerCount: cfg.Monitors.YARA.WorkerCount,
+		}, bus, log)
+	}
+
 	// Self-protection.
 	a.protect = selfprotect.New(selfprotect.Config{
 		AgentBinPath: cfg.SelfProtect.BinPath,
@@ -415,6 +427,15 @@ func (a *Agent) Start(ctx context.Context) error {
 		} else {
 			a.log.Info().Msg("TLS SNI monitor running")
 		}
+	}
+
+	if a.yaraScanMonitor != nil {
+		go func() {
+			if err := a.yaraScanMonitor.Start(ctx); err != nil {
+				a.log.Warn().Err(err).Msg("YARA scanner monitor failed")
+			}
+		}()
+		a.log.Info().Msg("YARA scanner monitor running")
 	}
 
 	// Publish agent start event with full build info.

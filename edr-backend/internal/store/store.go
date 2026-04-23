@@ -761,13 +761,17 @@ func (s *Store) HuntQuery(ctx context.Context, query string, limit int) ([]model
 
 	allArgs := append(args, limit)
 
+	// Cap query execution time to prevent long-running table scans.
+	qCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	var events []models.Event
-	if err := s.rdb().SelectContext(ctx, &events, dataSQL, allArgs...); err != nil {
+	if err := s.rdb().SelectContext(qCtx, &events, dataSQL, allArgs...); err != nil {
 		return nil, 0, fmt.Errorf("hunt query failed: %w", err)
 	}
 
 	var total int
-	if err := s.db.QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(qCtx, countSQL, args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("hunt count failed: %w", err)
 	}
 
@@ -1906,6 +1910,227 @@ func (s *Store) GetIOC(ctx context.Context, id string) (*models.IOC, error) {
 func (s *Store) DeleteIOC(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM iocs WHERE id=$1`, id)
 	return err
+}
+
+
+// ─── YARA Rules ───────────────────────────────────────────────────────────────
+
+func (s *Store) ListYARARules(ctx context.Context) ([]models.YARARule, error) {
+	var rules []models.YARARule
+	err := s.rdb().SelectContext(ctx, &rules,
+		`SELECT * FROM yara_rules ORDER BY created_at DESC`)
+	return rules, err
+}
+
+func (s *Store) ListEnabledYARARules(ctx context.Context) ([]models.YARARule, error) {
+	var rules []models.YARARule
+	err := s.rdb().SelectContext(ctx, &rules,
+		`SELECT * FROM yara_rules WHERE enabled=TRUE ORDER BY created_at DESC`)
+	return rules, err
+}
+
+func (s *Store) GetYARARule(ctx context.Context, id string) (*models.YARARule, error) {
+	var r models.YARARule
+	err := s.rdb().GetContext(ctx, &r, `SELECT * FROM yara_rules WHERE id=$1`, id)
+	return &r, err
+}
+
+func (s *Store) UpsertYARARule(ctx context.Context, r *models.YARARule) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO yara_rules (id, name, description, rule_text, enabled, severity, mitre_ids, tags, author, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW(),NOW())
+		ON CONFLICT (id) DO UPDATE SET
+			name        = EXCLUDED.name,
+			description = EXCLUDED.description,
+			rule_text   = EXCLUDED.rule_text,
+			enabled     = EXCLUDED.enabled,
+			severity    = EXCLUDED.severity,
+			mitre_ids   = EXCLUDED.mitre_ids,
+			tags        = EXCLUDED.tags,
+			author      = EXCLUDED.author,
+			updated_at  = NOW()`,
+		r.ID, r.Name, r.Description, r.RuleText, r.Enabled, r.Severity,
+		pq.Array(r.MitreIDs), pq.Array(r.Tags), r.Author)
+	return err
+}
+
+func (s *Store) DeleteYARARule(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM yara_rules WHERE id=$1`, id)
+	return err
+}
+
+// ─── Incident Attack Graph ─────────────────────────────────────────────────────
+
+// GraphNode is a vertex in the incident attack story.
+type GraphNode struct {
+	ID       string            `json:"id"`
+	Type     string            `json:"type"`   // "host", "user", "alert", "ip", "process", "file"
+	Label    string            `json:"label"`
+	Severity int16             `json:"severity,omitempty"`
+	Meta     map[string]string `json:"meta,omitempty"`
+}
+
+// GraphEdge is a directed relationship between two graph nodes.
+type GraphEdge struct {
+	ID     string `json:"id"`
+	Source string `json:"source"`
+	Target string `json:"target"`
+	Label  string `json:"label"`
+}
+
+// IncidentGraph is the attack story returned for an incident.
+type IncidentGraph struct {
+	Nodes []GraphNode `json:"nodes"`
+	Edges []GraphEdge `json:"edges"`
+}
+
+// GetIncidentGraph builds an attack story graph for an incident from its alerts and events.
+func (s *Store) GetIncidentGraph(ctx context.Context, incidentID, tenantID string) (*IncidentGraph, error) {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+
+	// Load the incident.
+	var inc models.Incident
+	err := s.rdb().GetContext(ctx, &inc,
+		`SELECT * FROM incidents WHERE id=$1 AND (tenant_id=$2 OR tenant_id='default' OR $2='default')`,
+		incidentID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Load all linked alerts.
+	var alerts []models.Alert
+	if err := s.rdb().SelectContext(ctx, &alerts,
+		`SELECT * FROM alerts WHERE incident_id=$1 ORDER BY first_seen ASC`, incidentID); err != nil {
+		return nil, err
+	}
+
+	nodes := make([]GraphNode, 0, 16)
+	edges := make([]GraphEdge, 0, 32)
+	seen := make(map[string]bool)
+
+	addNode := func(n GraphNode) {
+		if !seen[n.ID] {
+			seen[n.ID] = true
+			nodes = append(nodes, n)
+		}
+	}
+	edgeID := 0
+	addEdge := func(src, tgt, label string) {
+		edgeID++
+		edges = append(edges, GraphEdge{
+			ID:     fmt.Sprintf("e%d", edgeID),
+			Source: src,
+			Target: tgt,
+			Label:  label,
+		})
+	}
+
+	// Host nodes from incident.
+	for _, h := range inc.Hostnames {
+		hid := "host:" + h
+		addNode(GraphNode{ID: hid, Type: "host", Label: h})
+	}
+	// User nodes.
+	for _, u := range inc.UserUIDs {
+		if u == "" {
+			continue
+		}
+		uid := "user:" + u
+		addNode(GraphNode{ID: uid, Type: "user", Label: u})
+	}
+	// Source IP nodes.
+	for _, ip := range inc.SrcIPs {
+		if ip == "" {
+			continue
+		}
+		ipid := "ip:" + ip
+		addNode(GraphNode{ID: ipid, Type: "ip", Label: ip})
+	}
+
+	// Alert nodes + their edges to hosts/users.
+	for i := range alerts {
+		a := &alerts[i]
+		aid := "alert:" + a.ID
+		meta := map[string]string{
+			"rule":   a.RuleName,
+			"status": a.Status,
+		}
+		if len(a.MitreIDs) > 0 {
+			meta["mitre"] = a.MitreIDs[0]
+		}
+		addNode(GraphNode{ID: aid, Type: "alert", Label: a.Title, Severity: a.Severity, Meta: meta})
+
+		// Edge: host → alert
+		hid := "host:" + a.Hostname
+		addNode(GraphNode{ID: hid, Type: "host", Label: a.Hostname})
+		addEdge(hid, aid, "triggered")
+
+		// Edge: user → alert (if present)
+		if a.UserUID != "" {
+			uid := "user:" + a.UserUID
+			addNode(GraphNode{ID: uid, Type: "user", Label: a.UserUID})
+			addEdge(uid, aid, "actor")
+		}
+	}
+
+	// Load raw events for the first 200 events across all alerts to find process/IP nodes.
+	alertIDs := make([]string, 0, len(alerts))
+	for _, a := range alerts {
+		alertIDs = append(alertIDs, a.EventIDs...)
+	}
+	if len(alertIDs) > 200 {
+		alertIDs = alertIDs[:200]
+	}
+	if len(alertIDs) > 0 {
+		query, args, qErr := sqlx.In(
+			`SELECT id, event_type, agent_id, payload FROM events WHERE id IN (?) LIMIT 200`, alertIDs)
+		if qErr == nil {
+			query = s.rdb().Rebind(query)
+			rows, rErr := s.rdb().QueryxContext(ctx, query, args...)
+			if rErr == nil {
+				defer rows.Close()
+				for rows.Next() {
+					var evID, evType, agentID string
+					var payload []byte
+					if err := rows.Scan(&evID, &evType, &agentID, &payload); err != nil {
+						continue
+					}
+					var p map[string]interface{}
+					if err := json.Unmarshal(payload, &p); err != nil {
+						continue
+					}
+					// Derive process node from process events.
+					if evType == "PROCESS_EXEC" {
+						comm, _ := p["process.comm"].(string)
+						pid, _ := p["process.pid"].(float64)
+						if comm != "" {
+							nid := fmt.Sprintf("proc:%s:%.0f", agentID, pid)
+							addNode(GraphNode{ID: nid, Type: "process", Label: comm,
+								Meta: map[string]string{"agent": agentID}})
+							hid := "host:" + agentID
+							addEdge(hid, nid, "ran")
+						}
+					}
+					// Derive IP node from network events.
+					if evType == "NET_CONNECT" {
+						dst, _ := p["dst_ip"].(string)
+						dport, _ := p["dst_port"].(float64)
+						if dst != "" {
+							ipid := "ip:" + dst
+							addNode(GraphNode{ID: ipid, Type: "ip", Label: dst,
+								Meta: map[string]string{"port": fmt.Sprintf("%.0f", dport)}})
+							hid := "host:" + agentID
+							addEdge(hid, ipid, fmt.Sprintf("connected:%.0f", dport))
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return &IncidentGraph{Nodes: nodes, Edges: edges}, nil
 }
 
 func (s *Store) DeleteIOCsBySource(ctx context.Context, source string) (int64, error) {

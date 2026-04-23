@@ -20,14 +20,16 @@ type Config struct {
 }
 
 type AgentConfig struct {
-	ID         string    `mapstructure:"id"`
-	IDFile     string    `mapstructure:"id_file"`
-	Hostname   string    `mapstructure:"hostname"`
-	BackendURL string    `mapstructure:"backend_url"`
-	TLS        TLSConfig `mapstructure:"tls"`
-	Tags       []string  `mapstructure:"tags"`
-	Env        string    `mapstructure:"env"`
-	Notes      string    `mapstructure:"notes"`
+	ID             string    `mapstructure:"id"`
+	IDFile         string    `mapstructure:"id_file"`
+	Hostname       string    `mapstructure:"hostname"`
+	BackendURL     string    `mapstructure:"backend_url"`
+	RESTBackendURL string    `mapstructure:"rest_backend_url"`
+	APIKey         string    `mapstructure:"api_key"`
+	TLS            TLSConfig `mapstructure:"tls"`
+	Tags           []string  `mapstructure:"tags"`
+	Env            string    `mapstructure:"env"`
+	Notes          string    `mapstructure:"notes"`
 }
 
 type TLSConfig struct {
@@ -50,6 +52,7 @@ type MonitorsConfig struct {
 	MemMon   MemMonConfig          `mapstructure:"memmon"`
 	CronMon  CronMonConfig         `mapstructure:"cronmon"`
 	TLSSNI   TLSSNIConfig          `mapstructure:"tlssni"`
+	YARA     YARAMonitorConfig     `mapstructure:"yara"`
 }
 
 type ProcessMonitorConfig struct {
@@ -117,6 +120,11 @@ type CronMonConfig struct {
 
 type TLSSNIConfig struct {
 	Enabled bool `mapstructure:"enabled"`
+}
+
+type YARAMonitorConfig struct {
+	Enabled     bool `mapstructure:"enabled"`
+	WorkerCount int  `mapstructure:"worker_count"`
 }
 
 type BufferConfig struct {

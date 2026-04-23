@@ -35,13 +35,22 @@ func (s *Server) handleListCases(c *gin.Context) {
 func (s *Server) handleGetCase(c *gin.Context) {
 	tenantID, _ := c.Get("tenant_id")
 	tid, _ := tenantID.(string)
-	cs, err := s.store.GetCase(c.Request.Context(), c.Param("id"), tid)
+	ctx := c.Request.Context()
+	cs, err := s.store.GetCase(ctx, c.Param("id"), tid)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "case not found"})
 		return
 	}
-	notes, _ := s.store.ListCaseNotes(c.Request.Context(), cs.ID, tid)
-	alerts, _ := s.store.ListCaseAlerts(c.Request.Context(), cs.ID, tid)
+	notes, err := s.store.ListCaseNotes(ctx, cs.ID, tid)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	alerts, err := s.store.ListCaseAlerts(ctx, cs.ID, tid)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
 	if notes == nil {
 		notes = []models.CaseNote{}
 	}
@@ -174,7 +183,20 @@ func (s *Server) handleLinkAlert(c *gin.Context) {
 }
 
 func (s *Server) handleUnlinkAlert(c *gin.Context) {
-	if err := s.store.UnlinkAlertFromCase(c.Request.Context(), c.Param("id"), c.Param("alert_id")); err != nil {
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	ctx := c.Request.Context()
+	caseID := c.Param("id")
+	alertID := c.Param("alert_id")
+	if _, err := s.store.GetCase(ctx, caseID, tid); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "case not found"})
+		return
+	}
+	if _, err := s.store.GetAlert(ctx, alertID, tid); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "alert not found"})
+		return
+	}
+	if err := s.store.UnlinkAlertFromCase(ctx, caseID, alertID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
