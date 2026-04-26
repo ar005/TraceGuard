@@ -36,6 +36,8 @@ import {
   X,
   AlertTriangle,
   WifiOff,
+  Mail,
+  ScanSearch,
 } from "lucide-react";
 
 interface NavItem {
@@ -64,17 +66,19 @@ const NAV: NavGroup[] = [
   {
     label: "Investigate",
     items: [
-      { href: "/events",   icon: Activity, label: "Events" },
-      { href: "/commands", icon: Terminal,  label: "Commands" },
-      { href: "/browser",  icon: Globe,    label: "Browser" },
-      { href: "/usb",      icon: Usb,      label: "USB Devices" },
-      { href: "/search",   icon: Search,   label: "Hunt" },
+      { href: "/events",        icon: Activity,  label: "Events" },
+      { href: "/commands",      icon: Terminal,  label: "Commands" },
+      { href: "/browser",       icon: Globe,     label: "Browser" },
+      { href: "/usb",           icon: Usb,       label: "USB Devices" },
+      { href: "/email-threats", icon: Mail,      label: "Email Threats" },
+      { href: "/search",        icon: Search,    label: "Hunt" },
     ],
   },
   {
     label: "Detect",
     items: [
       { href: "/rules",           icon: FlaskConical,   label: "Rules" },
+      { href: "/yara",            icon: ScanSearch,     label: "YARA Rules" },
       { href: "/suppressions",    icon: FileX2,         label: "Suppressions" },
       { href: "/iocs",            icon: Bug,            label: "IOCs" },
       { href: "/vulnerabilities", icon: ShieldAlert,    label: "Vulns" },

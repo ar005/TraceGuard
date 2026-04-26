@@ -269,3 +269,37 @@ export interface NetworkEvent {
   payload?: Record<string, unknown>;
   enrichments?: Record<string, unknown>;
 }
+
+export interface YARARule {
+  id: string;
+  name: string;
+  description: string;
+  rule_text: string;
+  enabled: boolean;
+  severity: number;
+  mitre_ids: string[];
+  tags: string[];
+  author: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GraphNode {
+  id: string;
+  type: string;
+  label: string;
+  severity: number;
+  meta: Record<string, string>;
+}
+
+export interface GraphEdge {
+  id: string;
+  source: string;
+  target: string;
+  label: string;
+}
+
+export interface IncidentGraph {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
