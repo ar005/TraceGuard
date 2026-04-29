@@ -104,39 +104,6 @@ Incidents aggregate severity, alert count, affected hosts, and MITRE ATT&CK tech
 
 ---
 
-## Live response
-
-Remote investigation and remediation shell over gRPC bidirectional streaming.
-
-### How it works
-1. Agent connects to backend via the `LiveResponse` gRPC bidi stream
-2. Analyst selects an agent in the **Live** tab and sends commands
-3. Backend routes commands to the agent; agent executes and streams results back
-4. Output displayed in the UI terminal
-
-### Available commands
-
-| Command | Description | Example |
-|---------|-------------|---------|
-| `ps` | List running processes | `ps` |
-| `ls` | List files/directories | `ls /tmp` |
-| `cat` | Read file contents | `cat /etc/passwd` |
-| `netstat` | Show network connections (via `ss`) | `netstat` |
-| `who` | Show logged-in users | `who` |
-| `uname` | System information | `uname` |
-| `uptime` | System uptime | `uptime` |
-| `df` | Disk usage | `df` |
-| `id` | User identity | `id` |
-| `exec` | Run arbitrary command | `exec lsof -i :443` |
-| `find` | Search for files | `find /tmp -name '*.sh'` |
-| `sha256sum` | Hash a file | `sha256sum /usr/bin/curl` |
-| `kill` | Kill a process | `kill -9 1234` |
-| `isolate` | **Network containment** — block all traffic except backend | `isolate` |
-| `release` | **Release containment** — restore normal networking | `release` |
-
-Dangerous patterns (`rm -rf`, `mkfs`, `dd if=`, `shutdown`, `reboot`) are blocked. Output is capped at 1MB stdout / 64KB stderr.
-
----
 
 ## Network containment
 
@@ -150,37 +117,6 @@ When activated via the `isolate` live response command:
 
 ---
 
-## Threat hunting
-
-SQL-like query language for searching across all raw telemetry. See [query-guide.md](query-guide.md) for the full reference.
-
-### Quick examples
-
-```sql
--- All bash executions in the last hour
-event_type = 'PROCESS_EXEC' AND payload->>'exe_path' LIKE '%bash%'
-  AND timestamp > NOW() - INTERVAL '1 hour'
-
--- External outbound connections
-event_type = 'NET_CONNECT' AND payload->>'direction' = 'OUTBOUND'
-  AND (payload->>'is_private')::boolean = false
-
--- Failed SSH logins
-event_type = 'LOGIN_FAILED' AND payload->>'service' = 'sshd'
-
--- Files written to /etc/
-event_type = 'FILE_WRITE' AND payload->>'path' LIKE '/etc/%'
-
--- Processes running in containers
-event_type = 'PROCESS_EXEC' AND payload->'process'->>'container_id' != ''
-
--- Full-text search across all events
-payload::text ILIKE '%mimikatz%'
-```
-
-**API:** `POST /api/v1/hunt` with `{"query": "...", "limit": 100}`
-
----
 
 ## Quick start
 
@@ -274,41 +210,6 @@ make gen-certs       # generate self-signed TLS certs
 
 ---
 
-## Configuration
-
-### Backend (`edr-backend/config/server.yaml`)
-```yaml
-server:
-  grpc_addr: ":50051"
-  http_addr: ":8080"
-  tls:
-    enabled: false
-    cert_file: "/etc/edr/tls/server.crt"
-    key_file:  "/etc/edr/tls/server.key"
-
-database:
-  host: "postgres"
-  port: 5432
-  name: "edr"
-  user: "edr"
-  password: "edr"
-
-rate_limit:
-  enabled: true
-  requests_per_second: 20
-  burst: 40
-
-retention:
-  event_days: 90
-  alert_days: 0     # 0 = keep all
-```
-
-All settings overridable via `EDR_` environment variables (e.g., `EDR_DATABASE_HOST`, `EDR_RATE_LIMIT_ENABLED`).
-
-### Agent (`edr-agent/config/agent.yaml`)
-Supports hot-reload. Configures backend URL, TLS, monitor enable/disable, buffer path.
-
----
 
 ## Agent versioning
 

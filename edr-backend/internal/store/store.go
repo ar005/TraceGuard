@@ -318,19 +318,24 @@ func (s *Store) DeleteOldAlerts(ctx context.Context, olderThan time.Time) (int64
 // ─── Alerts ───────────────────────────────────────────────────────────────────
 
 func (s *Store) InsertAlert(ctx context.Context, a *models.Alert) error {
+	var srcIP interface{}
+	if a.SrcIP != "" {
+		srcIP = a.SrcIP
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO alerts
-		  (id, title, description, severity, status, rule_id, rule_name, mitre_ids, event_ids, agent_id, hostname, user_uid, source_types, first_seen, last_seen, hit_count)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW(),NOW(),1)
+		  (id, title, description, severity, status, rule_id, rule_name, mitre_ids, event_ids, agent_id, hostname, user_uid, source_types, src_ip, first_seen, last_seen, hit_count)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW(),NOW(),1)
 		ON CONFLICT (id) DO UPDATE SET
 			last_seen    = NOW(),
 			hit_count    = alerts.hit_count + 1,
 			event_ids    = alerts.event_ids || EXCLUDED.event_ids,
 			source_types = (SELECT array_agg(DISTINCT x) FROM unnest(alerts.source_types || EXCLUDED.source_types) x),
+			src_ip       = COALESCE(EXCLUDED.src_ip, alerts.src_ip),
 			status       = CASE WHEN alerts.status='CLOSED' THEN 'OPEN' ELSE alerts.status END
 	`, a.ID, a.Title, a.Description, a.Severity, a.Status,
 		a.RuleID, a.RuleName, pq.Array(a.MitreIDs), pq.Array(a.EventIDs),
-		a.AgentID, a.Hostname, a.UserUID, pq.Array(a.SourceTypes))
+		a.AgentID, a.Hostname, a.UserUID, pq.Array(a.SourceTypes), srcIP)
 	return err
 }
 
@@ -1659,6 +1664,44 @@ func (s *Store) GetIncidentAlerts(ctx context.Context, incidentID string) ([]mod
 	err := s.rdb().SelectContext(ctx, &alerts, `
 		SELECT * FROM alerts WHERE incident_id=$1 ORDER BY first_seen DESC`, incidentID)
 	return alerts, err
+}
+
+// GetIncidentTimeline returns a chronological list of events correlated with
+// the incident: any event from an involved agent, user identity, or source IP
+// within ±5 minutes of the incident window. Capped at 500 rows.
+func (s *Store) GetIncidentTimeline(ctx context.Context, incidentID, tenantID string) ([]models.Event, error) {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	inc, err := s.GetIncident(ctx, incidentID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if len(inc.AgentIDs) == 0 && len(inc.UserUIDs) == 0 {
+		return []models.Event{}, nil
+	}
+
+	start := inc.FirstSeen.Add(-5 * time.Minute)
+	end := inc.LastSeen.Add(5 * time.Minute)
+
+	var events []models.Event
+	err = s.rdb().SelectContext(ctx, &events, `
+		SELECT id, agent_id, hostname, event_type, timestamp, payload, received_at,
+		       severity, rule_id, alert_id,
+		       COALESCE(source_type,'') AS source_type,
+		       COALESCE(user_uid,'')    AS user_uid,
+		       COALESCE(tenant_id,'')   AS tenant_id
+		FROM events
+		WHERE (tenant_id = $1 OR tenant_id = 'default' OR $1 = 'default')
+		  AND timestamp BETWEEN $2 AND $3
+		  AND (
+		        agent_id = ANY($4)
+		     OR (user_uid != '' AND user_uid = ANY($5))
+		  )
+		ORDER BY timestamp ASC
+		LIMIT 500
+	`, tenantID, start, end, pq.Array([]string(inc.AgentIDs)), pq.Array([]string(inc.UserUIDs)))
+	return events, err
 }
 
 // ─── Agent Packages ───────────────────────────────────────────────────────────

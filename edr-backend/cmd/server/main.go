@@ -193,7 +193,7 @@ func main() {
 		// ── Incident correlation ─────────────────────────────────────────
 		// XDR alerts carry user_uid / source_types — correlate cross-source.
 		userUID    := alert.UserUID
-		srcIPStr   := ""
+		srcIPStr   := alert.SrcIP
 		sourceType := ""
 		if len(alert.SourceTypes) > 0 {
 			sourceType = alert.SourceTypes[0]

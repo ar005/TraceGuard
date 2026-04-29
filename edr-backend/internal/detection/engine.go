@@ -620,6 +620,9 @@ func (e *Engine) fireAlertWithContext(ctx context.Context, ev *models.Event, rul
 		if xdrEv.SourceType != "" && xdrEv.SourceType != "endpoint" {
 			alert.SourceTypes = pq.StringArray{xdrEv.SourceType}
 		}
+		if xdrEv.SrcIP != nil {
+			alert.SrcIP = xdrEv.SrcIP.String()
+		}
 	}
 
 	e.log.Warn().

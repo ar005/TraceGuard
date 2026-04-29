@@ -41,6 +41,10 @@ type Event struct {
 	Severity   int16           `db:"severity"    json:"severity"`
 	RuleID     string          `db:"rule_id"     json:"rule_id"`
 	AlertID    string          `db:"alert_id"    json:"alert_id"`
+	// XDR extension fields — populated for cross-source events
+	SourceType string `db:"source_type" json:"source_type,omitempty"`
+	UserUID    string `db:"user_uid"    json:"user_uid,omitempty"`
+	TenantID   string `db:"tenant_id"   json:"tenant_id,omitempty"`
 }
 
 // Alert represents a security alert.
@@ -66,6 +70,7 @@ type Alert struct {
 	// XDR Phase 2 — cross-source identity correlation
 	UserUID     string         `db:"user_uid"     json:"user_uid"`
 	SourceTypes pq.StringArray `db:"source_types" json:"source_types"`
+	SrcIP       string         `db:"src_ip"       json:"src_ip,omitempty"`
 	// Phase 5 — AI triage
 	TriageVerdict string     `db:"triage_verdict" json:"triage_verdict,omitempty"`
 	TriageScore   int16      `db:"triage_score"   json:"triage_score,omitempty"`

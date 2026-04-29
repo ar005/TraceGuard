@@ -1558,6 +1558,15 @@ var migrations = []struct {
     ON CONFLICT (id) DO NOTHING;
     `,
 	},
+	{
+		name: "xdr_phase8_alert_src_ip",
+		sql: `
+    -- Add src_ip to alerts so XDR network/cloud alerts carry the correlated IP
+    -- into the incident correlator, enabling FindOpenIncidentXdr to match by IP.
+    ALTER TABLE alerts ADD COLUMN IF NOT EXISTS src_ip inet;
+    CREATE INDEX IF NOT EXISTS alerts_src_ip_idx ON alerts(src_ip) WHERE src_ip IS NOT NULL;
+    `,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.

@@ -173,11 +173,12 @@ func (s *Server) registerRoutes() {
 		v1.GET("/liveresponse/agents", s.handleLRAgents)
 
 		// Incidents
-		v1.GET("/incidents",              s.handleListIncidents)
-		v1.GET("/incidents/:id",          s.handleGetIncident)
-		v1.GET("/incidents/:id/alerts",   s.handleGetIncidentAlerts)
-		v1.GET("/incidents/:id/graph",    s.handleGetIncidentGraph)
-		v1.PATCH("/incidents/:id",        s.handleUpdateIncident)
+		v1.GET("/incidents",                  s.handleListIncidents)
+		v1.GET("/incidents/:id",              s.handleGetIncident)
+		v1.GET("/incidents/:id/alerts",       s.handleGetIncidentAlerts)
+		v1.GET("/incidents/:id/graph",        s.handleGetIncidentGraph)
+		v1.GET("/incidents/:id/timeline",     s.handleGetIncidentTimeline)
+		v1.PATCH("/incidents/:id",            s.handleUpdateIncident)
 
 		// Cases — reads and analyst writes
 		v1.GET("/cases",                         s.handleListCases)
@@ -1877,6 +1878,20 @@ func (s *Server) handleGetIncidentGraph(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, graph)
+}
+
+// handleGetIncidentTimeline returns a chronological cross-source event list for
+// an incident, joining events by agent_id, user_uid, or src_ip within ±5 min
+// of the incident window. Limited to 500 events.
+func (s *Server) handleGetIncidentTimeline(c *gin.Context) {
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	events, err := s.store.GetIncidentTimeline(c.Request.Context(), c.Param("id"), tid)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"events": events, "total": len(events)})
 }
 
 // ─── YARA Rule handlers ────────────────────────────────────────────────────────
