@@ -31,6 +31,9 @@ export interface Event {
   severity: number;
   rule_id: string;
   alert_id: string;
+  source_type?: string;
+  user_uid?: string;
+  tenant_id?: string;
 }
 
 export interface Alert {
@@ -113,6 +116,10 @@ export interface Incident {
   notes: string;
   created_at: string;
   updated_at: string;
+  // XDR cross-source correlation fields
+  user_uids?: string[];
+  src_ips?: string[];
+  source_types?: string[];
 }
 
 export interface IOC {

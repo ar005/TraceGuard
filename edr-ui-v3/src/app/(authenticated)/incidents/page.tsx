@@ -11,7 +11,7 @@ import {
   timeAgo,
   formatDate,
 } from "@/lib/utils";
-import type { Alert, Incident } from "@/types";
+import type { Alert, Event, Incident, IncidentGraph, GraphNode, GraphEdge } from "@/types";
 
 /* ---------- Constants ---------- */
 const STATUS_FILTERS = [
@@ -70,6 +70,86 @@ function SkeletonRow() {
   );
 }
 
+/* ---------- Attack Graph -------------------------------------------------------- */
+const NODE_COLORS: Record<string, string> = {
+  host: "#3b82f6",
+  user: "#8b5cf6",
+  alert: "#f97316",
+  process: "#22c55e",
+  ip: "#06b6d4",
+};
+
+function AttackGraph({ incidentId }: { incidentId: string }) {
+  const fetchGraph = useCallback(
+    () => api.get<IncidentGraph>(`/api/v1/incidents/${incidentId}/graph`),
+    [incidentId]
+  );
+  const { data: graph, loading, error } = useApi(fetchGraph);
+
+  if (loading) return <div className="text-xs py-4 text-center" style={{ color: "var(--fg-3)" }}>Loading graph…</div>;
+  if (error) return <div className="text-xs py-2" style={{ color: "var(--sev-critical)" }}>{error}</div>;
+  if (!graph || graph.nodes.length === 0) return <div className="text-xs py-2" style={{ color: "var(--fg-4)" }}>No graph data available yet.</div>;
+
+  const nodes = graph.nodes;
+  const edges = graph.edges;
+  const W = 420, H = 280, cx = W / 2, cy = H / 2;
+  const r = Math.min(cx, cy) - 40;
+
+  const positions: Record<string, { x: number; y: number }> = {};
+  const alertNodes = nodes.filter((n: GraphNode) => n.type === "alert");
+  const otherNodes = nodes.filter((n: GraphNode) => n.type !== "alert");
+  otherNodes.forEach((n: GraphNode, i: number) => {
+    const angle = (2 * Math.PI * i) / Math.max(otherNodes.length, 1) - Math.PI / 2;
+    positions[n.id] = { x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) };
+  });
+  const ar = Math.min(60, r * 0.4);
+  alertNodes.forEach((n: GraphNode, i: number) => {
+    const angle = (2 * Math.PI * i) / Math.max(alertNodes.length, 1);
+    positions[n.id] = { x: cx + ar * Math.cos(angle), y: cy + ar * Math.sin(angle) };
+  });
+
+  return (
+    <div className="overflow-x-auto">
+      <svg width={W} height={H} className="block mx-auto">
+        <defs>
+          <marker id="arrowhead-v3" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="var(--fg-3)" />
+          </marker>
+        </defs>
+        {edges.map((e: GraphEdge) => {
+          const s = positions[e.source]; const t = positions[e.target];
+          if (!s || !t) return null;
+          return <line key={e.id} x1={s.x} y1={s.y} x2={t.x} y2={t.y} stroke="var(--rail-border)" strokeWidth={1.5} markerEnd="url(#arrowhead-v3)" />;
+        })}
+        {nodes.map((n: GraphNode) => {
+          const pos = positions[n.id];
+          if (!pos) return null;
+          const color = NODE_COLORS[n.type] ?? "#9ca3af";
+          return (
+            <g key={n.id} transform={`translate(${pos.x},${pos.y})`}>
+              <circle r={14} fill={color} fillOpacity={0.2} stroke={color} strokeWidth={1.5} />
+              <text textAnchor="middle" dominantBaseline="central" fontSize={9} fill={color} fontWeight="600">
+                {n.type.slice(0, 2).toUpperCase()}
+              </text>
+              <text textAnchor="middle" y={22} fontSize={8} fill="var(--fg-3)" className="select-none">
+                {n.label.length > 14 ? n.label.slice(0, 13) + "…" : n.label}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+      <div className="flex flex-wrap gap-3 mt-2 px-1">
+        {Object.entries(NODE_COLORS).map(([type, color]) => (
+          <div key={type} className="flex items-center gap-1">
+            <span className="inline-block rounded-full" style={{ width: 10, height: 10, background: color }} />
+            <span style={{ fontSize: "var(--text-xs)", color: "var(--fg-3)" }}>{type}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /* ---------- Incident Detail Drawer ---------- */
 function IncidentDetail({
   incident,
@@ -95,6 +175,18 @@ function IncidentDetail({
     [incident.id]
   );
   const { data: relatedAlerts, loading: alertsLoading } = useApi(fetchAlerts);
+
+  /* Fetch cross-source timeline */
+  const fetchTimeline = useCallback(
+    () =>
+      api
+        .get<{ events?: Event[] } | Event[]>(
+          `/api/v1/incidents/${incident.id}/timeline`
+        )
+        .then((r) => (Array.isArray(r) ? r : r.events ?? [])),
+    [incident.id]
+  );
+  const { data: timelineEvents, loading: timelineLoading } = useApi(fetchTimeline);
 
   async function handleSaveNotes() {
     setSavingNotes(true);
@@ -196,6 +288,38 @@ function IncidentDetail({
               {incident.hostnames?.join(", ") || "—"}
             </span>
           </div>
+          {incident.source_types && incident.source_types.length > 0 && (
+            <div className="flex justify-between">
+              <span style={{ color: "var(--fg-3)" }}>Sources</span>
+              <div className="flex flex-wrap gap-1 justify-end">
+                {incident.source_types.map((s) => (
+                  <span
+                    key={s}
+                    className="rounded px-1.5 py-0.5 text-[10px] font-medium uppercase"
+                    style={{ background: "var(--surface-1)", color: "var(--primary)" }}
+                  >
+                    {s}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          {incident.user_uids && incident.user_uids.length > 0 && (
+            <div className="flex justify-between">
+              <span style={{ color: "var(--fg-3)" }}>Identities</span>
+              <span className="font-mono text-right" style={{ color: "var(--fg)" }}>
+                {incident.user_uids.join(", ")}
+              </span>
+            </div>
+          )}
+          {incident.src_ips && incident.src_ips.length > 0 && (
+            <div className="flex justify-between">
+              <span style={{ color: "var(--fg-3)" }}>Source IPs</span>
+              <span className="font-mono" style={{ color: "var(--fg)" }}>
+                {incident.src_ips.join(", ")}
+              </span>
+            </div>
+          )}
           <div className="flex justify-between">
             <span style={{ color: "var(--muted)" }}>Assignee</span>
             <span style={{ color: "var(--fg)" }}>
@@ -395,6 +519,80 @@ function IncidentDetail({
                 No related alerts found.
               </p>
             )}
+        </div>
+
+        {/* Attack story graph */}
+        <div>
+          <div
+            className="text-xs font-semibold mb-2"
+            style={{ color: "var(--fg)" }}
+          >
+            Attack Story Graph
+          </div>
+          <div
+            className="rounded border p-2"
+            style={{ borderColor: "var(--rail-border)", background: "var(--surface-0)" }}
+          >
+            <AttackGraph incidentId={incident.id} />
+          </div>
+        </div>
+
+        {/* Cross-source timeline */}
+        <div>
+          <div
+            className="text-xs font-semibold mb-2"
+            style={{ color: "var(--fg)" }}
+          >
+            Cross-Source Timeline
+          </div>
+          {timelineLoading && (
+            <div className="space-y-1">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className="animate-pulse h-6 rounded" style={{ background: "var(--surface-1)" }} />
+              ))}
+            </div>
+          )}
+          {!timelineLoading && (!timelineEvents || timelineEvents.length === 0) && (
+            <p className="text-xs" style={{ color: "var(--fg-3)" }}>
+              No correlated events found.
+            </p>
+          )}
+          {!timelineLoading && timelineEvents && timelineEvents.length > 0 && (
+            <ul
+              className="rounded border divide-y overflow-hidden"
+              style={{ borderColor: "var(--rail-border)", background: "var(--surface-0)" }}
+              role="list"
+            >
+              {timelineEvents.map((ev) => (
+                <li
+                  key={ev.id}
+                  className="flex items-center gap-2 px-3 py-1.5"
+                  style={{ fontSize: "var(--text-xs)" }}
+                >
+                  <span
+                    className="shrink-0 rounded px-1 py-0.5 uppercase font-medium"
+                    style={{
+                      fontSize: "var(--text-xs)",
+                      background: "var(--surface-1)",
+                      color: "var(--primary)",
+                      minWidth: 56,
+                    }}
+                  >
+                    {ev.source_type || "endpoint"}
+                  </span>
+                  <span className="font-mono shrink-0" style={{ color: "var(--fg-3)" }}>
+                    {new Date(ev.timestamp).toLocaleTimeString()}
+                  </span>
+                  <span className="truncate font-medium" style={{ color: "var(--fg)" }}>
+                    {ev.event_type}
+                  </span>
+                  <span className="truncate ml-auto" style={{ color: "var(--fg-3)" }}>
+                    {ev.hostname || ev.user_uid || ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       </div>
     </div>
