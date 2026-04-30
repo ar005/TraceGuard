@@ -16,6 +16,10 @@ export function useApi<T>(fetchFn: (signal: AbortSignal) => Promise<T>): UseApiR
   const [tick, setTick] = useState(0);
   const mountedRef = useRef(true);
   const inflightRef = useRef(false);
+  // Keep a stable ref to the latest fetchFn so the effect doesn't re-run
+  // every render when callers pass inline arrow functions.
+  const fetchFnRef = useRef(fetchFn);
+  fetchFnRef.current = fetchFn;
 
   const refetch = useCallback(() => {
     setTick((t) => t + 1);
@@ -31,7 +35,7 @@ export function useApi<T>(fetchFn: (signal: AbortSignal) => Promise<T>): UseApiR
     setLoading(true);
     setError(null);
 
-    fetchFn(controller.signal)
+    fetchFnRef.current(controller.signal)
       .then((result) => {
         if (mountedRef.current) {
           setData(result);
@@ -52,7 +56,7 @@ export function useApi<T>(fetchFn: (signal: AbortSignal) => Promise<T>): UseApiR
       mountedRef.current = false;
       controller.abort();
     };
-  }, [fetchFn, tick]);
+  }, [tick]); // fetchFn intentionally excluded — latest version is always in fetchFnRef
 
   return { data, loading, error, refetch };
 }
