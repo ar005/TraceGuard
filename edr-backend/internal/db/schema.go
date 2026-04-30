@@ -1245,6 +1245,11 @@ var migrations = []struct {
     -- XDR Phase 2: cross-source identity detection rules.
     -- Requires source_types column added in xdr_phase1_rules.
 
+    ALTER TABLE rules
+        ADD COLUMN IF NOT EXISTS sequence_window_s INTEGER NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS sequence_by        TEXT    NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS sequence_steps     JSONB;
+
     INSERT INTO rules (id, name, description, severity, event_types, conditions, mitre_ids, author,
                        rule_type, threshold_count, threshold_window_s, group_by, source_types,
                        sequence_window_s, sequence_by, sequence_steps)

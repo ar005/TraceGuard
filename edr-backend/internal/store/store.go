@@ -322,6 +322,10 @@ func (s *Store) InsertAlert(ctx context.Context, a *models.Alert) error {
 	if a.SrcIP != "" {
 		srcIP = a.SrcIP
 	}
+	sourceTypes := a.SourceTypes
+	if sourceTypes == nil {
+		sourceTypes = pq.StringArray{}
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO alerts
 		  (id, title, description, severity, status, rule_id, rule_name, mitre_ids, event_ids, agent_id, hostname, user_uid, source_types, src_ip, first_seen, last_seen, hit_count)
@@ -335,7 +339,7 @@ func (s *Store) InsertAlert(ctx context.Context, a *models.Alert) error {
 			status       = CASE WHEN alerts.status='CLOSED' THEN 'OPEN' ELSE alerts.status END
 	`, a.ID, a.Title, a.Description, a.Severity, a.Status,
 		a.RuleID, a.RuleName, pq.Array(a.MitreIDs), pq.Array(a.EventIDs),
-		a.AgentID, a.Hostname, a.UserUID, pq.Array(a.SourceTypes), srcIP)
+		a.AgentID, a.Hostname, a.UserUID, pq.Array(sourceTypes), srcIP)
 	return err
 }
 
@@ -627,7 +631,11 @@ func (s *Store) FindOpenAlert(ctx context.Context, ruleID, agentID string, dedup
 	var a models.Alert
 	cutoff := time.Now().Add(-dedupeWindow)
 	err := s.rdb().GetContext(ctx, &a, `
-		SELECT * FROM alerts
+		SELECT id, tenant_id, title, description, severity, status, rule_id, rule_name,
+		       mitre_ids, event_ids, agent_id, hostname, user_uid, source_types,
+		       COALESCE(src_ip::text, '') AS src_ip,
+		       first_seen, last_seen, hit_count
+		FROM alerts
 		WHERE rule_id  = $1
 		  AND agent_id = $2
 		  AND status   IN ('OPEN','INVESTIGATING')
@@ -1467,6 +1475,13 @@ func (s *Store) InsertIncident(ctx context.Context, inc *models.Incident) error 
 	if inc.TenantID == "" {
 		inc.TenantID = "default"
 	}
+	if inc.AlertIDs == nil { inc.AlertIDs = pq.StringArray{} }
+	if inc.AgentIDs == nil { inc.AgentIDs = pq.StringArray{} }
+	if inc.Hostnames == nil { inc.Hostnames = pq.StringArray{} }
+	if inc.MitreIDs == nil { inc.MitreIDs = pq.StringArray{} }
+	if inc.UserUIDs == nil { inc.UserUIDs = pq.StringArray{} }
+	if inc.SrcIPs == nil { inc.SrcIPs = pq.StringArray{} }
+	if inc.SourceTypes == nil { inc.SourceTypes = pq.StringArray{} }
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO incidents
 		  (id, tenant_id, title, description, severity, status, alert_ids, agent_ids, hostnames, mitre_ids,

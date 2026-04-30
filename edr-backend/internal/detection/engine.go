@@ -392,7 +392,10 @@ func (e *Engine) evaluateSequenceCross(ctx context.Context, ev *models.XdrEvent,
 			continue
 		}
 		var steps []models.SequenceStep
-		if err := json.Unmarshal(rule.SequenceSteps, &steps); err != nil || len(steps) == 0 {
+		if rule.SequenceSteps == nil {
+			continue
+		}
+		if err := json.Unmarshal(*rule.SequenceSteps, &steps); err != nil || len(steps) == 0 {
 			continue
 		}
 		windowDur := time.Duration(rule.SequenceWindowS) * time.Second

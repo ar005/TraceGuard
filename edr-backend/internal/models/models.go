@@ -31,20 +31,28 @@ type Agent struct {
 
 // Event represents a stored security event.
 type Event struct {
-	ID         string          `db:"id"          json:"id"`
-	AgentID    string          `db:"agent_id"    json:"agent_id"`
-	Hostname   string          `db:"hostname"    json:"hostname"`
-	EventType  string          `db:"event_type"  json:"event_type"`
-	Timestamp  time.Time       `db:"timestamp"   json:"timestamp"`
-	Payload    json.RawMessage `db:"payload"     json:"payload"`
-	ReceivedAt time.Time       `db:"received_at" json:"received_at"`
-	Severity   int16           `db:"severity"    json:"severity"`
-	RuleID     string          `db:"rule_id"     json:"rule_id"`
-	AlertID    string          `db:"alert_id"    json:"alert_id"`
-	// XDR extension fields — populated for cross-source events
-	SourceType string `db:"source_type" json:"source_type,omitempty"`
-	UserUID    string `db:"user_uid"    json:"user_uid,omitempty"`
-	TenantID   string `db:"tenant_id"   json:"tenant_id,omitempty"`
+	ID          string          `db:"id"           json:"id"`
+	AgentID     string          `db:"agent_id"     json:"agent_id"`
+	Hostname    string          `db:"hostname"     json:"hostname"`
+	EventType   string          `db:"event_type"   json:"event_type"`
+	Timestamp   time.Time       `db:"timestamp"    json:"timestamp"`
+	Payload     json.RawMessage `db:"payload"      json:"payload"`
+	ReceivedAt  time.Time       `db:"received_at"  json:"received_at"`
+	Severity    int16           `db:"severity"     json:"severity"`
+	RuleID      string          `db:"rule_id"      json:"rule_id"`
+	AlertID     string          `db:"alert_id"     json:"alert_id"`
+	ClassUID    int             `db:"class_uid"    json:"class_uid,omitempty"`
+	CategoryUID int16           `db:"category_uid" json:"category_uid,omitempty"`
+	ActivityID  int16           `db:"activity_id"  json:"activity_id,omitempty"`
+	SourceType  string          `db:"source_type"  json:"source_type,omitempty"`
+	SourceID    string          `db:"source_id"    json:"source_id,omitempty"`
+	TenantID    string          `db:"tenant_id"    json:"tenant_id,omitempty"`
+	UserUID     string          `db:"user_uid"     json:"user_uid,omitempty"`
+	SrcIP       *string         `db:"src_ip"       json:"src_ip,omitempty"`
+	DstIP       *string         `db:"dst_ip"       json:"dst_ip,omitempty"`
+	ProcessName string          `db:"process_name" json:"process_name,omitempty"`
+	RawLog      string          `db:"raw_log"      json:"raw_log,omitempty"`
+	Enrichments json.RawMessage `db:"enrichments"  json:"enrichments,omitempty"`
 }
 
 // Alert represents a security alert.
@@ -95,7 +103,7 @@ type Rule struct {
 	ThresholdCount     int             `db:"threshold_count"     json:"threshold_count"`
 	ThresholdWindowS   int             `db:"threshold_window_s"  json:"threshold_window_s"`
 	GroupBy            string          `db:"group_by"            json:"group_by"`
-	SequenceSteps      json.RawMessage `db:"sequence_steps"      json:"sequence_steps,omitempty"`
+	SequenceSteps      *json.RawMessage `db:"sequence_steps"      json:"sequence_steps,omitempty"`
 	SequenceWindowS    int             `db:"sequence_window_s"   json:"sequence_window_s"`
 	SequenceBy         string          `db:"sequence_by"         json:"sequence_by"`
 	SourceTypes        pq.StringArray  `db:"source_types"        json:"source_types"`
