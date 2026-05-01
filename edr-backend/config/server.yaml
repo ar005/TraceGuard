@@ -59,3 +59,8 @@ ioc_feed:
 retention:
   event_days: 90    # delete events older than 90 days
   alert_days:  0    # 0 = keep all alerts (only closed ones would be deleted)
+
+# Threat intelligence enrichment (optional — leave blank to disable).
+enrichment:
+  virustotal_api_key: ""
+  abuseipdb_api_key:  ""

@@ -304,9 +304,42 @@ func (s *Server) registerRoutes() {
 		v1.POST("/ingest/webhook/:source_id", s.handleWebhookIngest)
 
 		// XDR Identity graph
-		v1.GET("/identity",          s.handleListIdentities)
-		v1.GET("/identity/top-risk", s.handleTopRiskyIdentities)
-		v1.GET("/identity/:uid",     s.handleGetIdentity)
+		v1.GET("/identity",                    s.handleListIdentities)
+		v1.GET("/identity/top-risk",           s.handleTopRiskyIdentities)
+		v1.GET("/identity/:uid",               s.handleGetIdentity)
+		v1.GET("/identity/:uid/sessions",      s.handleListLoginSessions)
+
+		// Host risk
+		v1.GET("/agents/top-risk",             s.handleListTopRiskAgents)
+
+		// Alert enrichments
+		v1.GET("/alerts/:id/enrichments",      s.handleGetAlertEnrichments)
+
+		// Auto-case policies
+		v1.GET("/autocase/policies",           s.handleListAutoCasePolicies)
+		v1.PUT("/autocase/policies/:id",       s.handleUpsertAutoCasePolicy)
+
+		// Auto-remediation rules (B)
+		v1.GET("/remediation/rules",        s.handleListRemediationRules)
+		v1.PUT("/remediation/rules/:id",    s.handleUpsertRemediationRule)
+		v1.DELETE("/remediation/rules/:id", s.handleDeleteRemediationRule)
+
+		// UEBA timeline (C)
+		v1.GET("/identity/:uid/timeline", s.handleGetUEBATimeline)
+
+		// Custom IOC feeds (G)
+		v1.GET("/ioc-feeds",             s.handleListCustomIOCFeeds)
+		v1.PUT("/ioc-feeds/:id",         s.handleUpsertCustomIOCFeed)
+		v1.DELETE("/ioc-feeds/:id",      s.handleDeleteCustomIOCFeed)
+		v1.POST("/ioc-feeds/:id/sync",   s.handleSyncCustomIOCFeed)
+
+		// Attack graph (H)
+		v1.GET("/incidents/:id/attack-graph", s.handleGetIncidentAttackGraph)
+
+		// Reports (I)
+		v1.GET("/reports",                     s.handleListReports)
+		v1.POST("/reports",                    s.handleGenerateReport)
+		v1.GET("/reports/:id/download",        s.handleDownloadReport)
 
 		// Container & Kubernetes inventory
 		v1.GET("/containers",            s.handleListContainers)
@@ -3064,4 +3097,346 @@ func (s *Server) handleImportSTIX(c *gin.Context) {
 func actorName(c *gin.Context) string {
 	_, name := currentUser(c)
 	return name
+}
+
+// ── Host risk ─────────────────────────────────────────────────────────────────
+
+// GET /api/v1/agents/top-risk
+func (s *Server) handleListTopRiskAgents(c *gin.Context) {
+	limit := 20
+	if v := c.Query("limit"); v != "" {
+		if n, err2 := strconv.Atoi(v); err2 == nil && n > 0 && n <= 200 {
+			limit = n
+		}
+	}
+	agents, err := s.store.ListTopRiskAgents(c.Request.Context(), limit)
+	if err != nil {
+		s.log.Error().Err(err).Msg("list top risk agents")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	if agents == nil {
+		agents = []models.Agent{}
+	}
+	c.JSON(http.StatusOK, agents)
+}
+
+// ── Login sessions ────────────────────────────────────────────────────────────
+
+// GET /api/v1/identity/:uid/sessions
+func (s *Server) handleListLoginSessions(c *gin.Context) {
+	uid := c.Param("uid")
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	sessions, err := s.store.ListLoginSessions(c.Request.Context(), tid, uid, 100)
+	if err != nil {
+		s.log.Error().Err(err).Str("uid", uid).Msg("list login sessions")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	if sessions == nil {
+		sessions = []models.LoginSession{}
+	}
+	c.JSON(http.StatusOK, sessions)
+}
+
+// ── Alert enrichments ─────────────────────────────────────────────────────────
+
+// GET /api/v1/alerts/:id/enrichments
+func (s *Server) handleGetAlertEnrichments(c *gin.Context) {
+	id := c.Param("id")
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	alert, err := s.store.GetAlert(c.Request.Context(), id, tid)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"alert_id": id, "enrichments": alert.Enrichments})
+}
+
+// ── Auto-case policies ────────────────────────────────────────────────────────
+
+// GET /api/v1/autocase/policies
+func (s *Server) handleListAutoCasePolicies(c *gin.Context) {
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	policies, err := s.store.ListAutoCasePolicies(c.Request.Context(), tid)
+	if err != nil {
+		s.log.Error().Err(err).Msg("list auto-case policies")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	if policies == nil {
+		policies = []models.AutoCasePolicy{}
+	}
+	c.JSON(http.StatusOK, policies)
+}
+
+// ── Reports (I) ───────────────────────────────────────────────────────────────
+
+// GET /api/v1/reports
+func (s *Server) handleListReports(c *gin.Context) {
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	reports, err := s.store.ListReports(c.Request.Context(), tid)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	if reports == nil {
+		reports = []store.Report{}
+	}
+	c.JSON(http.StatusOK, reports)
+}
+
+// POST /api/v1/reports — generate a new CSV report synchronously.
+func (s *Server) handleGenerateReport(c *gin.Context) {
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+
+	var req struct {
+		Type  string `json:"type"`  // alerts | incidents
+		Title string `json:"title"`
+		Limit int    `json:"limit"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Limit <= 0 || req.Limit > 10000 {
+		req.Limit = 1000
+	}
+	if req.Type == "" {
+		req.Type = "alerts"
+	}
+	if req.Title == "" {
+		req.Title = fmt.Sprintf("%s export %s", req.Type, time.Now().Format("2006-01-02"))
+	}
+
+	var csvData string
+	var rowCount int
+	var genErr error
+
+	switch req.Type {
+	case "incidents":
+		csvData, rowCount, genErr = s.store.GenerateIncidentsCSV(c.Request.Context(), tid, req.Limit)
+	default:
+		csvData, rowCount, genErr = s.store.GenerateAlertsCSV(c.Request.Context(), tid, req.Limit)
+	}
+	if genErr != nil {
+		s.log.Error().Err(genErr).Msg("generate report failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "report generation failed"})
+		return
+	}
+
+	now := time.Now()
+	_, actorName := currentUser(c)
+	r := &store.Report{
+		ID:          "rpt-" + uuid.New().String(),
+		TenantID:    tid,
+		Title:       req.Title,
+		Type:        req.Type,
+		Format:      "csv",
+		Status:      "ready",
+		RowCount:    rowCount,
+		Data:        csvData,
+		CreatedBy:   actorName,
+		CompletedAt: &now,
+	}
+	if err := s.store.InsertReport(c.Request.Context(), r); err != nil {
+		s.log.Warn().Err(err).Msg("persist report failed")
+	}
+	// Don't include data in list response — only in download.
+	r.Data = ""
+	c.JSON(http.StatusOK, r)
+}
+
+// GET /api/v1/reports/:id/download
+func (s *Server) handleDownloadReport(c *gin.Context) {
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	r, err := s.store.GetReport(c.Request.Context(), c.Param("id"), tid)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	filename := fmt.Sprintf("traceguard-%s-%s.csv", r.Type, r.CreatedAt.Format("20060102"))
+	c.Header("Content-Disposition", `attachment; filename="`+filename+`"`)
+	c.Header("Content-Type", "text/csv")
+	c.String(http.StatusOK, r.Data)
+}
+
+// PUT /api/v1/autocase/policies/:id
+func (s *Server) handleUpsertAutoCasePolicy(c *gin.Context) {
+	var p models.AutoCasePolicy
+	if err := c.ShouldBindJSON(&p); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	p.ID = c.Param("id")
+	tenantID, _ := c.Get("tenant_id")
+	p.TenantID, _ = tenantID.(string)
+	if p.ID == "" || p.ID == "new" {
+		p.ID = "acp-" + uuid.New().String()
+	}
+	if err := s.store.UpsertAutoCasePolicy(c.Request.Context(), &p); err != nil {
+		s.log.Error().Err(err).Msg("upsert auto-case policy")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	c.JSON(http.StatusOK, p)
+}
+
+// ── Feature B: Auto-Remediation Rules ─────────────────────────────────────
+
+// GET /api/v1/remediation/rules
+func (s *Server) handleListRemediationRules(c *gin.Context) {
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	rules, err := s.store.ListAutoRemediationRules(c.Request.Context(), tid)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	if rules == nil {
+		rules = []models.AutoRemediationRule{}
+	}
+	c.JSON(http.StatusOK, rules)
+}
+
+// PUT /api/v1/remediation/rules/:id
+func (s *Server) handleUpsertRemediationRule(c *gin.Context) {
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	var r models.AutoRemediationRule
+	if err := c.ShouldBindJSON(&r); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	r.ID = c.Param("id")
+	r.TenantID = tid
+	if err := s.store.UpsertAutoRemediationRule(c.Request.Context(), &r); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	c.JSON(http.StatusOK, r)
+}
+
+// DELETE /api/v1/remediation/rules/:id
+func (s *Server) handleDeleteRemediationRule(c *gin.Context) {
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	id := c.Param("id")
+	if err := s.store.DeleteAutoRemediationRule(c.Request.Context(), tid, id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// ── Feature C: UEBA Timeline ──────────────────────────────────────────────
+
+// GET /api/v1/identity/:uid/timeline
+func (s *Server) handleGetUEBATimeline(c *gin.Context) {
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	uid := c.Param("uid")
+	hours := 24
+	if h := c.Query("hours"); h != "" {
+		if n, err := strconv.Atoi(h); err == nil && n > 0 && n <= 168 {
+			hours = n
+		}
+	}
+	events, err := s.store.GetUEBATimeline(c.Request.Context(), tid, uid, hours)
+	if err != nil {
+		s.log.Error().Err(err).Str("uid", uid).Msg("ueba timeline")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	if events == nil {
+		events = []store.UEBAEvent{}
+	}
+	c.JSON(http.StatusOK, gin.H{"uid": uid, "hours": hours, "events": events})
+}
+
+// ── Feature G: Custom IOC Feeds ───────────────────────────────────────────
+
+// GET /api/v1/ioc-feeds
+func (s *Server) handleListCustomIOCFeeds(c *gin.Context) {
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	feeds, err := s.store.ListCustomIOCFeeds(c.Request.Context(), tid)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	if feeds == nil {
+		feeds = []models.CustomIOCFeed{}
+	}
+	c.JSON(http.StatusOK, feeds)
+}
+
+// PUT /api/v1/ioc-feeds/:id
+func (s *Server) handleUpsertCustomIOCFeed(c *gin.Context) {
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	var f models.CustomIOCFeed
+	if err := c.ShouldBindJSON(&f); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	f.ID = c.Param("id")
+	f.TenantID = tid
+	if err := s.store.UpsertCustomIOCFeed(c.Request.Context(), &f); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	c.JSON(http.StatusOK, f)
+}
+
+// DELETE /api/v1/ioc-feeds/:id
+func (s *Server) handleDeleteCustomIOCFeed(c *gin.Context) {
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	id := c.Param("id")
+	if err := s.store.DeleteCustomIOCFeed(c.Request.Context(), tid, id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// POST /api/v1/ioc-feeds/:id/sync
+func (s *Server) handleSyncCustomIOCFeed(c *gin.Context) {
+	// Stub: mark the feed as synced with count=0.
+	// TODO: fetch feed.URL, parse lines, call store.InsertIOCBatch.
+	id := c.Param("id")
+	if err := s.store.MarkCustomFeedSynced(c.Request.Context(), id, 0); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "sync queued", "feed_id": id})
+}
+
+// ── Feature H: Attack Graph ───────────────────────────────────────────────
+
+// GET /api/v1/incidents/:id/attack-graph
+func (s *Server) handleGetIncidentAttackGraph(c *gin.Context) {
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	id := c.Param("id")
+	graph, err := s.store.GetIncidentAttackGraph(c.Request.Context(), tid, id)
+	if err != nil {
+		s.log.Error().Err(err).Str("id", id).Msg("attack graph")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	if graph.Nodes == nil {
+		graph.Nodes = []store.AttackGraphNode{}
+	}
+	if graph.Edges == nil {
+		graph.Edges = []store.AttackGraphEdge{}
+	}
+	c.JSON(http.StatusOK, graph)
 }

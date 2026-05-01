@@ -56,7 +56,7 @@ type DefaultBus struct {
 	hostname string
 
 	mu          sync.RWMutex
-	subscribers map[string][]subscriberEntry // eventType → []handlers
+	subscribers map[string][]*subscriberEntry // eventType → []handlers
 
 	published atomic.Uint64
 	dropped   atomic.Uint64
@@ -74,7 +74,7 @@ func NewBus(agentID, hostname string) *DefaultBus {
 	b := &DefaultBus{
 		agentID:     agentID,
 		hostname:    hostname,
-		subscribers: make(map[string][]subscriberEntry),
+		subscribers: make(map[string][]*subscriberEntry),
 	}
 	return b
 }
@@ -91,14 +91,8 @@ func (b *DefaultBus) Publish(event Event) {
 
 	// Collect matching subscribers (specific type + wildcard "*").
 	var targets []*subscriberEntry
-	for _, entry := range b.subscribers[evType] {
-		e := entry
-		targets = append(targets, &e)
-	}
-	for _, entry := range b.subscribers["*"] {
-		e := entry
-		targets = append(targets, &e)
-	}
+	targets = append(targets, b.subscribers[evType]...)
+	targets = append(targets, b.subscribers["*"]...)
 
 	for _, target := range targets {
 		select {
@@ -115,7 +109,7 @@ func (b *DefaultBus) Publish(event Event) {
 func (b *DefaultBus) Subscribe(eventType string, handler Handler) func() {
 	const bufSize = 16384
 
-	entry := subscriberEntry{
+	entry := &subscriberEntry{
 		id:      newID(),
 		ch:      make(chan Event, bufSize),
 		handler: handler,

@@ -36,8 +36,20 @@ import (
 	"github.com/youredr/edr-backend/internal/natsbus"
 	"github.com/youredr/edr-backend/internal/store"
 	"github.com/youredr/edr-backend/internal/users"
+	"github.com/youredr/edr-backend/internal/autocase"
+	"github.com/youredr/edr-backend/internal/autoremediate"
+	"github.com/youredr/edr-backend/internal/beaconing"
+	"github.com/youredr/edr-backend/internal/hostbehavior"
+	"github.com/youredr/edr-backend/internal/netthreat"
+	"github.com/youredr/edr-backend/internal/dnstunnel"
+	"github.com/youredr/edr-backend/internal/enrichment"
 	"github.com/youredr/edr-backend/internal/export"
+	"github.com/youredr/edr-backend/internal/fim"
+	"github.com/youredr/edr-backend/internal/hostrisk"
+	"github.com/youredr/edr-backend/internal/lateral"
+	"github.com/youredr/edr-backend/internal/logintrack"
 	"github.com/youredr/edr-backend/internal/playbook"
+	"github.com/youredr/edr-backend/internal/ransomware"
 	"github.com/youredr/edr-backend/internal/userrisk"
 	"github.com/youredr/edr-backend/internal/workers"
 
@@ -159,8 +171,11 @@ func main() {
 	// These are late-bound via pointers; the actual Runner/ExportManager are
 	// created after lrManager (below) and stored into these vars.
 	var (
-		pbRunner  *playbook.Runner
-		exportMgr *export.ExportManager
+		pbRunner            *playbook.Runner
+		exportMgr           *export.ExportManager
+		autoCaseMgr         *autocase.Manager
+		enricher            *enrichment.Enricher
+		autoRemediateEngine *autoremediate.Engine
 	)
 
 	// Incident correlation window — alerts on the same agent within this
@@ -188,6 +203,45 @@ func main() {
 		}
 		if exportMgr != nil {
 			exportMgr.ExportAlert(ctx, alert)
+		}
+
+		// ── Auto-case creation ────────────────────────────────────────
+		if autoCaseMgr != nil {
+			go autoCaseMgr.Evaluate(ctx, alert)
+		}
+
+		// ── Auto-remediation (Feature B) ──────────────────────────────
+		if autoRemediateEngine != nil {
+			go autoRemediateEngine.Evaluate(context.Background(), alert)
+		}
+
+		// ── IOC auto-check (J) ───────────────────────────────────────
+		go func(a *models.Alert) {
+			iocCtx, iocCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer iocCancel()
+			if a.SrcIP != "" {
+				if ioc, err := st.LookupIOC(iocCtx, "ip", a.SrcIP); err == nil && ioc != nil {
+					logger.Warn().Str("alert_id", a.ID).Str("ip", a.SrcIP).
+						Str("ioc_source", ioc.Source).Msg("IOC MATCH on alert src_ip")
+				}
+			}
+		}(alert)
+
+		// ── Async TI enrichment ───────────────────────────────────────
+		if enricher != nil {
+			go func(a *models.Alert) {
+				enrichCtx, enrichCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer enrichCancel()
+				var ti *enrichment.TIResult
+				if a.SrcIP != "" {
+					ti, _ = enricher.EnrichIP(enrichCtx, a.SrcIP)
+				}
+				if ti != nil {
+					if merged, err := enrichment.MergeIntoEnrichments(a.Enrichments, ti); err == nil {
+						_ = st.UpdateAlertEnrichments(enrichCtx, a.ID, merged)
+					}
+				}
+			}(alert)
 		}
 
 		// ── Incident correlation ─────────────────────────────────────────
@@ -276,7 +330,18 @@ func main() {
 	// ── SOAR Runner + Export Manager ──────────────────────────────────────────
 	pbRunner = playbook.New(st, lrManager, logger)
 	exportMgr = export.New(st, logger)
-	logger.Info().Msg("SOAR playbook runner and export manager initialized")
+	autoCaseMgr = autocase.New(st, logger)
+	enricher = enrichment.New(cfg.Enrichment.VirusTotalAPIKey, cfg.Enrichment.AbuseIPDBAPIKey, logger)
+	logger.Info().Msg("SOAR playbook runner, export manager, auto-case, and TI enrichment initialized")
+
+	// ── XDR Feature B: Auto-Remediation Engine ────────────────────────────────
+	autoRemediateEngine = autoremediate.New(st, logger)
+
+	// ── XDR Feature D: Host Behavioral Anomaly Detector ──────────────────────
+	hostBehaviorDetector := hostbehavior.New(st, fireAlert, logger)
+
+	// ── XDR Feature E: Network Threat Detector ────────────────────────────────
+	netThreatDetector := netthreat.New(st, fireAlert, logger)
 
 	// ── NATS JetStream (XDR pipeline, optional) ───────────────────────────────
 	var ingestSink ingest.EventSink // nil = inline detection (EDR mode)
@@ -321,13 +386,60 @@ func main() {
 		}
 	}
 
-	// ── User Risk Scorer + Decay Worker ──────────────────────────────────────
+	// ── XDR Behavioral Detectors + Decay Worker ──────────────────────────────
+	detectorCtx, detectorCancel := context.WithCancel(context.Background())
+	defer detectorCancel()
+
+	// Lateral movement runs independently of NATS (sweeps the DB).
+	lateralDetector := lateral.New(st, logger)
+	go lateralDetector.Run(detectorCtx)
+
 	if natsBus != nil {
 		scorer := userrisk.New(st, logger)
+		hostScorer := hostrisk.New(st, logger)
+		beaconDetector := beaconing.New(st, logger)
+		loginTracker := logintrack.New(st, logger)
+		dnsTunnelDetector := dnstunnel.New(st, logger)
+		ransomwareDetector := ransomware.New(st, logger)
+		fimMonitor := fim.New(st, logger)
+
 		riskCtx, riskCancel := context.WithCancel(context.Background())
 		defer riskCancel()
+
 		_ = natsBus.Subscribe(riskCtx, natsbus.ConsumerConfig{Name: "user-risk-scorer"}, func(ctx context.Context, ev *models.XdrEvent) error {
 			scorer.Score(ctx, ev)
+			return nil
+		})
+		_ = natsBus.Subscribe(riskCtx, natsbus.ConsumerConfig{Name: "host-risk-scorer"}, func(ctx context.Context, ev *models.XdrEvent) error {
+			hostScorer.Score(ctx, ev)
+			return nil
+		})
+		_ = natsBus.Subscribe(riskCtx, natsbus.ConsumerConfig{Name: "beaconing-detector"}, func(ctx context.Context, ev *models.XdrEvent) error {
+			beaconDetector.Observe(ctx, ev)
+			return nil
+		})
+		_ = natsBus.Subscribe(riskCtx, natsbus.ConsumerConfig{Name: "login-tracker"}, func(ctx context.Context, ev *models.XdrEvent) error {
+			loginTracker.Track(ctx, ev)
+			return nil
+		})
+		_ = natsBus.Subscribe(riskCtx, natsbus.ConsumerConfig{Name: "dns-tunnel-detector"}, func(ctx context.Context, ev *models.XdrEvent) error {
+			dnsTunnelDetector.Observe(ctx, ev)
+			return nil
+		})
+		_ = natsBus.Subscribe(riskCtx, natsbus.ConsumerConfig{Name: "ransomware-detector"}, func(ctx context.Context, ev *models.XdrEvent) error {
+			ransomwareDetector.Observe(ctx, ev)
+			return nil
+		})
+		_ = natsBus.Subscribe(riskCtx, natsbus.ConsumerConfig{Name: "fim-monitor"}, func(ctx context.Context, ev *models.XdrEvent) error {
+			fimMonitor.Observe(ctx, ev)
+			return nil
+		})
+		_ = natsBus.Subscribe(riskCtx, natsbus.ConsumerConfig{Name: "host-behavior-detector"}, func(ctx context.Context, ev *models.XdrEvent) error {
+			hostBehaviorDetector.Observe(ctx, ev)
+			return nil
+		})
+		_ = natsBus.Subscribe(riskCtx, natsbus.ConsumerConfig{Name: "net-threat-detector"}, func(ctx context.Context, ev *models.XdrEvent) error {
+			netThreatDetector.Observe(ctx, ev)
 			return nil
 		})
 

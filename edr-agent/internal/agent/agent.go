@@ -9,8 +9,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -460,16 +458,10 @@ func (a *Agent) Start(ctx context.Context) error {
 	heartbeat := time.NewTicker(30 * time.Second)
 	defer heartbeat.Stop()
 
-	// Wait for shutdown.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-
+	// Wait for shutdown via context cancellation (main handles OS signals).
 	for {
 		select {
 		case <-ctx.Done():
-			return a.shutdown()
-		case sig := <-sigCh:
-			a.log.Info().Str("signal", sig.String()).Msg("received signal, shutting down")
 			return a.shutdown()
 		case <-heartbeat.C:
 			a.sendHeartbeat()

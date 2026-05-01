@@ -403,6 +403,14 @@ func (s *Store) QueryAlerts(ctx context.Context, p QueryAlertsParams) ([]models.
 	return alerts, err
 }
 
+// UpdateAlertEnrichments merges threat intel results into alerts.enrichments.
+func (s *Store) UpdateAlertEnrichments(ctx context.Context, alertID string, enrichments json.RawMessage) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE alerts SET enrichments = $1 WHERE id = $2`,
+		enrichments, alertID)
+	return err
+}
+
 func (s *Store) GetAlert(ctx context.Context, id string, tenantID string) (*models.Alert, error) {
 	var a models.Alert
 	err := s.rdb().GetContext(ctx, &a,
@@ -2433,4 +2441,538 @@ func (s *Store) DBSizeByAgent(ctx context.Context) ([]AgentDBSize, error) {
 		results[i].Bytes = results[i].Events * avgRowSize
 	}
 	return results, nil
+}
+
+// ── Host risk ─────────────────────────────────────────────────────────────────
+
+func (s *Store) UpdateAgentRisk(ctx context.Context, agentID string, score int16, factors []string) error {
+	raw, err := json.Marshal(factors)
+	if err != nil {
+		raw = []byte(`[]`)
+	}
+	_, err = s.db.ExecContext(ctx,
+		`UPDATE agents SET risk_score=$1, risk_factors=$2, risk_updated_at=NOW() WHERE id=$3`,
+		score, raw, agentID)
+	return err
+}
+
+func (s *Store) GetAgentRisk(ctx context.Context, agentID string) (score int16, factors json.RawMessage, err error) {
+	err = s.rdb().QueryRowContext(ctx,
+		`SELECT risk_score, risk_factors FROM agents WHERE id=$1`, agentID).
+		Scan(&score, &factors)
+	return
+}
+
+func (s *Store) ListTopRiskAgents(ctx context.Context, limit int) ([]models.Agent, error) {
+	var agents []models.Agent
+	err := s.rdb().SelectContext(ctx, &agents, `
+		SELECT id, hostname, os, os_version, ip, agent_ver, first_seen, last_seen,
+		       is_online, config_ver, tags, env, notes, winevent_config,
+		       risk_score, risk_factors, risk_updated_at
+		FROM agents WHERE risk_score > 0
+		ORDER BY risk_score DESC LIMIT $1`, limit)
+	return agents, err
+}
+
+// ── Login sessions ─────────────────────────────────────────────────────────────
+
+func (s *Store) InsertLoginSession(ctx context.Context, ls *models.LoginSession) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO login_sessions (id, tenant_id, user_uid, agent_id, src_ip, hostname, logged_in_at, event_id)
+		VALUES ($1, $2, $3, $4, $5::inet, $6, $7, $8)
+		ON CONFLICT (id) DO NOTHING`,
+		ls.ID, ls.TenantID, ls.UserUID, ls.AgentID, ls.SrcIP, ls.Hostname, ls.LoggedInAt, ls.EventID)
+	return err
+}
+
+func (s *Store) CloseLoginSession(ctx context.Context, userUID, tenantID string, loggedOutAt time.Time) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE login_sessions
+		SET logged_out_at=$1,
+		    duration_s=EXTRACT(EPOCH FROM ($1 - logged_in_at))::INTEGER
+		WHERE id = (
+		    SELECT id FROM login_sessions
+		    WHERE user_uid=$2 AND tenant_id=$3 AND logged_out_at IS NULL
+		    ORDER BY logged_in_at DESC
+		    LIMIT 1
+		)`,
+		loggedOutAt, userUID, tenantID)
+	return err
+}
+
+func (s *Store) ListLoginSessions(ctx context.Context, tenantID, userUID string, limit int) ([]models.LoginSession, error) {
+	rows, err := s.rdb().QueryxContext(ctx, `
+		SELECT id, tenant_id, user_uid, agent_id,
+		       COALESCE(src_ip::text,'') AS src_ip,
+		       hostname, logged_in_at, logged_out_at, duration_s, event_id, created_at
+		FROM login_sessions
+		WHERE tenant_id=$1 AND ($2='' OR user_uid=$2)
+		ORDER BY logged_in_at DESC LIMIT $3`,
+		tenantID, userUID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.LoginSession
+	for rows.Next() {
+		var ls models.LoginSession
+		var srcIP string
+		if err := rows.Scan(&ls.ID, &ls.TenantID, &ls.UserUID, &ls.AgentID,
+			&srcIP, &ls.Hostname, &ls.LoggedInAt, &ls.LoggedOutAt,
+			&ls.DurationS, &ls.EventID, &ls.CreatedAt); err != nil {
+			return nil, err
+		}
+		if srcIP != "" {
+			ipCopy := srcIP
+			ls.SrcIP = &ipCopy
+		}
+		out = append(out, ls)
+	}
+	return out, rows.Err()
+}
+
+// ── Auto-case policies ────────────────────────────────────────────────────────
+
+func (s *Store) ListAutoCasePolicies(ctx context.Context, tenantID string) ([]models.AutoCasePolicy, error) {
+	var out []models.AutoCasePolicy
+	err := s.rdb().SelectContext(ctx, &out,
+		`SELECT * FROM auto_case_policies WHERE tenant_id=$1 AND enabled=TRUE ORDER BY min_severity DESC`,
+		tenantID)
+	return out, err
+}
+
+func (s *Store) UpsertAutoCasePolicy(ctx context.Context, p *models.AutoCasePolicy) error {
+	ruleIDs := p.RuleIDs
+	if ruleIDs == nil {
+		ruleIDs = pq.StringArray{}
+	}
+	mitreIDs := p.MitreIDs
+	if mitreIDs == nil {
+		mitreIDs = pq.StringArray{}
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO auto_case_policies (id, tenant_id, name, min_severity, rule_ids, mitre_ids, enabled, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,NOW(),NOW())
+		ON CONFLICT (id) DO UPDATE SET
+		    name=$3, min_severity=$4, rule_ids=$5, mitre_ids=$6, enabled=$7, updated_at=NOW()`,
+		p.ID, p.TenantID, p.Name, p.MinSeverity,
+		pq.Array(ruleIDs), pq.Array(mitreIDs), p.Enabled)
+	return err
+}
+
+// ── Beaconing ─────────────────────────────────────────────────────────────────
+
+func (s *Store) MarkBeaconingAlertFired(ctx context.Context, agentID, dstIP string, dstPort int) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE beaconing_state SET alert_fired=TRUE
+		WHERE agent_id=$1 AND dst_ip=$2::inet AND dst_port=$3`,
+		agentID, dstIP, dstPort)
+	return err
+}
+
+// ── Lateral movement ──────────────────────────────────────────────────────────
+
+// LateralMovementHit is a DB result row for lateral movement sweep.
+type LateralMovementHit struct {
+	UserUID    string `db:"user_uid"`
+	TenantID   string `db:"tenant_id"`
+	AgentCount int    `db:"agent_count"`
+}
+
+// LateralMovementQuery finds users with sessions on >lateralThresh agents within window.
+func (s *Store) LateralMovementQuery(ctx context.Context, tenantID string, window time.Duration) ([]models.LateralHit, error) {
+	seconds := int(window.Seconds())
+	rows, err := s.rdb().QueryxContext(ctx, `
+		SELECT user_uid, tenant_id, COUNT(DISTINCT agent_id) AS agent_count
+		FROM login_sessions
+		WHERE ($1='' OR tenant_id=$1)
+		  AND logged_in_at > NOW() - ($2 || ' seconds')::INTERVAL
+		  AND agent_id != ''
+		GROUP BY user_uid, tenant_id
+		HAVING COUNT(DISTINCT agent_id) > 2`,
+		tenantID, seconds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var hits []models.LateralHit
+	for rows.Next() {
+		var row LateralMovementHit
+		if err := rows.StructScan(&row); err != nil {
+			return nil, err
+		}
+		// Fetch agent IDs and hostnames for this user
+		var agentIDs []string
+		var hostnames []string
+		agentRows, err := s.rdb().QueryxContext(ctx, `
+			SELECT DISTINCT ls.agent_id, COALESCE(a.hostname, ls.agent_id) AS hostname
+			FROM login_sessions ls
+			LEFT JOIN agents a ON a.id = ls.agent_id
+			WHERE ls.user_uid=$1 AND ($2='' OR ls.tenant_id=$2)
+			  AND ls.logged_in_at > NOW() - ($3 || ' seconds')::INTERVAL
+			  AND ls.agent_id != ''
+			LIMIT 10`, row.UserUID, tenantID, seconds)
+		if err == nil {
+			for agentRows.Next() {
+				var aid, hostname string
+				if err := agentRows.Scan(&aid, &hostname); err == nil {
+					agentIDs = append(agentIDs, aid)
+					hostnames = append(hostnames, hostname)
+				}
+			}
+			agentRows.Close()
+		}
+		hits = append(hits, models.LateralHit{
+			UserUID:    row.UserUID,
+			TenantID:   row.TenantID,
+			AgentCount: row.AgentCount,
+			AgentIDs:   agentIDs,
+			Hostnames:  hostnames,
+		})
+	}
+	return hits, rows.Err()
+}
+
+// ── Reports ───────────────────────────────────────────────────────────────────
+
+// Report is a generated export record.
+type Report struct {
+	ID          string     `db:"id"           json:"id"`
+	TenantID    string     `db:"tenant_id"    json:"tenant_id"`
+	Title       string     `db:"title"        json:"title"`
+	Type        string     `db:"type"         json:"type"`
+	Format      string     `db:"format"       json:"format"`
+	Status      string     `db:"status"       json:"status"`
+	RowCount    int        `db:"row_count"    json:"row_count"`
+	Data        string     `db:"data"         json:"data,omitempty"`
+	CreatedBy   string     `db:"created_by"   json:"created_by"`
+	CreatedAt   time.Time  `db:"created_at"   json:"created_at"`
+	CompletedAt *time.Time `db:"completed_at" json:"completed_at,omitempty"`
+}
+
+func (s *Store) InsertReport(ctx context.Context, r *Report) error {
+	now := time.Now()
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO reports (id, tenant_id, title, type, format, status, row_count, data, created_by, created_at, completed_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		r.ID, r.TenantID, r.Title, r.Type, r.Format, r.Status, r.RowCount,
+		r.Data, r.CreatedBy, now, r.CompletedAt)
+	return err
+}
+
+func (s *Store) ListReports(ctx context.Context, tenantID string) ([]Report, error) {
+	var out []Report
+	err := s.rdb().SelectContext(ctx, &out,
+		`SELECT id, tenant_id, title, type, format, status, row_count, created_by, created_at, completed_at
+		 FROM reports WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 100`, tenantID)
+	return out, err
+}
+
+func (s *Store) GetReport(ctx context.Context, id, tenantID string) (*Report, error) {
+	var r Report
+	err := s.rdb().GetContext(ctx, &r,
+		`SELECT * FROM reports WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// GenerateAlertsCSV returns a CSV of recent alerts for a tenant.
+func (s *Store) GenerateAlertsCSV(ctx context.Context, tenantID string, limit int) (string, int, error) {
+	rows, err := s.rdb().QueryxContext(ctx, `
+		SELECT id, title, severity, status, rule_name, hostname, src_ip, first_seen, last_seen
+		FROM alerts WHERE tenant_id=$1 ORDER BY first_seen DESC LIMIT $2`,
+		tenantID, limit)
+	if err != nil {
+		return "", 0, err
+	}
+	defer rows.Close()
+
+	var sb strings.Builder
+	sb.WriteString("id,title,severity,status,rule_name,hostname,src_ip,first_seen,last_seen\n")
+	count := 0
+	for rows.Next() {
+		var id, title, status, ruleName, hostname string
+		var srcIP *string
+		var severity int16
+		var firstSeen, lastSeen time.Time
+		if err := rows.Scan(&id, &title, &severity, &status, &ruleName, &hostname, &srcIP, &firstSeen, &lastSeen); err != nil {
+			return "", 0, err
+		}
+		ip := ""
+		if srcIP != nil {
+			ip = *srcIP
+		}
+		sb.WriteString(fmt.Sprintf("%s,%s,%d,%s,%s,%s,%s,%s,%s\n",
+			csvEscape(id), csvEscape(title), severity, csvEscape(status),
+			csvEscape(ruleName), csvEscape(hostname), csvEscape(ip),
+			firstSeen.Format(time.RFC3339), lastSeen.Format(time.RFC3339)))
+		count++
+	}
+	return sb.String(), count, rows.Err()
+}
+
+// GenerateIncidentsCSV returns a CSV of recent incidents for a tenant.
+func (s *Store) GenerateIncidentsCSV(ctx context.Context, tenantID string, limit int) (string, int, error) {
+	rows, err := s.rdb().QueryxContext(ctx, `
+		SELECT id, title, severity, status, alert_count, first_seen, last_seen
+		FROM incidents WHERE tenant_id=$1 ORDER BY first_seen DESC LIMIT $2`,
+		tenantID, limit)
+	if err != nil {
+		return "", 0, err
+	}
+	defer rows.Close()
+
+	var sb strings.Builder
+	sb.WriteString("id,title,severity,status,alert_count,first_seen,last_seen\n")
+	count := 0
+	for rows.Next() {
+		var id, title, status string
+		var severity int16
+		var alertCount int
+		var firstSeen, lastSeen time.Time
+		if err := rows.Scan(&id, &title, &severity, &status, &alertCount, &firstSeen, &lastSeen); err != nil {
+			return "", 0, err
+		}
+		sb.WriteString(fmt.Sprintf("%s,%s,%d,%s,%d,%s,%s\n",
+			csvEscape(id), csvEscape(title), severity, csvEscape(status),
+			alertCount, firstSeen.Format(time.RFC3339), lastSeen.Format(time.RFC3339)))
+		count++
+	}
+	return sb.String(), count, rows.Err()
+}
+
+func csvEscape(s string) string {
+	if strings.ContainsAny(s, ",\"\n") {
+		return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+	}
+	return s
+}
+
+// ── Feature B: Auto-Remediation Rules ─────────────────────────────────────
+
+func (s *Store) ListAutoRemediationRules(ctx context.Context, tenantID string) ([]models.AutoRemediationRule, error) {
+	var rules []models.AutoRemediationRule
+	err := s.db.SelectContext(ctx, &rules,
+		`SELECT id, tenant_id, name, trigger_type, trigger_value, action, playbook_id, min_severity, enabled, created_at
+         FROM auto_remediation_rules WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return rules, nil
+}
+
+func (s *Store) UpsertAutoRemediationRule(ctx context.Context, r *models.AutoRemediationRule) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO auto_remediation_rules(id,tenant_id,name,trigger_type,trigger_value,action,playbook_id,min_severity,enabled,created_at)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+         ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name, trigger_type=EXCLUDED.trigger_type,
+           trigger_value=EXCLUDED.trigger_value, action=EXCLUDED.action, playbook_id=EXCLUDED.playbook_id,
+           min_severity=EXCLUDED.min_severity, enabled=EXCLUDED.enabled`,
+		r.ID, r.TenantID, r.Name, r.TriggerType, r.TriggerValue, r.Action, r.PlaybookID, r.MinSeverity, r.Enabled)
+	return err
+}
+
+func (s *Store) DeleteAutoRemediationRule(ctx context.Context, tenantID, id string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM auto_remediation_rules WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	return err
+}
+
+// ── Feature C: UEBA Timeline ──────────────────────────────────────────────
+
+// UEBAEvent is a timeline entry for a user's activity across all sources.
+type UEBAEvent struct {
+	Time     time.Time `json:"time"`
+	Category string    `json:"category"` // login | process | network | file | alert
+	Summary  string    `json:"summary"`
+	AgentID  string    `json:"agent_id"`
+	Hostname string    `json:"hostname"`
+	Severity int       `json:"severity,omitempty"`
+	AlertID  string    `json:"alert_id,omitempty"`
+}
+
+func (s *Store) GetUEBATimeline(ctx context.Context, tenantID, userUID string, hours int) ([]UEBAEvent, error) {
+	since := time.Now().Add(-time.Duration(hours) * time.Hour)
+	var events []UEBAEvent
+
+	// Login sessions
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT logged_in_at, agent_id, COALESCE(src_ip::text,'') FROM login_sessions
+         WHERE tenant_id=$1 AND user_uid=$2 AND logged_in_at >= $3 ORDER BY logged_in_at DESC LIMIT 200`,
+		tenantID, userUID, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var t time.Time
+		var agentID, srcIP string
+		if err := rows.Scan(&t, &agentID, &srcIP); err != nil {
+			continue
+		}
+		events = append(events, UEBAEvent{Time: t, Category: "login", Summary: "Login from " + srcIP, AgentID: agentID})
+	}
+
+	// Alerts involving this user
+	alertRows, err := s.db.QueryContext(ctx,
+		`SELECT first_seen, id, title, severity, agent_id FROM alerts
+         WHERE tenant_id=$1 AND user_uid=$2 AND created_at >= $3 ORDER BY created_at DESC LIMIT 100`,
+		tenantID, userUID, since)
+	if err != nil {
+		return nil, err
+	}
+	defer alertRows.Close()
+	for alertRows.Next() {
+		var t time.Time
+		var id, title, agentID string
+		var sev int
+		if err := alertRows.Scan(&t, &id, &title, &sev, &agentID); err != nil {
+			continue
+		}
+		events = append(events, UEBAEvent{Time: t, Category: "alert", Summary: title, AgentID: agentID, Severity: sev, AlertID: id})
+	}
+
+	// Sort by time descending
+	for i := 0; i < len(events); i++ {
+		for j := i + 1; j < len(events); j++ {
+			if events[j].Time.After(events[i].Time) {
+				events[i], events[j] = events[j], events[i]
+			}
+		}
+	}
+	return events, nil
+}
+
+// ── Feature G: Custom IOC Feeds ───────────────────────────────────────────
+
+func (s *Store) ListCustomIOCFeeds(ctx context.Context, tenantID string) ([]models.CustomIOCFeed, error) {
+	var feeds []models.CustomIOCFeed
+	err := s.db.SelectContext(ctx, &feeds,
+		`SELECT id, tenant_id, name, url, format, feed_type, enabled, last_synced_at, entry_count, created_at
+         FROM custom_ioc_feeds WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
+	return feeds, err
+}
+
+func (s *Store) UpsertCustomIOCFeed(ctx context.Context, f *models.CustomIOCFeed) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO custom_ioc_feeds(id,tenant_id,name,url,format,feed_type,enabled,created_at)
+         VALUES($1,$2,$3,$4,$5,$6,$7,NOW())
+         ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name, url=EXCLUDED.url,
+           format=EXCLUDED.format, feed_type=EXCLUDED.feed_type, enabled=EXCLUDED.enabled`,
+		f.ID, f.TenantID, f.Name, f.URL, f.Format, f.FeedType, f.Enabled)
+	return err
+}
+
+func (s *Store) DeleteCustomIOCFeed(ctx context.Context, tenantID, id string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM custom_ioc_feeds WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	return err
+}
+
+func (s *Store) MarkCustomFeedSynced(ctx context.Context, id string, count int) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE custom_ioc_feeds SET last_synced_at=NOW(), entry_count=$1 WHERE id=$2`, count, id)
+	return err
+}
+
+// ── Feature H: Attack Graph ───────────────────────────────────────────────
+
+// AttackGraphNode represents a single alert in the incident attack graph.
+type AttackGraphNode struct {
+	ID        string    `json:"id"`
+	Tactic    string    `json:"tactic"`
+	Technique string    `json:"technique"`
+	EventType string    `json:"event_type"`
+	Hostname  string    `json:"hostname"`
+	AgentID   string    `json:"agent_id"`
+	Time      time.Time `json:"time"`
+	Summary   string    `json:"summary"`
+}
+
+// AttackGraphEdge is a directed link between two nodes in the attack graph.
+type AttackGraphEdge struct {
+	Source string `json:"source"`
+	Target string `json:"target"`
+	Label  string `json:"label"`
+}
+
+// AttackGraph is the full graph for one incident.
+type AttackGraph struct {
+	IncidentID string            `json:"incident_id"`
+	Nodes      []AttackGraphNode `json:"nodes"`
+	Edges      []AttackGraphEdge `json:"edges"`
+}
+
+func (s *Store) GetIncidentAttackGraph(ctx context.Context, tenantID, incidentID string) (*AttackGraph, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT a.id, a.title, a.rule_id, a.mitre_ids, a.agent_id, a.first_seen,
+                COALESCE(ag.hostname,'') as hostname
+         FROM alerts a
+         LEFT JOIN agents ag ON ag.id=a.agent_id
+         WHERE a.tenant_id=$1 AND a.incident_id=$2
+         ORDER BY a.first_seen ASC`,
+		tenantID, incidentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	graph := &AttackGraph{IncidentID: incidentID}
+	var prevID string
+	for rows.Next() {
+		var id, title, ruleID, agentID, hostname string
+		var mitreIDs pq.StringArray
+		var t time.Time
+		if err := rows.Scan(&id, &title, &ruleID, &mitreIDs, &agentID, &t, &hostname); err != nil {
+			continue
+		}
+		tactic := mitreToTactic(mitreIDs)
+		technique := ""
+		if len(mitreIDs) > 0 {
+			technique = mitreIDs[0]
+		}
+		node := AttackGraphNode{
+			ID: id, Tactic: tactic, Technique: technique,
+			AgentID: agentID, Hostname: hostname, Time: t, Summary: title,
+		}
+		graph.Nodes = append(graph.Nodes, node)
+		if prevID != "" {
+			graph.Edges = append(graph.Edges, AttackGraphEdge{Source: prevID, Target: id, Label: "followed by"})
+		}
+		prevID = id
+	}
+	return graph, nil
+}
+
+// mitreToTactic maps the first MITRE ID prefix to a kill-chain tactic name.
+func mitreToTactic(ids pq.StringArray) string {
+	if len(ids) == 0 {
+		return "Unknown"
+	}
+	id := ids[0]
+	switch {
+	case id == "T1059" || id == "T1204" || id == "T1106":
+		return "Execution"
+	case id == "T1003" || id == "T1078" || id == "T1110":
+		return "Credential Access"
+	case id == "T1021" || id == "T1550" || id == "T1076":
+		return "Lateral Movement"
+	case id == "T1048" || id == "T1041" || id == "T1071":
+		return "Exfiltration"
+	case id == "T1486" || id == "T1490":
+		return "Impact"
+	case id == "T1055" || id == "T1134":
+		return "Privilege Escalation"
+	case id == "T1053" || id == "T1543" || id == "T1547":
+		return "Persistence"
+	case id == "T1046" || id == "T1018":
+		return "Discovery"
+	case id == "T1036" || id == "T1027":
+		return "Defense Evasion"
+	default:
+		return "Other"
+	}
 }

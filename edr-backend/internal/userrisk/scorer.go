@@ -18,13 +18,14 @@ package userrisk
 import (
 	"context"
 	"encoding/json"
-	"math"
 	"net"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 
+	"github.com/youredr/edr-backend/internal/geoip"
 	"github.com/youredr/edr-backend/internal/models"
 	"github.com/youredr/edr-backend/internal/store"
 )
@@ -38,7 +39,7 @@ const (
 	burstLoginThreshold      = 5
 	burstLoginWindow         = 10 * time.Minute
 	impossibleTravelWindow   = 1 * time.Hour
-	// Rough km/h speed threshold for impossible travel (commercial flight ~900 km/h)
+	// Commercial flight ~900 km/h; 1000 km/h threshold gives small buffer.
 	impossibleTravelSpeedKmh = 1000
 )
 
@@ -47,29 +48,32 @@ type IdentityStore interface {
 	GetIdentityByUID(ctx context.Context, uid string) (*models.IdentityRecord, error)
 	UpdateIdentityRisk(ctx context.Context, uid string, score int16, factors []string) error
 	TouchIdentityLogin(ctx context.Context, uid, srcIP string) error
+	InsertAlert(ctx context.Context, a *models.Alert) error
 }
 
 // Scorer processes auth/policy events and updates identity risk scores.
 type Scorer struct {
-	store IdentityStore
-	log   zerolog.Logger
+	store  IdentityStore
+	geo    *geoip.Client
+	log    zerolog.Logger
 
-	mu         sync.Mutex
-	// loginTimes: uid → list of recent login timestamps for burst detection
-	loginTimes map[string][]time.Time
-	// lastLoginIP: uid → last login IP + time for impossible travel
+	mu          sync.Mutex
+	loginTimes  map[string][]time.Time
 	lastLoginIP map[string]loginRecord
 }
 
 type loginRecord struct {
-	IP   net.IP
-	At   time.Time
+	IP  net.IP
+	Lat float64
+	Lon float64
+	At  time.Time
 }
 
 // New creates a Scorer backed by the given store.
 func New(st *store.Store, log zerolog.Logger) *Scorer {
 	return &Scorer{
 		store:       st,
+		geo:         geoip.New(),
 		log:         log.With().Str("component", "user-risk-scorer").Logger(),
 		loginTimes:  make(map[string][]time.Time),
 		lastLoginIP: make(map[string]loginRecord),
@@ -88,12 +92,15 @@ func (s *Scorer) Score(ctx context.Context, ev *models.XdrEvent) {
 	var delta int16
 
 	switch ev.Event.EventType {
-	case "AUTH_LOGIN", "AUTH_LOGOFF":
-		d, f := s.scoreAuth(uid, ev)
+	case "AUTH_LOGIN", "AUTH_LOGOFF", "IDENTITY_AUTH_LOGIN", "IDENTITY_AUTH_LOGIN_FAILED":
+		d, f, impossible := s.scoreAuth(ctx, uid, ev)
 		delta += d
 		factors = append(factors, f...)
 		if ev.SrcIP != nil {
 			_ = s.store.TouchIdentityLogin(ctx, uid, ev.SrcIP.String())
+		}
+		if impossible {
+			s.fireImpossibleTravelAlert(ctx, uid, ev)
 		}
 	case "POLICY_CHANGE":
 		delta += scorePrivilegeEscalation
@@ -106,7 +113,6 @@ func (s *Scorer) Score(ctx context.Context, ev *models.XdrEvent) {
 
 	rec, err := s.store.GetIdentityByUID(ctx, uid)
 	if err != nil {
-		// Identity may not exist yet; create a minimal risk record.
 		_ = s.store.UpdateIdentityRisk(ctx, uid, clamp(delta), factors)
 		return
 	}
@@ -119,10 +125,7 @@ func (s *Scorer) Score(ctx context.Context, ev *models.XdrEvent) {
 	}
 }
 
-func (s *Scorer) scoreAuth(uid string, ev *models.XdrEvent) (int16, []string) {
-	var delta int16
-	var factors []string
-
+func (s *Scorer) scoreAuth(ctx context.Context, uid string, ev *models.XdrEvent) (delta int16, factors []string, impossibleTravel bool) {
 	ts := ev.Event.Timestamp
 	if ts.IsZero() {
 		ts = time.Now()
@@ -153,23 +156,70 @@ func (s *Scorer) scoreAuth(uid string, ev *models.XdrEvent) (int16, []string) {
 		factors = append(factors, "burst_login")
 	}
 
-	// Impossible travel detection
+	// Impossible travel detection using real GeoIP
 	if ev.SrcIP != nil {
+		lat, lon := s.resolveGeo(ctx, *ev.SrcIP)
 		if prev, ok := s.lastLoginIP[uid]; ok {
 			elapsed := ts.Sub(prev.At)
-			if elapsed > 0 && elapsed < impossibleTravelWindow {
-				distKm := haversineKm(prev.IP, *ev.SrcIP)
+			if elapsed > 0 && elapsed < impossibleTravelWindow && lat != 0 && prev.Lat != 0 {
+				distKm := geoip.HaversineKm(prev.Lat, prev.Lon, lat, lon)
 				speedKmh := distKm / elapsed.Hours()
 				if speedKmh > impossibleTravelSpeedKmh {
 					delta += scoreImpossibleTravel
 					factors = append(factors, "impossible_travel")
+					impossibleTravel = true
 				}
 			}
 		}
-		s.lastLoginIP[uid] = loginRecord{IP: *ev.SrcIP, At: ts}
+		s.lastLoginIP[uid] = loginRecord{IP: *ev.SrcIP, Lat: lat, Lon: lon, At: ts}
 	}
 
-	return delta, factors
+	return delta, factors, impossibleTravel
+}
+
+// resolveGeo returns lat/lon for an IP using the GeoIP client.
+// Returns 0,0 for private/loopback or on lookup failure (safe no-op).
+func (s *Scorer) resolveGeo(ctx context.Context, ip net.IP) (lat, lon float64) {
+	loc, err := s.geo.Lookup(ip)
+	if err != nil {
+		s.log.Debug().Err(err).Str("ip", ip.String()).Msg("geoip lookup failed")
+		return 0, 0
+	}
+	if loc == nil {
+		return 0, 0
+	}
+	return loc.Lat, loc.Lon
+}
+
+// fireImpossibleTravelAlert creates a high-severity alert for impossible travel.
+func (s *Scorer) fireImpossibleTravelAlert(ctx context.Context, uid string, ev *models.XdrEvent) {
+	prev := s.lastLoginIP[uid]
+	srcIPStr := ""
+	if ev.SrcIP != nil {
+		srcIPStr = ev.SrcIP.String()
+	}
+	alert := &models.Alert{
+		ID:          "alert-" + uuid.New().String(),
+		TenantID:    ev.TenantID,
+		Title:       "Impossible Travel Detected: " + uid,
+		Description: "User " + uid + " authenticated from " + srcIPStr + " within 1 hour of a login from " + prev.IP.String() + " — geographically impossible at normal travel speed.",
+		Severity:    4,
+		Status:      "OPEN",
+		RuleID:      "rule-impossible-travel",
+		RuleName:    "Impossible Travel",
+		MitreIDs:    []string{"T1078"},
+		EventIDs:    []string{ev.Event.ID},
+		AgentID:     ev.AgentID,
+		Hostname:    ev.Event.Hostname,
+		UserUID:     uid,
+		SrcIP:       srcIPStr,
+		SourceTypes: []string{"identity"},
+	}
+	if err := s.store.InsertAlert(ctx, alert); err != nil {
+		s.log.Warn().Err(err).Str("uid", uid).Msg("impossible travel alert insert failed")
+	} else {
+		s.log.Warn().Str("uid", uid).Str("src_ip", srcIPStr).Str("prev_ip", prev.IP.String()).Msg("IMPOSSIBLE TRAVEL ALERT FIRED")
+	}
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -231,29 +281,4 @@ func mergeFactors(a, b []string) []string {
 		out = append(out, k)
 	}
 	return out
-}
-
-// haversineKm returns approximate great-circle distance in km between two IPs.
-// For private/loopback IPs it returns 0 (no signal).
-func haversineKm(a, b net.IP) float64 {
-	if a == nil || b == nil {
-		return 0
-	}
-	if a.IsPrivate() || b.IsPrivate() || a.IsLoopback() || b.IsLoopback() {
-		return 0
-	}
-	// Without a GeoIP database we use a simple heuristic: compare the first
-	// octet of IPv4 addresses. Different /8 blocks are treated as ~5000 km apart
-	// (continental distance). This is intentionally rough — real deployments
-	// should swap this for a MaxMind GeoLite2 lookup.
-	a4 := a.To4()
-	b4 := b.To4()
-	if a4 == nil || b4 == nil {
-		return 0
-	}
-	if a4[0] != b4[0] {
-		return 5000
-	}
-	_ = math.Pi // keep math import used
-	return 0
 }

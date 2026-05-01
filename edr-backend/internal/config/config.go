@@ -10,14 +10,20 @@ import (
 )
 
 type Config struct {
-	Server    ServerConfig    `mapstructure:"server"`
-	Database  DatabaseConfig  `mapstructure:"database"`
-	Log       LogConfig       `mapstructure:"log"`
-	Auth      AuthConfig      `mapstructure:"auth"`
-	Retention RetentionConfig `mapstructure:"retention"`
-	RateLimit RateLimitConfig `mapstructure:"rate_limit"`
-	IOCFeed   IOCFeedConfig   `mapstructure:"ioc_feed"`
-	NATS      NATSConfig      `mapstructure:"nats"`
+	Server     ServerConfig     `mapstructure:"server"`
+	Database   DatabaseConfig   `mapstructure:"database"`
+	Log        LogConfig        `mapstructure:"log"`
+	Auth       AuthConfig       `mapstructure:"auth"`
+	Retention  RetentionConfig  `mapstructure:"retention"`
+	RateLimit  RateLimitConfig  `mapstructure:"rate_limit"`
+	IOCFeed    IOCFeedConfig    `mapstructure:"ioc_feed"`
+	NATS       NATSConfig       `mapstructure:"nats"`
+	Enrichment EnrichmentConfig `mapstructure:"enrichment"`
+}
+
+type EnrichmentConfig struct {
+	VirusTotalAPIKey string `mapstructure:"virustotal_api_key"`
+	AbuseIPDBAPIKey  string `mapstructure:"abuseipdb_api_key"`
 }
 
 type ServerConfig struct {

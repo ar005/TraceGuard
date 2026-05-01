@@ -1572,6 +1572,133 @@ var migrations = []struct {
     CREATE INDEX IF NOT EXISTS alerts_src_ip_idx ON alerts(src_ip) WHERE src_ip IS NOT NULL;
     `,
 	},
+	{
+		name: "xdr_phase9_alert_enrichments",
+		sql: `
+    ALTER TABLE alerts ADD COLUMN IF NOT EXISTS enrichments JSONB NOT NULL DEFAULT '{}';
+    `,
+	},
+	{
+		name: "xdr_phase10_host_risk",
+		sql: `
+    ALTER TABLE agents
+        ADD COLUMN IF NOT EXISTS risk_score      SMALLINT    NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS risk_factors    JSONB       NOT NULL DEFAULT '[]',
+        ADD COLUMN IF NOT EXISTS risk_updated_at TIMESTAMPTZ;
+    `,
+	},
+	{
+		name: "xdr_phase11_login_sessions",
+		sql: `
+    CREATE TABLE IF NOT EXISTS login_sessions (
+        id           TEXT PRIMARY KEY,
+        tenant_id    TEXT NOT NULL,
+        user_uid     TEXT NOT NULL,
+        agent_id     TEXT NOT NULL DEFAULT '',
+        src_ip       INET,
+        hostname     TEXT NOT NULL DEFAULT '',
+        logged_in_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        logged_out_at TIMESTAMPTZ,
+        duration_s   INTEGER,
+        event_id     TEXT NOT NULL DEFAULT '',
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS login_sessions_user_uid_idx ON login_sessions(user_uid, logged_in_at DESC);
+    CREATE INDEX IF NOT EXISTS login_sessions_tenant_idx ON login_sessions(tenant_id, logged_in_at DESC);
+    `,
+	},
+	{
+		name: "xdr_phase12_auto_cases",
+		sql: `
+    CREATE TABLE IF NOT EXISTS auto_case_policies (
+        id             TEXT PRIMARY KEY,
+        tenant_id      TEXT NOT NULL,
+        name           TEXT NOT NULL,
+        min_severity   SMALLINT NOT NULL DEFAULT 4,
+        rule_ids       TEXT[] NOT NULL DEFAULT '{}',
+        mitre_ids      TEXT[] NOT NULL DEFAULT '{}',
+        enabled        BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS auto_case_policies_tenant_idx ON auto_case_policies(tenant_id);
+    `,
+	},
+	{
+		name: "xdr_phase14_reports",
+		sql: `
+    CREATE TABLE IF NOT EXISTS reports (
+        id           TEXT PRIMARY KEY,
+        tenant_id    TEXT NOT NULL,
+        title        TEXT NOT NULL,
+        type         TEXT NOT NULL DEFAULT 'alerts',
+        format       TEXT NOT NULL DEFAULT 'csv',
+        status       TEXT NOT NULL DEFAULT 'ready',
+        params       JSONB NOT NULL DEFAULT '{}',
+        row_count    INTEGER NOT NULL DEFAULT 0,
+        data         TEXT NOT NULL DEFAULT '',
+        created_by   TEXT NOT NULL DEFAULT '',
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS reports_tenant_idx ON reports(tenant_id, created_at DESC);
+    `,
+	},
+	{
+		name: "xdr_phase15_auto_remediation",
+		sql: `
+    CREATE TABLE IF NOT EXISTS auto_remediation_rules (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      trigger_type TEXT NOT NULL DEFAULT 'rule_id',
+      trigger_value TEXT NOT NULL,
+      action TEXT NOT NULL,
+      playbook_id TEXT NOT NULL DEFAULT '',
+      min_severity INT NOT NULL DEFAULT 3,
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_autoremed_tenant ON auto_remediation_rules(tenant_id);
+    `,
+	},
+	{
+		name: "xdr_phase16_custom_ioc_feeds",
+		sql: `
+    CREATE TABLE IF NOT EXISTS custom_ioc_feeds (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      url TEXT NOT NULL DEFAULT '',
+      format TEXT NOT NULL DEFAULT 'txt',
+      feed_type TEXT NOT NULL DEFAULT 'ip',
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      last_synced_at TIMESTAMPTZ,
+      entry_count INT NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_custom_feeds_tenant ON custom_ioc_feeds(tenant_id);
+    `,
+	},
+	{
+		name: "xdr_phase13_beaconing_state",
+		sql: `
+    CREATE TABLE IF NOT EXISTS beaconing_state (
+        id           TEXT PRIMARY KEY,
+        agent_id     TEXT NOT NULL,
+        tenant_id    TEXT NOT NULL,
+        dst_ip       INET NOT NULL,
+        dst_port     INTEGER NOT NULL DEFAULT 0,
+        intervals_s  FLOAT[] NOT NULL DEFAULT '{}',
+        first_seen   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_seen    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        alert_fired  BOOLEAN NOT NULL DEFAULT FALSE,
+        UNIQUE(agent_id, dst_ip, dst_port)
+    );
+    CREATE INDEX IF NOT EXISTS beaconing_state_agent_idx ON beaconing_state(agent_id);
+    CREATE INDEX IF NOT EXISTS beaconing_state_tenant_idx ON beaconing_state(tenant_id);
+    `,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.

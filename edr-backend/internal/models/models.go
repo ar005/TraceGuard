@@ -26,7 +26,10 @@ type Agent struct {
 	Tags           pq.StringArray  `db:"tags"             json:"tags"`
 	Env            string          `db:"env"              json:"env"`
 	Notes          string          `db:"notes"            json:"notes"`
-	WinEventConfig json.RawMessage `db:"winevent_config"  json:"winevent_config,omitempty"`
+	WinEventConfig  json.RawMessage `db:"winevent_config"   json:"winevent_config,omitempty"`
+	RiskScore       int16           `db:"risk_score"        json:"risk_score"`
+	RiskFactors     json.RawMessage `db:"risk_factors"      json:"risk_factors,omitempty"`
+	RiskUpdatedAt   *time.Time      `db:"risk_updated_at"   json:"risk_updated_at,omitempty"`
 }
 
 // Event represents a stored security event.
@@ -82,8 +85,9 @@ type Alert struct {
 	// Phase 5 — AI triage
 	TriageVerdict string     `db:"triage_verdict" json:"triage_verdict,omitempty"`
 	TriageScore   int16      `db:"triage_score"   json:"triage_score,omitempty"`
-	TriageNotes   string     `db:"triage_notes"   json:"triage_notes,omitempty"`
-	TriageAt      *time.Time `db:"triage_at"      json:"triage_at,omitempty"`
+	TriageNotes   string          `db:"triage_notes"   json:"triage_notes,omitempty"`
+	TriageAt      *time.Time      `db:"triage_at"      json:"triage_at,omitempty"`
+	Enrichments   json.RawMessage `db:"enrichments"    json:"enrichments,omitempty"`
 }
 
 // Rule represents a detection rule.
@@ -317,6 +321,9 @@ type XdrEvent struct {
 	ProcessName string          `db:"process_name" json:"process_name"`
 	RawLog      string          `db:"raw_log"      json:"raw_log"`      // original connector log line
 	Enrichments json.RawMessage `db:"enrichments"  json:"enrichments"`  // {geo, threat_intel, ...}
+	// Network flow fields (populated for NETWORK_CONNECTION events)
+	DstPort  int    `db:"-" json:"dst_port,omitempty"`
+	BytesOut uint64 `db:"-" json:"bytes_out,omitempty"`
 }
 
 // XdrSource maps to the xdr_sources table — connector registry.
@@ -517,4 +524,69 @@ type ResponseAction struct {
 	ReversedAt     *time.Time      `db:"reversed_at"     json:"reversed_at,omitempty"`
 	ReversedBy     string          `db:"reversed_by"     json:"reversed_by"`
 	Notes          string          `db:"notes"           json:"notes"`
+}
+
+// LateralHit is returned by the lateral movement DB sweep.
+type LateralHit struct {
+	UserUID    string
+	TenantID   string
+	AgentCount int
+	AgentIDs   []string
+	Hostnames  []string
+}
+
+// LoginSession tracks individual user login/logout events.
+type LoginSession struct {
+	ID          string     `db:"id"           json:"id"`
+	TenantID    string     `db:"tenant_id"    json:"tenant_id"`
+	UserUID     string     `db:"user_uid"     json:"user_uid"`
+	AgentID     string     `db:"agent_id"     json:"agent_id"`
+	SrcIP       *string    `db:"src_ip"       json:"src_ip,omitempty"`
+	Hostname    string     `db:"hostname"     json:"hostname"`
+	LoggedInAt  time.Time  `db:"logged_in_at" json:"logged_in_at"`
+	LoggedOutAt *time.Time `db:"logged_out_at" json:"logged_out_at,omitempty"`
+	DurationS   *int       `db:"duration_s"   json:"duration_s,omitempty"`
+	EventID     string     `db:"event_id"     json:"event_id"`
+	CreatedAt   time.Time  `db:"created_at"   json:"created_at"`
+}
+
+// AutoRemediationRule triggers an automated action when a matching alert fires.
+type AutoRemediationRule struct {
+	ID           string    `db:"id"            json:"id"`
+	TenantID     string    `db:"tenant_id"     json:"tenant_id"`
+	Name         string    `db:"name"          json:"name"`
+	TriggerType  string    `db:"trigger_type"  json:"trigger_type"`  // rule_id | mitre_id | severity
+	TriggerValue string    `db:"trigger_value" json:"trigger_value"`
+	Action       string    `db:"action"        json:"action"` // isolate_host | kill_process | block_user | run_playbook
+	PlaybookID   string    `db:"playbook_id"   json:"playbook_id"`
+	MinSeverity  int       `db:"min_severity"  json:"min_severity"`
+	Enabled      bool      `db:"enabled"       json:"enabled"`
+	CreatedAt    time.Time `db:"created_at"    json:"created_at"`
+}
+
+// CustomIOCFeed is a user-defined external IOC feed.
+type CustomIOCFeed struct {
+	ID           string     `db:"id"             json:"id"`
+	TenantID     string     `db:"tenant_id"      json:"tenant_id"`
+	Name         string     `db:"name"           json:"name"`
+	URL          string     `db:"url"            json:"url"`
+	Format       string     `db:"format"         json:"format"`    // txt | csv | stix
+	FeedType     string     `db:"feed_type"      json:"feed_type"` // ip | domain | hash
+	Enabled      bool       `db:"enabled"        json:"enabled"`
+	LastSyncedAt *time.Time `db:"last_synced_at" json:"last_synced_at"`
+	EntryCount   int        `db:"entry_count"    json:"entry_count"`
+	CreatedAt    time.Time  `db:"created_at"     json:"created_at"`
+}
+
+// AutoCasePolicy defines criteria for automatic case creation from alerts.
+type AutoCasePolicy struct {
+	ID          string         `db:"id"           json:"id"`
+	TenantID    string         `db:"tenant_id"    json:"tenant_id"`
+	Name        string         `db:"name"         json:"name"`
+	MinSeverity int16          `db:"min_severity" json:"min_severity"`
+	RuleIDs     pq.StringArray `db:"rule_ids"     json:"rule_ids"`
+	MitreIDs    pq.StringArray `db:"mitre_ids"    json:"mitre_ids"`
+	Enabled     bool           `db:"enabled"      json:"enabled"`
+	CreatedAt   time.Time      `db:"created_at"   json:"created_at"`
+	UpdatedAt   time.Time      `db:"updated_at"   json:"updated_at"`
 }
