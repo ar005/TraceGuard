@@ -34,7 +34,7 @@ type Detector struct {
 	store   LateralStore
 	log     zerolog.Logger
 	mu      sync.Mutex
-	alerted map[string]time.Time // userUID -> last alert time (debounce 1h)
+	alerted map[string]time.Time // "tenantID:userUID" -> last alert time (debounce 1h)
 }
 
 func New(st *store.Store, log zerolog.Logger) *Detector {
@@ -61,6 +61,7 @@ func (d *Detector) Run(ctx context.Context) {
 }
 
 func (d *Detector) sweep(ctx context.Context) {
+	// Pass "" to query all tenants; each hit carries its own TenantID.
 	hits, err := d.store.LateralMovementQuery(ctx, "", lateralWindow)
 	if err != nil {
 		d.log.Warn().Err(err).Msg("lateral movement sweep failed")
@@ -70,13 +71,14 @@ func (d *Detector) sweep(ctx context.Context) {
 		if hit.AgentCount <= lateralThresh {
 			continue
 		}
+		debounceKey := hit.TenantID + ":" + hit.UserUID
 		d.mu.Lock()
-		last, seen := d.alerted[hit.UserUID]
+		last, seen := d.alerted[debounceKey]
 		if seen && time.Since(last) < time.Hour {
 			d.mu.Unlock()
 			continue
 		}
-		d.alerted[hit.UserUID] = time.Now()
+		d.alerted[debounceKey] = time.Now()
 		d.mu.Unlock()
 
 		go d.fireAlert(ctx, hit)

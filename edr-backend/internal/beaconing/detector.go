@@ -36,12 +36,14 @@ type BeaconingStore interface {
 	InsertAlert(ctx context.Context, a *models.Alert) error
 }
 
+const alertCooldown = 24 * time.Hour
+
 type Detector struct {
 	store     BeaconingStore
 	log       zerolog.Logger
 	mu        sync.Mutex
 	connTimes map[string][]time.Time // "agentID|ip:port" -> timestamps
-	alerted   map[string]bool
+	alerted   map[string]time.Time   // key -> time alert last fired
 }
 
 func New(st *store.Store, log zerolog.Logger) *Detector {
@@ -49,7 +51,28 @@ func New(st *store.Store, log zerolog.Logger) *Detector {
 		store:     st,
 		log:       log.With().Str("component", "beaconing-detector").Logger(),
 		connTimes: make(map[string][]time.Time),
-		alerted:   make(map[string]bool),
+		alerted:   make(map[string]time.Time),
+	}
+}
+
+// Run periodically evicts stale entries from in-memory maps. Call in a goroutine.
+func (d *Detector) Run(ctx context.Context) {
+	ticker := time.NewTicker(6 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			d.mu.Lock()
+			for k, t := range d.alerted {
+				if time.Since(t) >= alertCooldown {
+					delete(d.alerted, k)
+					delete(d.connTimes, k)
+				}
+			}
+			d.mu.Unlock()
+		}
 	}
 }
 
@@ -75,7 +98,7 @@ func (d *Detector) Observe(ctx context.Context, ev *models.XdrEvent) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if d.alerted[key] {
+	if t, ok := d.alerted[key]; ok && time.Since(t) < alertCooldown {
 		return
 	}
 
@@ -113,15 +136,19 @@ func (d *Detector) Observe(ctx context.Context, ev *models.XdrEvent) {
 		return
 	}
 
-	d.alerted[key] = true
+	keyCopy := key
 	go func() {
 		alertCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		d.fireAlert(alertCtx, ev, dstPort, mean, cv)
+		if d.fireAlert(alertCtx, ev, dstPort, mean, cv) {
+			d.mu.Lock()
+			d.alerted[keyCopy] = time.Now()
+			d.mu.Unlock()
+		}
 	}()
 }
 
-func (d *Detector) fireAlert(ctx context.Context, ev *models.XdrEvent, dstPort int, meanS, cv float64) {
+func (d *Detector) fireAlert(ctx context.Context, ev *models.XdrEvent, dstPort int, meanS, cv float64) bool {
 	dstIPStr := ev.DstIP.String()
 	alert := &models.Alert{
 		ID:       "alert-" + uuid.New().String(),
@@ -143,13 +170,14 @@ func (d *Detector) fireAlert(ctx context.Context, ev *models.XdrEvent, dstPort i
 	}
 	if err := d.store.InsertAlert(ctx, alert); err != nil {
 		d.log.Warn().Err(err).Str("agent_id", ev.AgentID).Msg("beaconing alert insert failed")
-		return
+		return false
 	}
 	_ = d.store.MarkBeaconingAlertFired(ctx, ev.AgentID, dstIPStr, dstPort)
 	d.log.Warn().Str("agent_id", ev.AgentID).
 		Str("dst", fmt.Sprintf("%s:%d", dstIPStr, dstPort)).
 		Float64("mean_s", meanS).Float64("cv", cv).
 		Msg("BEACONING ALERT FIRED")
+	return true
 }
 
 func meanF(v []float64) float64 {

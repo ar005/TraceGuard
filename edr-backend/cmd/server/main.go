@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -186,6 +187,9 @@ func main() {
 	// and the behavioral analyzer.
 	var fireAlert func(ctx context.Context, alert *models.Alert)
 	fireAlert = func(ctx context.Context, alert *models.Alert) {
+		// ── Risk scoring (Feature G) ─────────────────────────────────────
+		alert.RiskScore = computeRiskScore(alert)
+
 		if err := st.InsertAlert(ctx, alert); err != nil {
 			logger.Error().Err(err).Str("rule", alert.RuleID).Msg("persist alert failed")
 			return
@@ -227,7 +231,7 @@ func main() {
 			}
 		}(alert)
 
-		// ── Async TI enrichment ───────────────────────────────────────
+		// ── Async TI enrichment (Feature A) ──────────────────────────
 		if enricher != nil {
 			go func(a *models.Alert) {
 				enrichCtx, enrichCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -236,9 +240,20 @@ func main() {
 				if a.SrcIP != "" {
 					ti, _ = enricher.EnrichIP(enrichCtx, a.SrcIP)
 				}
+				// Hash enrichment: derive from event IDs or rule metadata
+				if ti == nil {
+					for _, eid := range a.EventIDs {
+						if isFileHash(eid) {
+							ti, _ = enricher.EnrichHash(enrichCtx, eid)
+							if ti != nil {
+								break
+							}
+						}
+					}
+				}
 				if ti != nil {
 					if merged, err := enrichment.MergeIntoEnrichments(a.Enrichments, ti); err == nil {
-						_ = st.UpdateAlertEnrichments(enrichCtx, a.ID, merged)
+						_ = st.UpdateAlertEnrichments(enrichCtx, a.ID, a.TenantID, merged)
 					}
 				}
 			}(alert)
@@ -398,6 +413,7 @@ func main() {
 		scorer := userrisk.New(st, logger)
 		hostScorer := hostrisk.New(st, logger)
 		beaconDetector := beaconing.New(st, logger)
+		go beaconDetector.Run(detectorCtx)
 		loginTracker := logintrack.New(st, logger)
 		dnsTunnelDetector := dnstunnel.New(st, logger)
 		ransomwareDetector := ransomware.New(st, logger)
@@ -605,4 +621,75 @@ func main() {
 	}
 
 	logger.Info().Msg("EDR backend stopped")
+}
+
+// ── Risk scoring helpers (Feature G) ─────────────────────────────────────────
+
+// tacticWeights maps MITRE technique prefixes to a bonus risk score.
+var tacticWeights = map[string]int16{
+	"T1059": 20, // Execution
+	"T1003": 25, // Credential Dumping
+	"T1078": 20, // Valid Accounts
+	"T1021": 20, // Remote Services / Lateral Movement
+	"T1550": 25, // Pass-the-Hash
+	"T1486": 30, // Data Encrypted for Impact (ransomware)
+	"T1048": 20, // Exfiltration
+	"T1566": 15, // Phishing
+	"T1190": 25, // Exploit Public-Facing Application
+	"T1046": 10, // Port Scan
+}
+
+// highValueRules get a flat bonus.
+var highValueRules = map[string]int16{
+	"rule-lateral-movement":     25,
+	"rule-data-exfil":           20,
+	"rule-host-process-anomaly": 15,
+	"rule-ransomware":           30,
+	"rule-port-scan":            10,
+	"rule-dns-tunnel":           20,
+}
+
+func computeRiskScore(a *models.Alert) int16 {
+	// Base: severity 1→20, 2→40, 3→60, 4→80, 5→100
+	base := int16(a.Severity) * 20
+	if base > 100 {
+		base = 100
+	}
+
+	bonus := int16(0)
+
+	// MITRE tactic bonus
+	for _, mid := range a.MitreIDs {
+		prefix := strings.ToUpper(mid)
+		if idx := strings.IndexByte(prefix, '.'); idx != -1 {
+			prefix = prefix[:idx]
+		}
+		if w, ok := tacticWeights[prefix]; ok && w > bonus {
+			bonus = w
+		}
+	}
+
+	// Rule-specific bonus
+	if rb, ok := highValueRules[a.RuleID]; ok && rb > bonus {
+		bonus = rb
+	}
+
+	score := base + bonus
+	if score > 100 {
+		score = 100
+	}
+	return score
+}
+
+// isFileHash returns true if s looks like an MD5/SHA1/SHA256 hex string.
+func isFileHash(s string) bool {
+	if len(s) != 32 && len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }

@@ -18,7 +18,7 @@ import (
 func (s *Server) handleListPlaybooks(c *gin.Context) {
 	rows, err := s.store.ListPlaybooks(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.jsonError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"playbooks": rows})
@@ -58,7 +58,7 @@ func (s *Server) handleCreatePlaybook(c *gin.Context) {
 		}
 	}
 	if err := s.store.CreatePlaybook(c.Request.Context(), &pb); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.jsonError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, pb)
@@ -76,7 +76,7 @@ func (s *Server) handleUpdatePlaybook(c *gin.Context) {
 	}
 	pb.ID = c.Param("id")
 	if err := s.store.UpdatePlaybook(c.Request.Context(), pb); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.jsonError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, pb)
@@ -84,7 +84,7 @@ func (s *Server) handleUpdatePlaybook(c *gin.Context) {
 
 func (s *Server) handleDeletePlaybook(c *gin.Context) {
 	if err := s.store.DeletePlaybook(c.Request.Context(), c.Param("id")); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.jsonError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -94,7 +94,7 @@ func (s *Server) handleListPlaybookRuns(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	runs, err := s.store.ListPlaybookRuns(c.Request.Context(), c.Param("id"), limit)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.jsonError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"runs": runs})
@@ -104,7 +104,7 @@ func (s *Server) handleListAllPlaybookRuns(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
 	runs, err := s.store.ListPlaybookRuns(c.Request.Context(), "", limit)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.jsonError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"runs": runs})
@@ -139,7 +139,7 @@ func (s *Server) handleListResponseActions(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "200"))
 	actions, err := s.store.ListResponseActions(c.Request.Context(), limit)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.jsonError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"actions": actions})
@@ -150,7 +150,7 @@ func (s *Server) handleListResponseActions(c *gin.Context) {
 func (s *Server) handleListExportDests(c *gin.Context) {
 	rows, err := s.store.ListExportDestinations(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.jsonError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"destinations": rows})
@@ -173,7 +173,7 @@ func (s *Server) handleUpsertExportDest(c *gin.Context) {
 		d.Config = []byte("{}")
 	}
 	if err := s.store.UpsertExportDestination(c.Request.Context(), &d); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.jsonError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, d)
@@ -181,7 +181,7 @@ func (s *Server) handleUpsertExportDest(c *gin.Context) {
 
 func (s *Server) handleDeleteExportDest(c *gin.Context) {
 	if err := s.store.DeleteExportDestination(c.Request.Context(), c.Param("id")); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.jsonError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)

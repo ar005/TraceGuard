@@ -17,7 +17,7 @@ func (s *Server) handleListIdentities(c *gin.Context) {
 
 	rows, err := s.store.ListIdentities(c.Request.Context(), limit, offset)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.jsonError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"identities": rows, "limit": limit, "offset": offset})
@@ -27,7 +27,7 @@ func (s *Server) handleTopRiskyIdentities(c *gin.Context) {
 	n, _ := strconv.Atoi(c.DefaultQuery("n", "10"))
 	rows, err := s.store.TopRiskyIdentities(c.Request.Context(), n)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.jsonError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"identities": rows})
@@ -52,7 +52,7 @@ func (s *Server) handleListAssets(c *gin.Context) {
 
 	rows, err := s.store.ListAssets(c.Request.Context(), assetType, limit, offset)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.jsonError(c, err)
 		return
 	}
 	total, _ := s.store.AssetCount(c.Request.Context(), assetType)
@@ -80,7 +80,7 @@ func (s *Server) handleListXdrEvents(c *gin.Context) {
 
 	rows, err := s.store.ListXdrEvents(c.Request.Context(), sourceType, sourceID, eventType, limit, offset)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.jsonError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"events": rows, "limit": limit, "offset": offset})

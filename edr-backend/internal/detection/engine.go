@@ -131,7 +131,7 @@ func (e *Engine) SetAutoResponder(lr *liveresponse.Manager) {
 
 // Reload refreshes the rule and suppression cache from the database.
 func (e *Engine) Reload(ctx context.Context) error {
-	rules, err := e.store.ListRules(ctx)
+	rules, err := e.store.ListRules(ctx, "") // "" = all tenants; engine matches per-event tenant at runtime
 	if err != nil {
 		return fmt.Errorf("load rules: %w", err)
 	}

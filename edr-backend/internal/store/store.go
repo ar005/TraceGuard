@@ -173,6 +173,7 @@ type QueryEventsParams struct {
 	Hostname   string // filter by hostname column
 	AlertID    string // filter by alert_id column (events that triggered an alert)
 	EventIDs   []string // fetch specific event IDs (from alert.event_ids)
+	TenantID   string // restrict results to this tenant (empty = no filter for internal callers)
 	Limit      int
 	Offset     int
 }
@@ -236,6 +237,11 @@ func (s *Store) QueryEvents(ctx context.Context, p QueryEventsParams) ([]models.
 		args = append(args, pq.Array(p.EventIDs))
 		argN++
 	}
+	if p.TenantID != "" {
+		query += fmt.Sprintf(` AND (tenant_id = $%d OR tenant_id = 'default' OR $%d = 'default')`, argN, argN)
+		args = append(args, p.TenantID)
+		argN++
+	}
 
 	query += fmt.Sprintf(` ORDER BY timestamp DESC LIMIT $%d OFFSET $%d`, argN, argN+1)
 	args = append(args, p.Limit, p.Offset)
@@ -245,9 +251,11 @@ func (s *Store) QueryEvents(ctx context.Context, p QueryEventsParams) ([]models.
 	return events, err
 }
 
-func (s *Store) GetEvent(ctx context.Context, id string) (*models.Event, error) {
+func (s *Store) GetEvent(ctx context.Context, id, tenantID string) (*models.Event, error) {
 	var e models.Event
-	err := s.rdb().GetContext(ctx, &e, `SELECT * FROM events WHERE id=$1`, id)
+	err := s.rdb().GetContext(ctx, &e,
+		`SELECT * FROM events WHERE id=$1 AND (tenant_id=$2 OR tenant_id='default' OR $2='default')`,
+		id, tenantID)
 	return &e, err
 }
 
@@ -328,18 +336,19 @@ func (s *Store) InsertAlert(ctx context.Context, a *models.Alert) error {
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO alerts
-		  (id, title, description, severity, status, rule_id, rule_name, mitre_ids, event_ids, agent_id, hostname, user_uid, source_types, src_ip, first_seen, last_seen, hit_count)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW(),NOW(),1)
+		  (id, title, description, severity, status, rule_id, rule_name, mitre_ids, event_ids, agent_id, hostname, user_uid, source_types, src_ip, risk_score, first_seen, last_seen, hit_count)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW(),NOW(),1)
 		ON CONFLICT (id) DO UPDATE SET
 			last_seen    = NOW(),
 			hit_count    = alerts.hit_count + 1,
 			event_ids    = alerts.event_ids || EXCLUDED.event_ids,
 			source_types = (SELECT array_agg(DISTINCT x) FROM unnest(alerts.source_types || EXCLUDED.source_types) x),
 			src_ip       = COALESCE(EXCLUDED.src_ip, alerts.src_ip),
+			risk_score   = GREATEST(alerts.risk_score, EXCLUDED.risk_score),
 			status       = CASE WHEN alerts.status='CLOSED' THEN 'OPEN' ELSE alerts.status END
 	`, a.ID, a.Title, a.Description, a.Severity, a.Status,
 		a.RuleID, a.RuleName, pq.Array(a.MitreIDs), pq.Array(a.EventIDs),
-		a.AgentID, a.Hostname, a.UserUID, pq.Array(sourceTypes), srcIP)
+		a.AgentID, a.Hostname, a.UserUID, pq.Array(sourceTypes), srcIP, a.RiskScore)
 	return err
 }
 
@@ -404,10 +413,10 @@ func (s *Store) QueryAlerts(ctx context.Context, p QueryAlertsParams) ([]models.
 }
 
 // UpdateAlertEnrichments merges threat intel results into alerts.enrichments.
-func (s *Store) UpdateAlertEnrichments(ctx context.Context, alertID string, enrichments json.RawMessage) error {
+func (s *Store) UpdateAlertEnrichments(ctx context.Context, alertID string, tenantID string, enrichments json.RawMessage) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE alerts SET enrichments = $1 WHERE id = $2`,
-		enrichments, alertID)
+		`UPDATE alerts SET enrichments = $1 WHERE id = $2 AND tenant_id = $3`,
+		enrichments, alertID, tenantID)
 	return err
 }
 
@@ -500,9 +509,11 @@ func (s *Store) AlertStats(ctx context.Context) (map[string]int64, error) {
 
 // ─── Rules ────────────────────────────────────────────────────────────────────
 
-func (s *Store) ListRules(ctx context.Context) ([]models.Rule, error) {
+func (s *Store) ListRules(ctx context.Context, tenantID string) ([]models.Rule, error) {
 	var rules []models.Rule
-	err := s.rdb().SelectContext(ctx, &rules, `SELECT * FROM rules ORDER BY severity DESC, name`)
+	err := s.rdb().SelectContext(ctx, &rules,
+		`SELECT * FROM rules WHERE (tenant_id=$1 OR tenant_id='default' OR $1='default') ORDER BY severity DESC, name`,
+		tenantID)
 	return rules, err
 }
 
@@ -744,7 +755,7 @@ type huntFilter struct {
 //	hostname IS NOT NULL
 //
 // All user-supplied values are parameterized — no raw SQL is ever interpolated.
-func (s *Store) HuntQuery(ctx context.Context, query string, limit int) ([]models.Event, int, error) {
+func (s *Store) HuntQuery(ctx context.Context, tenantID string, query string, limit int) ([]models.Event, int, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, 0, fmt.Errorf("empty query")
@@ -776,9 +787,16 @@ func (s *Store) HuntQuery(ctx context.Context, query string, limit int) ([]model
 		return nil, 0, fmt.Errorf("invalid query: %w", err)
 	}
 
-	limitParam := len(args) + 1
-	dataSQL := fmt.Sprintf(`SELECT * FROM events WHERE %s ORDER BY timestamp DESC LIMIT $%d`, whereClause, limitParam)
-	countSQL := fmt.Sprintf(`SELECT COUNT(*) FROM events WHERE %s`, whereClause)
+	// Always inject tenant isolation — user-supplied WHERE clause sits inside it.
+	tenantParam := len(args) + 1
+	limitParam := tenantParam + 1
+	dataSQL := fmt.Sprintf(
+		`SELECT * FROM events WHERE tenant_id = $%d AND (%s) ORDER BY timestamp DESC LIMIT $%d`,
+		tenantParam, whereClause, limitParam)
+	countSQL := fmt.Sprintf(
+		`SELECT COUNT(*) FROM events WHERE tenant_id = $%d AND (%s)`,
+		tenantParam, whereClause)
+	args = append(args, tenantID)
 
 	allArgs := append(args, limit)
 
@@ -786,17 +804,38 @@ func (s *Store) HuntQuery(ctx context.Context, query string, limit int) ([]model
 	qCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	var events []models.Event
-	if err := s.rdb().SelectContext(qCtx, &events, dataSQL, allArgs...); err != nil {
-		return nil, 0, fmt.Errorf("hunt query failed: %w", err)
+	type dataResult struct {
+		events []models.Event
+		err    error
+	}
+	type countResult struct {
+		total int
+		err   error
+	}
+	dataCh := make(chan dataResult, 1)
+	countCh := make(chan countResult, 1)
+
+	go func() {
+		var evs []models.Event
+		err := s.rdb().SelectContext(qCtx, &evs, dataSQL, allArgs...)
+		dataCh <- dataResult{evs, err}
+	}()
+	go func() {
+		var n int
+		err := s.rdb().QueryRowContext(qCtx, countSQL, args...).Scan(&n)
+		countCh <- countResult{n, err}
+	}()
+
+	dr := <-dataCh
+	cr := <-countCh
+	if dr.err != nil {
+		return nil, 0, fmt.Errorf("hunt query failed: %w", dr.err)
+	}
+	if cr.err != nil {
+		return nil, 0, fmt.Errorf("hunt count failed: %w", cr.err)
 	}
 
-	var total int
-	if err := s.db.QueryRowContext(qCtx, countSQL, args...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("hunt count failed: %w", err)
-	}
-
-	return events, total, nil
+	return dr.events, cr.total, nil
 }
 
 // parseHuntQuery parses the user query string into parameterized SQL.

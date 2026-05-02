@@ -88,6 +88,7 @@ type Alert struct {
 	TriageNotes   string          `db:"triage_notes"   json:"triage_notes,omitempty"`
 	TriageAt      *time.Time      `db:"triage_at"      json:"triage_at,omitempty"`
 	Enrichments   json.RawMessage `db:"enrichments"    json:"enrichments,omitempty"`
+	RiskScore     int16           `db:"risk_score"     json:"risk_score"`
 }
 
 // Rule represents a detection rule.

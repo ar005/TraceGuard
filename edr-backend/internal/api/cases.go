@@ -23,7 +23,7 @@ func (s *Server) handleListCases(c *gin.Context) {
 
 	cases, total, err := s.store.ListCases(c.Request.Context(), tid, status, limit, offset)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.jsonError(c, err)
 		return
 	}
 	if cases == nil {
@@ -88,7 +88,7 @@ func (s *Server) handleCreateCase(c *gin.Context) {
 		}
 	}
 	if err := s.store.CreateCase(c.Request.Context(), &cs); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.jsonError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, cs)
@@ -117,7 +117,7 @@ func (s *Server) handleUpdateCase(c *gin.Context) {
 	}
 	cs.ID = c.Param("id")
 	if err := s.store.UpdateCase(c.Request.Context(), cs); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.jsonError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, cs)
@@ -127,7 +127,7 @@ func (s *Server) handleDeleteCase(c *gin.Context) {
 	tenantID, _ := c.Get("tenant_id")
 	tid, _ := tenantID.(string)
 	if err := s.store.DeleteCase(c.Request.Context(), c.Param("id"), tid); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.jsonError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -140,7 +140,7 @@ func (s *Server) handleListCaseAlerts(c *gin.Context) {
 	tid, _ := tenantID.(string)
 	alerts, err := s.store.ListCaseAlerts(c.Request.Context(), c.Param("id"), tid)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.jsonError(c, err)
 		return
 	}
 	if alerts == nil {
@@ -176,7 +176,7 @@ func (s *Server) handleLinkAlert(c *gin.Context) {
 		}
 	}
 	if err := s.store.LinkAlertToCase(ctx, caseID, body.AlertID, actor); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.jsonError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -197,7 +197,7 @@ func (s *Server) handleUnlinkAlert(c *gin.Context) {
 		return
 	}
 	if err := s.store.UnlinkAlertFromCase(ctx, caseID, alertID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.jsonError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -210,7 +210,7 @@ func (s *Server) handleListCaseNotes(c *gin.Context) {
 	tid, _ := tenantID.(string)
 	notes, err := s.store.ListCaseNotes(c.Request.Context(), c.Param("id"), tid)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.jsonError(c, err)
 		return
 	}
 	if notes == nil {
@@ -229,6 +229,10 @@ func (s *Server) handleAddCaseNote(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "body required"})
 		return
 	}
+	if len(note.Body) > 50000 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "note body too long (max 50000 characters)"})
+		return
+	}
 	tenantID, _ := c.Get("tenant_id")
 	tid, _ := tenantID.(string)
 	ctx := c.Request.Context()
@@ -244,7 +248,7 @@ func (s *Server) handleAddCaseNote(c *gin.Context) {
 		}
 	}
 	if err := s.store.AddCaseNote(ctx, &note); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.jsonError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, note)
@@ -261,7 +265,7 @@ func (s *Server) handleUpdateCaseNote(c *gin.Context) {
 	tenantID, _ := c.Get("tenant_id")
 	tid, _ := tenantID.(string)
 	if err := s.store.UpdateCaseNote(c.Request.Context(), c.Param("note_id"), c.Param("id"), tid, body.Body); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.jsonError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -271,7 +275,7 @@ func (s *Server) handleDeleteCaseNote(c *gin.Context) {
 	tenantID, _ := c.Get("tenant_id")
 	tid, _ := tenantID.(string)
 	if err := s.store.DeleteCaseNote(c.Request.Context(), c.Param("note_id"), c.Param("id"), tid); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.jsonError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)

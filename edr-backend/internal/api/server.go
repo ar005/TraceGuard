@@ -23,6 +23,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/youredr/edr-backend/internal/apikeys"
+	"github.com/youredr/edr-backend/internal/compliance"
 	"github.com/youredr/edr-backend/internal/configver"
 	"github.com/youredr/edr-backend/internal/cvecache"
 	"github.com/youredr/edr-backend/internal/llm"
@@ -135,10 +136,10 @@ func (s *Server) registerRoutes() {
 
 	auth := r.Group("/api/v1/auth")
 	{
-		auth.POST("/login",              s.handleLogin)
+		auth.POST("/login",              strictRateLimitMiddleware(), s.handleLogin)
 		auth.POST("/logout",             s.handleLogout)
-		auth.POST("/refresh",            s.handleRefresh)
-		auth.POST("/totp/verify-login",  s.handleTOTPVerifyLogin)
+		auth.POST("/refresh",            strictRateLimitMiddleware(), s.handleRefresh)
+		auth.POST("/totp/verify-login",  strictRateLimitMiddleware(), s.handleTOTPVerifyLogin)
 	}
 
 	v1 := r.Group("/api/v1", s.authMiddleware())
@@ -315,26 +316,29 @@ func (s *Server) registerRoutes() {
 		// Alert enrichments
 		v1.GET("/alerts/:id/enrichments",      s.handleGetAlertEnrichments)
 
-		// Auto-case policies
-		v1.GET("/autocase/policies",           s.handleListAutoCasePolicies)
-		v1.PUT("/autocase/policies/:id",       s.handleUpsertAutoCasePolicy)
+		// Auto-case policies (reads open to analysts; writes admin-only)
+		v1.GET("/autocase/policies",                        s.handleListAutoCasePolicies)
+		v1.PUT("/autocase/policies/:id", s.adminOnly(),    s.handleUpsertAutoCasePolicy)
 
-		// Auto-remediation rules (B)
-		v1.GET("/remediation/rules",        s.handleListRemediationRules)
-		v1.PUT("/remediation/rules/:id",    s.handleUpsertRemediationRule)
-		v1.DELETE("/remediation/rules/:id", s.handleDeleteRemediationRule)
+		// Auto-remediation rules (reads open to analysts; writes admin-only)
+		v1.GET("/remediation/rules",                              s.handleListRemediationRules)
+		v1.PUT("/remediation/rules/:id",    s.adminOnly(),        s.handleUpsertRemediationRule)
+		v1.DELETE("/remediation/rules/:id", s.adminOnly(),        s.handleDeleteRemediationRule)
 
 		// UEBA timeline (C)
 		v1.GET("/identity/:uid/timeline", s.handleGetUEBATimeline)
 
-		// Custom IOC feeds (G)
-		v1.GET("/ioc-feeds",             s.handleListCustomIOCFeeds)
-		v1.PUT("/ioc-feeds/:id",         s.handleUpsertCustomIOCFeed)
-		v1.DELETE("/ioc-feeds/:id",      s.handleDeleteCustomIOCFeed)
-		v1.POST("/ioc-feeds/:id/sync",   s.handleSyncCustomIOCFeed)
+		// Custom IOC feeds (reads open to analysts; writes admin-only)
+		v1.GET("/ioc-feeds",                                  s.handleListCustomIOCFeeds)
+		v1.PUT("/ioc-feeds/:id",    s.adminOnly(),            s.handleUpsertCustomIOCFeed)
+		v1.DELETE("/ioc-feeds/:id", s.adminOnly(),            s.handleDeleteCustomIOCFeed)
+		v1.POST("/ioc-feeds/:id/sync", s.adminOnly(),         s.handleSyncCustomIOCFeed)
 
 		// Attack graph (H)
 		v1.GET("/incidents/:id/attack-graph", s.handleGetIncidentAttackGraph)
+
+		// Compliance coverage (Feature F)
+		v1.GET("/compliance/coverage", s.handleComplianceCoverage)
 
 		// Reports (I)
 		v1.GET("/reports",                     s.handleListReports)
@@ -823,6 +827,11 @@ func (s *Server) handleAdminCreateUser(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	// Enforce reasonable field length caps before handing off to bcrypt.
+	if len(body.Username) > 100 || len(body.Email) > 255 || len(body.Password) > 1000 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "username, email, or password field too long"})
+		return
+	}
 
 	actorID, actorName := currentUser(c)
 	u, err := s.um.Create(c.Request.Context(), body.Username, body.Password, body.Email, body.Role, actorID)
@@ -915,6 +924,10 @@ func (s *Server) handleAdminResetPassword(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if len(body.Password) > 1000 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "password too long"})
 		return
 	}
 
@@ -1236,11 +1249,14 @@ func (s *Server) handleUpdateAgentWinEventConfig(c *gin.Context) {
 // ─── Events ───────────────────────────────────────────────────────────────────
 
 func (s *Server) handleListEvents(c *gin.Context) {
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
 	p := store.QueryEventsParams{
-		AgentID: c.Query("agent_id"),
-		Search:  c.Query("q"),
-		Limit:   intQuery(c, "limit", 50),
-		Offset:  intQuery(c, "offset", 0),
+		AgentID:  c.Query("agent_id"),
+		Search:   c.Query("q"),
+		Limit:    intQuery(c, "limit", 50),
+		Offset:   intQuery(c, "offset", 0),
+		TenantID: tid,
 	}
 	if t := c.Query("event_type"); t != "" {
 		p.EventTypes = []string{t}
@@ -1276,7 +1292,9 @@ func (s *Server) handleListEvents(c *gin.Context) {
 }
 
 func (s *Server) handleGetEvent(c *gin.Context) {
-	ev, err := s.store.GetEvent(c.Request.Context(), c.Param("id"))
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	ev, err := s.store.GetEvent(c.Request.Context(), c.Param("id"), tid)
 	if err != nil {
 		s.jsonError(c, err)
 		return
@@ -1298,7 +1316,8 @@ func (s *Server) handleHunt(c *gin.Context) {
 	if body.Limit <= 0 || body.Limit > 1000 {
 		body.Limit = 100
 	}
-	events, total, err := s.store.HuntQuery(c.Request.Context(), body.Query, body.Limit)
+	tid := c.GetString("tenant_id")
+	events, total, err := s.store.HuntQuery(c.Request.Context(), tid, body.Query, body.Limit)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -1355,6 +1374,17 @@ func (s *Server) handleUpdateAlert(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// Validate status against allowed values to prevent storing arbitrary strings.
+	validStatuses := map[string]bool{"open": true, "in_progress": true, "resolved": true, "false_positive": true, "": true}
+	if !validStatuses[body.Status] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status value"})
+		return
+	}
+	// Enforce field length caps.
+	if len(body.Assignee) > 255 || len(body.Notes) > 10000 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "assignee or notes field too long"})
 		return
 	}
 	tenantID, _ := c.Get("tenant_id")
@@ -1759,7 +1789,7 @@ func (s *Server) handleLRCommand(c *gin.Context) {
 	}
 	result, err := s.lr.SendCommand(c.Request.Context(), body.AgentID, body.Action, body.Args, body.Timeout)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		s.jsonError(c, err)
 		return
 	}
 
@@ -1871,6 +1901,17 @@ func (s *Server) handleUpdateIncident(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// Validate status against allowed values to prevent storing arbitrary strings.
+	validStatuses := map[string]bool{"open": true, "in_progress": true, "resolved": true, "closed": true, "": true}
+	if !validStatuses[body.Status] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status value"})
+		return
+	}
+	// Enforce field length caps.
+	if len(body.Assignee) > 255 || len(body.Notes) > 10000 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "assignee or notes field too long"})
 		return
 	}
 	tenantID, _ := c.Get("tenant_id")
@@ -2049,7 +2090,7 @@ func (s *Server) handleDeleteYARARule(c *gin.Context) {
 // ─── Rules ────────────────────────────────────────────────────────────────────
 
 func (s *Server) handleListRules(c *gin.Context) {
-	rules, err := s.store.ListRules(c.Request.Context())
+	rules, err := s.store.ListRules(c.Request.Context(), c.GetString("tenant_id"))
 	if err != nil {
 		s.jsonError(c, err)
 		return
@@ -2612,7 +2653,7 @@ func (s *Server) handleScanPackages(c *gin.Context) {
 	result, err := s.lr.SendCommand(c.Request.Context(), agentID, "scan_packages", nil, 60)
 	if err != nil {
 		s.log.Warn().Err(err).Str("agent", agentID).Msg("package scan failed")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "scan failed: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "package scan failed"})
 		return
 	}
 
@@ -3210,6 +3251,10 @@ func (s *Server) handleGenerateReport(c *gin.Context) {
 	if req.Type == "" {
 		req.Type = "alerts"
 	}
+	if len(req.Title) > 255 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "title too long (max 255 characters)"})
+		return
+	}
 	if req.Title == "" {
 		req.Title = fmt.Sprintf("%s export %s", req.Type, time.Now().Format("2006-01-02"))
 	}
@@ -3439,4 +3484,24 @@ func (s *Server) handleGetIncidentAttackGraph(c *gin.Context) {
 		graph.Edges = []store.AttackGraphEdge{}
 	}
 	c.JSON(http.StatusOK, graph)
+}
+
+// ── Feature F: Compliance Coverage ───────────────────────────────────────────
+
+// GET /api/v1/compliance/coverage?framework=nist-csf|iso-27001|pci-dss
+func (s *Server) handleComplianceCoverage(c *gin.Context) {
+	fw := compliance.Framework(c.DefaultQuery("framework", "nist-csf"))
+	switch fw {
+	case compliance.FrameworkNIST, compliance.FrameworkISO, compliance.FrameworkPCIDSS:
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown framework; use nist-csf, iso-27001, or pci-dss"})
+		return
+	}
+	report, err := compliance.Generate(c.Request.Context(), s.store, c.GetString("tenant_id"), fw)
+	if err != nil {
+		s.log.Error().Err(err).Str("framework", string(fw)).Msg("compliance coverage")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	c.JSON(http.StatusOK, report)
 }

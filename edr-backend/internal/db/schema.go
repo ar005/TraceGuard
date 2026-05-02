@@ -1699,6 +1699,31 @@ var migrations = []struct {
     CREATE INDEX IF NOT EXISTS beaconing_state_tenant_idx ON beaconing_state(tenant_id);
     `,
 	},
+	{
+		name: "xdr_phase17_alert_risk_score",
+		sql: `
+    ALTER TABLE alerts
+        ADD COLUMN IF NOT EXISTS risk_score SMALLINT NOT NULL DEFAULT 0;
+    CREATE INDEX IF NOT EXISTS alerts_risk_score_idx ON alerts(tenant_id, risk_score DESC);
+    `,
+	},
+	{
+		name: "xdr_phase18_network_lateral_state",
+		sql: `
+    CREATE TABLE IF NOT EXISTS network_lateral_state (
+        id          TEXT PRIMARY KEY,
+        tenant_id   TEXT NOT NULL,
+        agent_id    TEXT NOT NULL,
+        dst_port    INTEGER NOT NULL,
+        unique_ips  INTEGER NOT NULL DEFAULT 0,
+        window_start TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        alert_fired  BOOLEAN NOT NULL DEFAULT FALSE,
+        UNIQUE(agent_id, dst_port)
+    );
+    CREATE INDEX IF NOT EXISTS net_lateral_agent_idx  ON network_lateral_state(agent_id);
+    CREATE INDEX IF NOT EXISTS net_lateral_tenant_idx ON network_lateral_state(tenant_id);
+    `,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.
