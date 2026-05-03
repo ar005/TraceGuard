@@ -37,6 +37,7 @@ import (
 	"github.com/youredr/edr-agent-win/internal/monitor/usb"
 	"github.com/youredr/edr-agent-win/internal/monitor/vuln"
 	"github.com/youredr/edr-agent-win/internal/monitor/winevent"
+	"github.com/youredr/edr-agent-win/internal/tasks"
 	"github.com/youredr/edr-agent-win/internal/transport"
 	"github.com/youredr/edr-agent-win/internal/version"
 	"github.com/youredr/edr-agent-win/pkg/types"
@@ -265,6 +266,10 @@ func (a *Agent) Start(ctx context.Context) error {
 		a.log.Warn().Err(err).Msg("transport start failed; running in offline mode")
 	}
 	go a.transport.StartLiveResponse(ctx)
+
+	// Wire task executor — receives tasks via heartbeat and reports results back.
+	taskExec := tasks.New(a.transport, a.log)
+	a.transport.OnTask(taskExec.Handle)
 
 	// Start all monitors — errors are non-fatal (degraded mode).
 	monitors := []struct {

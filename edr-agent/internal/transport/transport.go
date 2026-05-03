@@ -73,16 +73,35 @@ type registerResponse struct {
 }
 
 type heartbeatRequest struct {
-	AgentID   string `json:"agent_id"`
-	Hostname  string `json:"hostname"`
-	Timestamp int64  `json:"timestamp"`
-	OS        string `json:"os"`
+	AgentID     string       `json:"agent_id"`
+	Hostname    string       `json:"hostname"`
+	Timestamp   int64        `json:"timestamp"`
+	OS          string       `json:"os"`
+	TaskResults []TaskResult `json:"task_results,omitempty"`
+}
+
+// TaskInstruction mirrors proto.TaskInstruction — duplicated here to keep the
+// transport package self-contained without importing the backend proto package.
+type TaskInstruction struct {
+	ID      string          `json:"id"`
+	Name    string          `json:"name"`
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+// TaskResult is sent back to the backend in the next heartbeat request.
+type TaskResult struct {
+	TaskID string `json:"task_id"`
+	Status string `json:"status"` // "success" | "failed"
+	Output string `json:"output"`
+	ErrMsg string `json:"error,omitempty"`
 }
 
 type heartbeatResponse struct {
-	Ok            bool   `json:"ok"`
-	ServerTime    int64  `json:"server_time"`
-	ConfigVersion string `json:"config_version"`
+	Ok            bool              `json:"ok"`
+	ServerTime    int64             `json:"server_time"`
+	ConfigVersion string            `json:"config_version"`
+	PendingTasks  []TaskInstruction `json:"pending_tasks,omitempty"`
 }
 
 const (
@@ -143,6 +162,9 @@ type GRPCTransport struct {
 	containment    ContainmentController
 	configVersion  string
 	onConfigChange func(newVersion string)
+	onTask         func(TaskInstruction)
+	resultsMu      sync.Mutex
+	pendingResults []TaskResult
 }
 
 func New(cfg Config, log zerolog.Logger) *GRPCTransport {
@@ -164,6 +186,18 @@ func (t *GRPCTransport) SetContainment(c ContainmentController) {
 // reports a new config version in a heartbeat or register response.
 func (t *GRPCTransport) OnConfigChange(fn func(newVersion string)) {
 	t.onConfigChange = fn
+}
+
+// OnTask registers a callback invoked for each task delivered by the backend.
+func (t *GRPCTransport) OnTask(fn func(TaskInstruction)) {
+	t.onTask = fn
+}
+
+// ReportTaskResult queues an execution result to be sent on the next heartbeat.
+func (t *GRPCTransport) ReportTaskResult(r TaskResult) {
+	t.resultsMu.Lock()
+	t.pendingResults = append(t.pendingResults, r)
+	t.resultsMu.Unlock()
 }
 
 func (t *GRPCTransport) Start(ctx context.Context) error {
@@ -403,11 +437,18 @@ func (t *GRPCTransport) heartbeatLoop(ctx context.Context) {
 			if conn == nil {
 				continue
 			}
+			// Drain accumulated task results to include in this heartbeat.
+			t.resultsMu.Lock()
+			results := t.pendingResults
+			t.pendingResults = nil
+			t.resultsMu.Unlock()
+
 			hbCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			var resp heartbeatResponse
 			err := conn.Invoke(hbCtx, methodHeartbeat, &heartbeatRequest{
 				AgentID: t.cfg.AgentID, Hostname: t.cfg.Hostname,
 				Timestamp: time.Now().UnixNano(), OS: "linux",
+				TaskResults: results,
 			}, &resp, grpc.CallContentSubtype("json"))
 			cancel()
 			if err != nil {
@@ -415,6 +456,12 @@ func (t *GRPCTransport) heartbeatLoop(ctx context.Context) {
 				t.mu.Lock()
 				t.connected = false
 				t.mu.Unlock()
+				// Re-queue results so they are not lost on transient failures.
+				if len(results) > 0 {
+					t.resultsMu.Lock()
+					t.pendingResults = append(results, t.pendingResults...)
+					t.resultsMu.Unlock()
+				}
 			} else {
 				t.log.Debug().Msg("heartbeat ok")
 				// Check if backend config version changed.
@@ -424,6 +471,13 @@ func (t *GRPCTransport) heartbeatLoop(ctx context.Context) {
 					t.log.Info().Str("old", old).Str("new", resp.ConfigVersion).Msg("backend config version changed")
 					if t.onConfigChange != nil {
 						t.onConfigChange(resp.ConfigVersion)
+					}
+				}
+				// Dispatch any tasks delivered by the backend.
+				for _, task := range resp.PendingTasks {
+					t.log.Info().Str("task_id", task.ID).Str("type", task.Type).Str("name", task.Name).Msg("task received")
+					if t.onTask != nil {
+						go t.onTask(task)
 					}
 				}
 			}

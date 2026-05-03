@@ -36,6 +36,7 @@ import (
 	"github.com/youredr/edr-agent/internal/monitor/vuln"
 	"github.com/youredr/edr-agent/internal/monitor/yarascan"
 	"github.com/youredr/edr-agent/internal/selfprotect"
+	"github.com/youredr/edr-agent/internal/tasks"
 	"github.com/youredr/edr-agent/internal/transport"
 	"github.com/youredr/edr-agent/internal/version"
 	"github.com/youredr/edr-agent/pkg/types"
@@ -307,6 +308,10 @@ func (a *Agent) Start(ctx context.Context) error {
 
 	// Start live response client (background goroutine).
 	go a.transport.StartLiveResponse(ctx)
+
+	// Wire task executor — receives tasks via heartbeat and reports results back.
+	taskExec := tasks.New(a.transport, a.log)
+	a.transport.OnTask(taskExec.Handle)
 
 	// Start self-protection first (so it can protect the other monitors).
 	if err := a.protect.Start(ctx); err != nil {
