@@ -99,9 +99,9 @@ export default function USBDevicesPage() {
 
   /* Fetch agents */
   const fetchAgents = useCallback(
-    () =>
+    (signal: AbortSignal) =>
       api
-        .get<{ agents?: Agent[] } | Agent[]>("/api/v1/agents")
+        .get<{ agents?: Agent[] } | Agent[]>("/api/v1/agents", undefined, signal)
         .then((r) => (Array.isArray(r) ? r : r.agents ?? [])),
     []
   );
@@ -109,13 +109,13 @@ export default function USBDevicesPage() {
 
   /* Fetch USB connect events */
   const fetchConnects = useCallback(
-    () =>
+    (signal: AbortSignal) =>
       api
         .get<{ events?: Event[] } | Event[]>("/api/v1/events", {
           event_type: "USB_CONNECT",
           agent_id: selectedAgent || undefined,
           limit: PAGE_SIZE,
-        })
+        }, signal)
         .then((r) => (Array.isArray(r) ? r : r.events ?? [])),
     [selectedAgent]
   );
@@ -123,13 +123,13 @@ export default function USBDevicesPage() {
 
   /* Fetch USB disconnect events */
   const fetchDisconnects = useCallback(
-    () =>
+    (signal: AbortSignal) =>
       api
         .get<{ events?: Event[] } | Event[]>("/api/v1/events", {
           event_type: "USB_DISCONNECT",
           agent_id: selectedAgent || undefined,
           limit: PAGE_SIZE,
-        })
+        }, signal)
         .then((r) => (Array.isArray(r) ? r : r.events ?? [])),
     [selectedAgent]
   );

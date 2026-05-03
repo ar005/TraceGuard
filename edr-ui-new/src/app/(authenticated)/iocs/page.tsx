@@ -219,7 +219,7 @@ export default function IOCsPage() {
 
   /* Fetch IOC stats */
   const fetchStats = useCallback(
-    () => api.get<IOCStats | { stats?: IOCStats }>("/api/v1/iocs/stats").then((r) => {
+    (signal: AbortSignal) => api.get<IOCStats | { stats?: IOCStats }>("/api/v1/iocs/stats", undefined, signal).then((r) => {
       if (r && typeof r === "object" && "stats" in r && r.stats) return r.stats as IOCStats;
       return r as IOCStats;
     }),
@@ -229,12 +229,12 @@ export default function IOCsPage() {
 
   /* Fetch IOCs */
   const fetchIOCs = useCallback(
-    () =>
+    (signal: AbortSignal) =>
       api
         .get<{ iocs?: IOC[] } | IOC[]>("/api/v1/iocs", {
           type: typeFilter || undefined,
           search: search || undefined,
-        })
+        }, signal)
         .then((r) => (Array.isArray(r) ? r : r.iocs ?? [])),
     [typeFilter, search]
   );

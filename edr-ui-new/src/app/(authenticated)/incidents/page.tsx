@@ -11,7 +11,7 @@ import {
   timeAgo,
   formatDate,
 } from "@/lib/utils";
-import type { Alert, Incident, IncidentGraph, GraphNode, GraphEdge } from "@/types";
+import type { Alert, Event, Incident, IncidentGraph, GraphNode, GraphEdge } from "@/types";
 
 /* ---------- Constants ---------- */
 const STATUS_FILTERS = [
@@ -81,7 +81,7 @@ const NODE_COLORS: Record<string, string> = {
 
 function AttackGraph({ incidentId }: { incidentId: string }) {
   const fetchGraph = useCallback(
-    () => api.get<IncidentGraph>(`/api/v1/incidents/${incidentId}/graph`),
+    (signal: AbortSignal) => api.get<IncidentGraph>(`/api/v1/incidents/${incidentId}/graph`, undefined, signal),
     [incidentId]
   );
   const { data: graph, loading, error } = useApi(fetchGraph);
@@ -210,15 +210,31 @@ function IncidentDetail({
 
   /* Fetch related alerts */
   const fetchAlerts = useCallback(
-    () =>
+    (signal: AbortSignal) =>
       api
         .get<{ alerts?: Alert[] } | Alert[]>(
-          `/api/v1/incidents/${incident.id}/alerts`
+          `/api/v1/incidents/${incident.id}/alerts`,
+          undefined,
+          signal
         )
         .then((r) => (Array.isArray(r) ? r : r.alerts ?? [])),
     [incident.id]
   );
   const { data: relatedAlerts, loading: alertsLoading } = useApi(fetchAlerts);
+
+  /* Fetch cross-source timeline */
+  const fetchTimeline = useCallback(
+    (signal: AbortSignal) =>
+      api
+        .get<{ events?: Event[] } | Event[]>(
+          `/api/v1/incidents/${incident.id}/timeline`,
+          undefined,
+          signal
+        )
+        .then((r) => (Array.isArray(r) ? r : r.events ?? [])),
+    [incident.id]
+  );
+  const { data: timelineEvents, loading: timelineLoading } = useApi(fetchTimeline);
 
   async function handleSaveNotes() {
     setSavingNotes(true);
@@ -320,6 +336,38 @@ function IncidentDetail({
               {incident.hostnames?.join(", ") || "—"}
             </span>
           </div>
+          {incident.source_types && incident.source_types.length > 0 && (
+            <div className="flex justify-between">
+              <span style={{ color: "var(--muted)" }}>Sources</span>
+              <div className="flex flex-wrap gap-1 justify-end">
+                {incident.source_types.map((s) => (
+                  <span
+                    key={s}
+                    className="rounded px-1.5 py-0.5 text-[10px] font-medium uppercase"
+                    style={{ background: "var(--surface-2)", color: "var(--primary)" }}
+                  >
+                    {s}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          {incident.user_uids && incident.user_uids.length > 0 && (
+            <div className="flex justify-between">
+              <span style={{ color: "var(--muted)" }}>Identities</span>
+              <span className="font-mono text-right" style={{ color: "var(--fg)" }}>
+                {incident.user_uids.join(", ")}
+              </span>
+            </div>
+          )}
+          {incident.src_ips && incident.src_ips.length > 0 && (
+            <div className="flex justify-between">
+              <span style={{ color: "var(--muted)" }}>Source IPs</span>
+              <span className="font-mono" style={{ color: "var(--fg)" }}>
+                {incident.src_ips.join(", ")}
+              </span>
+            </div>
+          )}
           <div className="flex justify-between">
             <span style={{ color: "var(--muted)" }}>Assignee</span>
             <span style={{ color: "var(--fg)" }}>
@@ -524,13 +572,19 @@ function IncidentDetail({
         {/* Attack story graph */}
         <div>
           <div
-            className="text-xs font-semibold mb-2"
+            className="text-xs font-semibold mb-2 flex items-center"
             style={{
               fontFamily: "var(--font-space-grotesk)",
               color: "var(--fg)",
             }}
           >
-            Attack Story Graph
+            <span>Attack Story Graph</span>
+            <a
+              href={`/incidents/${incident.id}`}
+              className="text-xs text-blue-400 hover:text-blue-300 transition-colors ml-auto"
+            >
+              MITRE Kill Chain →
+            </a>
           </div>
           <div
             className="rounded border p-2"
@@ -538,6 +592,58 @@ function IncidentDetail({
           >
             <AttackGraph incidentId={incident.id} />
           </div>
+        </div>
+
+        {/* Cross-source timeline */}
+        <div>
+          <div
+            className="text-xs font-semibold mb-2"
+            style={{ fontFamily: "var(--font-space-grotesk)", color: "var(--fg)" }}
+          >
+            Cross-Source Timeline
+          </div>
+          {timelineLoading && (
+            <div className="space-y-1">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className="animate-shimmer h-6 rounded" />
+              ))}
+            </div>
+          )}
+          {!timelineLoading && (!timelineEvents || timelineEvents.length === 0) && (
+            <p className="text-xs" style={{ color: "var(--muted)" }}>
+              No correlated events found.
+            </p>
+          )}
+          {!timelineLoading && timelineEvents && timelineEvents.length > 0 && (
+            <div
+              className="rounded border divide-y overflow-hidden"
+              style={{ borderColor: "var(--border)", background: "var(--surface-1)" }}
+            >
+              {timelineEvents.map((ev) => (
+                <div
+                  key={ev.id}
+                  className="flex items-start gap-2 px-3 py-1.5 text-xs"
+                  style={{ borderColor: "var(--border-subtle)" }}
+                >
+                  <span
+                    className="shrink-0 rounded px-1 py-0.5 text-[10px] font-medium uppercase"
+                    style={{ background: "var(--surface-2)", color: "var(--primary)", minWidth: 60 }}
+                  >
+                    {ev.source_type || "endpoint"}
+                  </span>
+                  <span className="font-mono shrink-0" style={{ color: "var(--muted)" }}>
+                    {new Date(ev.timestamp).toLocaleTimeString()}
+                  </span>
+                  <span className="truncate font-medium" style={{ color: "var(--fg)" }}>
+                    {ev.event_type}
+                  </span>
+                  <span className="truncate ml-auto" style={{ color: "var(--muted)" }}>
+                    {ev.hostname || ev.user_uid || ""}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -556,14 +662,14 @@ export default function IncidentsPage() {
 
   /* API fetch */
   const fetchIncidents = useCallback(
-    () =>
+    (signal: AbortSignal) =>
       api
         .get<{ incidents?: Incident[] } | Incident[]>("/api/v1/incidents", {
           status: statusFilter || undefined,
           search: search || undefined,
           limit: PAGE_SIZE,
           offset,
-        })
+        }, signal)
         .then((r) => (Array.isArray(r) ? r : r.incidents ?? [])),
     [statusFilter, search, offset]
   );

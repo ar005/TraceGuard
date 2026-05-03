@@ -202,7 +202,7 @@ function RuleEditor({
 /* ── Main page ────────────────────────────────────────────────────────────── */
 export default function YARARulesPage() {
   const fetchRules = useCallback(
-    () => api.get<{ rules: YARARule[] }>("/api/v1/yara/rules"),
+    (signal: AbortSignal) => api.get<{ rules: YARARule[] }>("/api/v1/yara/rules", undefined, signal),
     []
   );
   const { data, loading, error, refetch } = useApi(fetchRules);

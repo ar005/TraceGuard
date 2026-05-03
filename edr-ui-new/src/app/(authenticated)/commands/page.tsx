@@ -9,10 +9,10 @@ import type { Event } from "@/types";
 export default function CommandsPage() {
   const [filter, setFilter] = useState("");
   const fetch = useCallback(
-    () => api.get<{events?:Event[]}|Event[]>("/api/v1/events", {
+    (signal: AbortSignal) => api.get<{events?:Event[]}|Event[]>("/api/v1/events", {
       event_type: "CMD_EXEC",
       search: filter || undefined, limit: 100,
-    }).then(r => Array.isArray(r) ? r : r.events ?? []),
+    }, signal).then(r => Array.isArray(r) ? r : r.events ?? []),
     [filter]
   );
   const { data: events, loading } = useApi(fetch);

@@ -138,7 +138,7 @@ export default function SearchPage() {
   /* Build search trigger key: only fetch when user explicitly wants to */
   const [searchTrigger, setSearchTrigger] = useState(0);
 
-  const fetchEvents = useCallback(() => {
+  const fetchEvents = useCallback((signal: AbortSignal) => {
     if (!hasSearched) {
       return Promise.resolve([] as Event[]);
     }
@@ -152,7 +152,7 @@ export default function SearchPage() {
         until: until || undefined,
         limit: PAGE_SIZE,
         offset,
-      })
+      }, signal)
       .then((r) => (Array.isArray(r) ? r : r.events ?? []));
   }, [searchTrigger, offset, hasSearched, search, eventType, agentId, hostname, since, until]);
 

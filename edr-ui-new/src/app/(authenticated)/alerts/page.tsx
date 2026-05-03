@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useApi } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
 import {
@@ -243,12 +243,41 @@ function AlertDetail({
   const [processTreeData, setProcessTreeData] = useState<ProcessNode[]>([]);
   const [expandedEvent, setExpandedEvent] = useState<Event | null>(null);
 
+  // Enrichments
+  const [enrichments, setEnrichments] = useState<{
+    ioc_matches?: Array<Record<string, unknown>>;
+    ti_data?: Record<string, unknown>;
+  } | null>(null);
+  const [enrichmentsLoading, setEnrichmentsLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setEnrichments(null);
+    setEnrichmentsLoading(true);
+    api
+      .get<{ alert_id: string; enrichments: { ioc_matches?: Array<Record<string, unknown>>; ti_data?: Record<string, unknown> } }>(
+        `/api/v1/alerts/${alert.id}/enrichments`
+      )
+      .then((res) => {
+        if (!cancelled) setEnrichments(res.enrichments ?? {});
+      })
+      .catch(() => {
+        if (!cancelled) setEnrichments({});
+      })
+      .finally(() => {
+        if (!cancelled) setEnrichmentsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [alert.id]);
+
   /* Fetch related events — try alert events endpoint first, fall back to querying by alert_id */
   const fetchEvents = useCallback(
-    async () => {
+    async (signal: AbortSignal) => {
       // Primary: get events linked to this alert
       const res = await api.get<{ events?: Event[]; total?: number } | Event[]>(
-        `/api/v1/alerts/${alert.id}/events`
+        `/api/v1/alerts/${alert.id}/events`,
+        undefined,
+        signal
       );
       const events = Array.isArray(res) ? res : res.events ?? [];
       if (events.length > 0) return events;
@@ -261,7 +290,7 @@ function AlertDetail({
         since,
         until,
         limit: 50,
-      });
+      }, signal);
       return Array.isArray(fallback) ? fallback : fallback.events ?? [];
     },
     [alert.id, alert.agent_id, alert.first_seen, alert.last_seen]
@@ -401,6 +430,20 @@ function AlertDetail({
               {alert.hit_count}
             </span>
           </div>
+          {(alert.risk_score ?? 0) > 0 && (
+            <div className="flex justify-between">
+              <span style={{ color: "var(--muted)" }}>Risk Score</span>
+              <span className={cn(
+                "rounded px-1.5 py-0.5 text-[10px] font-bold font-mono",
+                (alert.risk_score ?? 0) >= 80 ? "bg-red-500/20 text-red-400" :
+                (alert.risk_score ?? 0) >= 60 ? "bg-orange-500/20 text-orange-400" :
+                (alert.risk_score ?? 0) >= 40 ? "bg-amber-500/20 text-amber-400" :
+                "bg-blue-500/20 text-blue-400"
+              )}>
+                {alert.risk_score}/100
+              </span>
+            </div>
+          )}
           <div className="flex justify-between">
             <span style={{ color: "var(--muted)" }}>First Seen</span>
             <span className="font-mono" style={{ color: "var(--fg)" }}>
@@ -443,6 +486,81 @@ function AlertDetail({
             </div>
           </div>
         )}
+
+        {/* Enrichments */}
+        <div>
+          <div
+            className="text-[10px] font-semibold uppercase tracking-wider mb-2"
+            style={{ color: "var(--muted)" }}
+          >
+            Threat Intelligence
+          </div>
+          {enrichmentsLoading && (
+            <div className="animate-shimmer h-12 rounded" />
+          )}
+          {!enrichmentsLoading && enrichments && (
+            <div
+              className="rounded border p-3 space-y-3"
+              style={{ background: "var(--surface-1)", borderColor: "var(--border)" }}
+            >
+              {/* IOC matches */}
+              {enrichments.ioc_matches && enrichments.ioc_matches.length > 0 ? (
+                <div>
+                  <div className="text-[10px] font-semibold mb-1.5" style={{ color: "var(--muted)" }}>
+                    IOC Matches
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {enrichments.ioc_matches.map((match, i) => {
+                      const label =
+                        typeof match.value === "string"
+                          ? match.value
+                          : typeof match.ioc === "string"
+                          ? match.ioc
+                          : JSON.stringify(match);
+                      return (
+                        <span
+                          key={i}
+                          className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold bg-red-500/15 text-red-400 border border-red-500/20"
+                        >
+                          {label}
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+
+              {/* TI data */}
+              {enrichments.ti_data && Object.keys(enrichments.ti_data).length > 0 ? (
+                <div>
+                  <div className="text-[10px] font-semibold mb-1.5" style={{ color: "var(--muted)" }}>
+                    Threat Intelligence
+                  </div>
+                  <div className="space-y-1">
+                    {Object.entries(enrichments.ti_data).map(([k, v]) => (
+                      <div key={k} className="flex justify-between gap-2 text-[10px]">
+                        <span className="capitalize shrink-0" style={{ color: "var(--muted)" }}>
+                          {k.replace(/_/g, " ")}
+                        </span>
+                        <span className="font-mono truncate text-right" style={{ color: "var(--fg)" }}>
+                          {typeof v === "object" ? JSON.stringify(v) : String(v)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {/* Empty state */}
+              {(!enrichments.ioc_matches || enrichments.ioc_matches.length === 0) &&
+                (!enrichments.ti_data || Object.keys(enrichments.ti_data).length === 0) && (
+                  <p className="text-[10px]" style={{ color: "var(--muted)" }}>
+                    No threat intelligence matches for this alert.
+                  </p>
+                )}
+            </div>
+          )}
+        </div>
 
         {/* Actions */}
         <div className="flex items-center gap-2">
@@ -730,7 +848,7 @@ export default function AlertsPage() {
 
   /* API fetch */
   const fetchAlerts = useCallback(
-    () =>
+    (signal: AbortSignal) =>
       api
         .get<{ alerts?: Alert[] } | Alert[]>("/api/v1/alerts", {
           status: statusFilter || undefined,
@@ -738,7 +856,7 @@ export default function AlertsPage() {
           search: search || undefined,
           limit: PAGE_SIZE,
           offset,
-        })
+        }, signal)
         .then((r) => (Array.isArray(r) ? r : r.alerts ?? [])),
     [statusFilter, severityFilter, search, offset]
   );
@@ -746,7 +864,7 @@ export default function AlertsPage() {
   const { data: fetchedAlerts, loading, error, refetch } = useApi(fetchAlerts);
 
   /* Accumulate alerts for load-more */
-  useMemo(() => {
+  useEffect(() => {
     if (fetchedAlerts) {
       if (offset === 0) {
         setAllAlerts(fetchedAlerts);
@@ -878,7 +996,7 @@ export default function AlertsPage() {
       >
         {/* Table header */}
         <div
-          className="grid grid-cols-[32px_1fr_140px_120px_60px_100px_80px_100px] gap-2 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider border-b"
+          className="grid grid-cols-[32px_1fr_140px_120px_60px_100px_55px_80px_100px] gap-2 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider border-b"
           style={{
             color: "var(--muted-fg)",
             borderColor: "var(--border)",
@@ -891,6 +1009,7 @@ export default function AlertsPage() {
           <span>Host</span>
           <span>Hits</span>
           <span>MITRE</span>
+          <span>Risk</span>
           <span>Status</span>
           <span>First Seen</span>
         </div>
@@ -914,7 +1033,7 @@ export default function AlertsPage() {
               )
             }
             className={cn(
-              "grid grid-cols-[32px_1fr_140px_120px_60px_100px_80px_100px] gap-2 px-3 py-2 text-xs w-full text-left transition-colors border-b last:border-b-0",
+              "grid grid-cols-[32px_1fr_140px_120px_60px_100px_55px_80px_100px] gap-2 px-3 py-2 text-xs w-full text-left transition-colors border-b last:border-b-0",
               selectedAlert?.id === alert.id
                 ? "bg-[var(--surface-2)]"
                 : "hover:bg-[var(--surface-1)]"
@@ -976,6 +1095,23 @@ export default function AlertsPage() {
                 >
                   +{alert.mitre_ids.length - 2}
                 </span>
+              )}
+            </span>
+
+            {/* Risk Score */}
+            <span className="flex items-center">
+              {(alert.risk_score ?? 0) > 0 ? (
+                <span className={cn(
+                  "rounded px-1.5 py-0.5 text-[10px] font-bold font-mono",
+                  (alert.risk_score ?? 0) >= 80 ? "bg-red-500/20 text-red-400" :
+                  (alert.risk_score ?? 0) >= 60 ? "bg-orange-500/20 text-orange-400" :
+                  (alert.risk_score ?? 0) >= 40 ? "bg-amber-500/20 text-amber-400" :
+                  "bg-blue-500/20 text-blue-400"
+                )}>
+                  {alert.risk_score}
+                </span>
+              ) : (
+                <span style={{ color: "var(--muted)" }}>—</span>
               )}
             </span>
 

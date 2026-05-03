@@ -78,7 +78,7 @@ export default function SettingsPage() {
 
   // Load retention settings
   const fetchRetention = useCallback(
-    () => api.get<RetentionSettings>("/api/v1/settings/retention"),
+    (signal: AbortSignal) => api.get<RetentionSettings>("/api/v1/settings/retention", undefined, signal),
     []
   );
   const { data: retentionData } = useApi(fetchRetention);
@@ -92,7 +92,7 @@ export default function SettingsPage() {
 
   // Load LLM settings
   const fetchLlm = useCallback(
-    () => api.get<LLMSettings>("/api/v1/settings/llm"),
+    (signal: AbortSignal) => api.get<LLMSettings>("/api/v1/settings/llm", undefined, signal),
     []
   );
   const { data: llmData } = useApi(fetchLlm);

@@ -16,9 +16,9 @@ interface OutputBlock {
 
 export default function LiveResponsePage() {
   const fetchAgents = useCallback(
-    () =>
+    (signal: AbortSignal) =>
       api
-        .get<{ agents?: Agent[] } | Agent[]>("/api/v1/agents")
+        .get<{ agents?: Agent[] } | Agent[]>("/api/v1/agents", undefined, signal)
         .then((r) => (Array.isArray(r) ? r : r.agents ?? [])),
     []
   );

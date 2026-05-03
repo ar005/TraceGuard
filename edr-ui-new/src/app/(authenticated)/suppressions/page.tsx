@@ -166,9 +166,9 @@ export default function SuppressionsPage() {
 
   /* Fetch suppressions */
   const fetchSuppressions = useCallback(
-    () =>
+    (signal: AbortSignal) =>
       api
-        .get<{ suppression_rules?: SuppressionRule[]; suppressions?: SuppressionRule[] } | SuppressionRule[]>("/api/v1/suppressions")
+        .get<{ suppression_rules?: SuppressionRule[]; suppressions?: SuppressionRule[] } | SuppressionRule[]>("/api/v1/suppressions", undefined, signal)
         .then((r) => {
           if (Array.isArray(r)) return r;
           return r.suppression_rules ?? r.suppressions ?? [];

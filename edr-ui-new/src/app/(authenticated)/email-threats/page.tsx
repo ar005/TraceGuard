@@ -238,23 +238,23 @@ export default function EmailThreatsPage() {
 
   // Fetch alerts matching email rule names — backend searches rule_name ILIKE
   const fetchEmail = useCallback(
-    () =>
+    (signal: AbortSignal) =>
       api
         .get<{ alerts?: Alert[] } | Alert[]>("/api/v1/alerts", {
           search: "email",
           limit: 200,
-        })
+        }, signal)
         .then((r) => (Array.isArray(r) ? r : r.alerts ?? [])),
     []
   );
 
   const fetchMacro = useCallback(
-    () =>
+    (signal: AbortSignal) =>
       api
         .get<{ alerts?: Alert[] } | Alert[]>("/api/v1/alerts", {
           search: "office-macro",
           limit: 200,
-        })
+        }, signal)
         .then((r) => (Array.isArray(r) ? r : r.alerts ?? [])),
     []
   );

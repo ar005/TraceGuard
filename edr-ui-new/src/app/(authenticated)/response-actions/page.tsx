@@ -56,7 +56,7 @@ export default function ResponseActionsPage() {
   const [limit, setLimit] = useState(200);
 
   const fetchActions = useCallback(
-    () => api.get<{ actions: ResponseAction[] }>(`/api/v1/response/actions?limit=${limit}`),
+    (signal: AbortSignal) => api.get<{ actions: ResponseAction[] }>(`/api/v1/response/actions?limit=${limit}`, undefined, signal),
     [limit],
   );
   const { data, loading, error, refetch } = useApi(fetchActions);

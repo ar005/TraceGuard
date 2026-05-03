@@ -75,10 +75,12 @@ function RuntimeBadge({ runtime }: { runtime: string }) {
 
 function ExpandedContainer({ container }: { container: ContainerRecord }) {
   const fetchEvents = useCallback(
-    () =>
+    (signal: AbortSignal) =>
       api
         .get<{ events?: EventRecord[]; total?: number }>(
-          `/api/v1/containers/${encodeURIComponent(container.container_id)}/events?limit=20`
+          `/api/v1/containers/${encodeURIComponent(container.container_id)}/events?limit=20`,
+          undefined,
+          signal
         )
         .then((r) => r.events ?? []),
     [container.container_id]
@@ -156,9 +158,9 @@ export default function ContainersPage() {
 
   /* Agents for filter dropdown */
   const fetchAgents = useCallback(
-    () =>
+    (signal: AbortSignal) =>
       api
-        .get<{ agents?: Agent[] } | Agent[]>("/api/v1/agents")
+        .get<{ agents?: Agent[] } | Agent[]>("/api/v1/agents", undefined, signal)
         .then((r) => (Array.isArray(r) ? r : r.agents ?? [])),
     []
   );
@@ -166,13 +168,13 @@ export default function ContainersPage() {
 
   /* Stats */
   const fetchStats = useCallback(
-    () => api.get<ContainerStats>("/api/v1/containers/stats"),
+    (signal: AbortSignal) => api.get<ContainerStats>("/api/v1/containers/stats", undefined, signal),
     []
   );
   const { data: stats, refetch: refetchStats } = useApi(fetchStats);
 
   /* Container list */
-  const fetchContainers = useCallback(() => {
+  const fetchContainers = useCallback((signal: AbortSignal) => {
     const params = new URLSearchParams();
     if (agentFilter) params.set("agent_id", agentFilter);
     if (runtimeFilter) params.set("runtime", runtimeFilter);
@@ -180,7 +182,9 @@ export default function ContainersPage() {
     params.set("limit", "200");
     return api
       .get<{ containers?: ContainerRecord[]; total?: number }>(
-        `/api/v1/containers?${params.toString()}`
+        `/api/v1/containers?${params.toString()}`,
+        undefined,
+        signal
       )
       .then((r) => r.containers ?? []);
   }, [agentFilter, runtimeFilter, search]);

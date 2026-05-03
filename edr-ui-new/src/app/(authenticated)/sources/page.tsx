@@ -69,9 +69,9 @@ export default function SourcesPage() {
   const [checkingId, setCheckingId]   = useState<string | null>(null);
 
   const fetchSources = useCallback(
-    () =>
+    (signal: AbortSignal) =>
       api
-        .get<{ sources?: XdrSource[] } | XdrSource[]>("/api/v1/sources")
+        .get<{ sources?: XdrSource[] } | XdrSource[]>("/api/v1/sources", undefined, signal)
         .then((r) => (Array.isArray(r) ? r : r.sources ?? [])),
     []
   );

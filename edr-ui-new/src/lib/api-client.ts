@@ -1,4 +1,10 @@
 const BASE = process.env.NEXT_PUBLIC_BACKEND_URL ?? "";
+if (!BASE && typeof window !== "undefined") {
+  console.error(
+    "[TraceGuard] NEXT_PUBLIC_BACKEND_URL is not set. " +
+    "API calls will fail. Set it in .env.local or your deployment config."
+  );
+}
 
 function buildHeaders(): HeadersInit {
   const headers: Record<string, string> = {
@@ -20,16 +26,19 @@ function buildUrl(path: string, params?: Record<string, string | number | boolea
   return BASE + path + (query ? `?${query}` : "");
 }
 
-async function request<T>(method: string, path: string, body?: unknown, params?: Record<string, string | number | boolean | undefined>): Promise<T> {
+async function request<T>(method: string, path: string, body?: unknown, params?: Record<string, string | number | boolean | undefined>, signal?: AbortSignal): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 90_000);
+  const combinedSignal = signal
+    ? AbortSignal.any([controller.signal, signal])
+    : controller.signal;
 
   try {
     const res = await fetch(buildUrl(path, params), {
       method,
       headers: buildHeaders(),
       body: body ? JSON.stringify(body) : undefined,
-      signal: controller.signal,
+      signal: combinedSignal,
       credentials: "include", // send httpOnly cookie
     });
 
@@ -57,8 +66,8 @@ async function request<T>(method: string, path: string, body?: unknown, params?:
 }
 
 export const api = {
-  get<T>(path: string, params?: Record<string, string | number | boolean | undefined>): Promise<T> {
-    return request<T>("GET", path, undefined, params);
+  get<T>(path: string, params?: Record<string, string | number | boolean | undefined>, signal?: AbortSignal): Promise<T> {
+    return request<T>("GET", path, undefined, params, signal);
   },
   post<T>(path: string, body?: unknown): Promise<T> {
     return request<T>("POST", path, body);

@@ -354,20 +354,20 @@ export default function DashboardPage() {
   const [range, setRange] = useState<TimeRange>("24h");
 
   const fetchDashboard = useCallback(
-    () => api.get<DashboardData>("/api/v1/dashboard", { range }),
+    (signal: AbortSignal) => api.get<DashboardData>("/api/v1/dashboard", { range }, signal),
     [range]
   );
   const fetchAgents = useCallback(
-    () =>
+    (signal: AbortSignal) =>
       api
-        .get<{ agents?: Agent[] } | Agent[]>("/api/v1/agents")
+        .get<{ agents?: Agent[] } | Agent[]>("/api/v1/agents", undefined, signal)
         .then((r) => (Array.isArray(r) ? r : r.agents ?? [])),
     []
   );
   const fetchRecentEvents = useCallback(
-    () =>
+    (signal: AbortSignal) =>
       api
-        .get<{ events?: Event[] } | Event[]>("/api/v1/events", { limit: 500 })
+        .get<{ events?: Event[] } | Event[]>("/api/v1/events", { limit: 500 }, signal)
         .then((r) => (Array.isArray(r) ? r : r.events ?? [])),
     []
   );

@@ -677,9 +677,9 @@ export default function RulesPage() {
   const [search, setSearch] = useState("");
 
   const fetchRules = useCallback(
-    () =>
+    (signal: AbortSignal) =>
       api
-        .get<{ rules?: Rule[] } | Rule[]>("/api/v1/rules")
+        .get<{ rules?: Rule[] } | Rule[]>("/api/v1/rules", undefined, signal)
         .then((r) => (Array.isArray(r) ? r : r.rules ?? [])),
     []
   );

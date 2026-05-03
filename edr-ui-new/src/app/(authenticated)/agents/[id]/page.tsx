@@ -19,6 +19,13 @@ import {
   X,
   BookOpen,
   Settings2,
+  CalendarClock,
+  Pencil,
+  Trash2,
+  Clock,
+  CheckCircle2,
+  PauseCircle,
+  Play,
 } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { useApi } from "@/hooks/use-api";
@@ -33,7 +40,7 @@ interface PackageInfo {
   architecture: string;
 }
 
-type TabId = "overview" | "events" | "packages" | "vulnerabilities" | "winevent-config" | "event-reference";
+type TabId = "overview" | "events" | "packages" | "vulnerabilities" | "winevent-config" | "event-reference" | "tasks";
 
 /* ── Tab Button ─────────────────────────────────────────────── */
 
@@ -298,9 +305,9 @@ function EventsTab({ agentId }: { agentId: string }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const fetchEvents = useCallback(
-    () =>
+    (signal: AbortSignal) =>
       api
-        .get<{ events?: Event[] } | Event[]>("/api/v1/events", { agent_id: agentId, limit: 100 })
+        .get<{ events?: Event[] } | Event[]>("/api/v1/events", { agent_id: agentId, limit: 100 }, signal)
         .then((r) => (Array.isArray(r) ? r : r.events ?? [])),
     [agentId]
   );
@@ -456,9 +463,9 @@ function PackagesTab({ agentId }: { agentId: string }) {
   const [search, setSearch] = useState("");
 
   const fetchPkgs = useCallback(
-    () =>
+    (signal: AbortSignal) =>
       api
-        .get<{ packages?: PackageInfo[] } | PackageInfo[]>(`/api/v1/agents/${agentId}/packages`)
+        .get<{ packages?: PackageInfo[] } | PackageInfo[]>(`/api/v1/agents/${agentId}/packages`, undefined, signal)
         .then((r) => (Array.isArray(r) ? r : r.packages ?? [])),
     [agentId]
   );
@@ -549,9 +556,9 @@ function PackagesTab({ agentId }: { agentId: string }) {
 
 function VulnerabilitiesTab({ agentId }: { agentId: string }) {
   const fetchVulns = useCallback(
-    () =>
+    (signal: AbortSignal) =>
       api
-        .get<{ vulnerabilities?: Vulnerability[]; stats?: VulnStats }>(`/api/v1/agents/${agentId}/vulnerabilities`)
+        .get<{ vulnerabilities?: Vulnerability[]; stats?: VulnStats }>(`/api/v1/agents/${agentId}/vulnerabilities`, undefined, signal)
         .then((r) => ({
           vulnerabilities: r.vulnerabilities ?? [],
           stats: r.stats ?? null,
@@ -1090,6 +1097,306 @@ function EventReferenceTab({ agentId, agentOs }: { agentId: string; agentOs: str
   );
 }
 
+/* ── Tasks Tab ──────────────────────────────────────────────── */
+
+interface AgentTask {
+  id: string;
+  name: string;
+  type: string;
+  schedule: string;
+  status: string;
+  last_run_at: string | null;
+  next_run_at: string | null;
+  created_at: string;
+  created_by: string;
+}
+
+interface TaskEvent {
+  id: string;
+  task_id: string;
+  task_name: string;
+  task_type: string;
+  action: string;
+  actor: string;
+  detail: Record<string, unknown>;
+  occurred_at: string;
+}
+
+const STATUS_ICON: Record<string, React.ReactNode> = {
+  active:    <CheckCircle2 size={13} className="text-emerald-400" />,
+  paused:    <PauseCircle  size={13} className="text-yellow-400" />,
+  completed: <CheckCircle2 size={13} className="text-sky-400" />,
+  deleted:   <X            size={13} className="text-red-400" />,
+};
+
+function TasksTab({ agentId }: { agentId: string }) {
+  const { data: tasksData, loading: tasksLoading, refetch: refreshTasks } = useApi<{ tasks: AgentTask[]; total: number }>(
+    (signal) => api.get(`/api/v1/agents/${agentId}/tasks`, {}, signal)
+  );
+  const { data: historyData, loading: historyLoading } = useApi<{ events: TaskEvent[]; total: number }>(
+    (signal) => api.get(`/api/v1/agents/${agentId}/tasks/history`, { limit: 50 }, signal)
+  );
+  const [activeView, setActiveView] = useState<"tasks" | "history">("tasks");
+  const [showCreate, setShowCreate] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [form, setForm] = useState({ name: "", type: "script", schedule: "", payload: "" });
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editStatus, setEditStatus] = useState("");
+
+  const tasks = tasksData?.tasks ?? [];
+  const events = historyData?.events ?? [];
+
+  async function handleCreate() {
+    if (!form.name.trim()) return;
+    setCreating(true);
+    try {
+      let payload = {};
+      try { payload = JSON.parse(form.payload || "{}"); } catch { /* ignore */ }
+      await api.post(`/api/v1/agents/${agentId}/tasks`, { name: form.name, type: form.type, schedule: form.schedule, payload });
+      setForm({ name: "", type: "script", schedule: "", payload: "" });
+      setShowCreate(false);
+      refreshTasks();
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function handleStatusChange(taskId: string, status: string) {
+    await api.put(`/api/v1/agents/${agentId}/tasks/${taskId}`, { status });
+    setEditId(null);
+    refreshTasks();
+  }
+
+  async function handleRun(taskId: string) {
+    await api.post(`/api/v1/agents/${agentId}/tasks/${taskId}/run`, {});
+    refreshTasks();
+  }
+
+  async function handleDelete(taskId: string) {
+    if (!confirm("Delete this task?")) return;
+    await api.del(`/api/v1/agents/${agentId}/tasks/${taskId}`);
+    refreshTasks();
+  }
+
+  return (
+    <div className="p-4 space-y-4">
+      {/* Sub-nav */}
+      <div className="flex items-center justify-between">
+        <div className="flex gap-1 text-xs">
+          {(["tasks", "history"] as const).map((v) => (
+            <button
+              key={v}
+              onClick={() => setActiveView(v)}
+              className={cn(
+                "px-3 py-1 rounded-md font-medium transition-colors capitalize",
+                activeView === v
+                  ? "bg-[hsl(var(--primary)/.15)] text-[hsl(var(--primary))]"
+                  : "text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))]"
+              )}
+            >
+              {v === "tasks" ? `Tasks (${tasks.length})` : "History"}
+            </button>
+          ))}
+        </div>
+        {activeView === "tasks" && (
+          <button
+            onClick={() => setShowCreate(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] hover:opacity-90 transition-opacity"
+          >
+            <Plus size={13} /> New Task
+          </button>
+        )}
+      </div>
+
+      {/* Create form */}
+      {showCreate && (
+        <div className="rounded-xl border p-4 space-y-3 text-sm" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
+          <p className="font-semibold text-xs uppercase tracking-wide" style={{ color: "var(--muted)" }}>New Scheduled Task</p>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <label className="text-xs font-medium" style={{ color: "var(--muted)" }}>Name *</label>
+              <input
+                className="w-full px-3 py-1.5 rounded-lg border text-sm bg-transparent"
+                style={{ borderColor: "var(--border)" }}
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+                placeholder="e.g. Daily log rotation"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium" style={{ color: "var(--muted)" }}>Type</label>
+              <select
+                className="w-full px-3 py-1.5 rounded-lg border text-sm bg-transparent"
+                style={{ borderColor: "var(--border)" }}
+                value={form.type}
+                onChange={(e) => setForm({ ...form, type: e.target.value })}
+              >
+                <option value="script">Script</option>
+                <option value="scan">Scan</option>
+                <option value="collect">Collect</option>
+                <option value="remediate">Remediate</option>
+                <option value="custom">Custom</option>
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium" style={{ color: "var(--muted)" }}>Schedule (cron)</label>
+              <input
+                className="w-full px-3 py-1.5 rounded-lg border text-sm bg-transparent"
+                style={{ borderColor: "var(--border)" }}
+                value={form.schedule}
+                onChange={(e) => setForm({ ...form, schedule: e.target.value })}
+                placeholder="e.g. 0 2 * * *"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium" style={{ color: "var(--muted)" }}>Payload (JSON)</label>
+              <input
+                className="w-full px-3 py-1.5 rounded-lg border text-sm bg-transparent"
+                style={{ borderColor: "var(--border)" }}
+                value={form.payload}
+                onChange={(e) => setForm({ ...form, payload: e.target.value })}
+                placeholder='{"cmd":"..."}'
+              />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 pt-1">
+            <button onClick={() => setShowCreate(false)} className="px-3 py-1.5 rounded-lg text-xs border" style={{ borderColor: "var(--border)" }}>Cancel</button>
+            <button
+              onClick={handleCreate}
+              disabled={creating || !form.name.trim()}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] disabled:opacity-50"
+            >
+              {creating ? <Loader2 size={13} className="animate-spin" /> : "Create"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Tasks table */}
+      {activeView === "tasks" && (
+        <div className="rounded-xl border overflow-hidden text-sm" style={{ borderColor: "var(--border)" }}>
+          {tasksLoading ? (
+            <div className="py-12 flex justify-center"><Loader2 size={20} className="animate-spin opacity-40" /></div>
+          ) : tasks.length === 0 ? (
+            <div className="py-12 text-center text-xs" style={{ color: "var(--muted)" }}>No scheduled tasks</div>
+          ) : (
+            <table className="w-full">
+              <thead>
+                <tr className="border-b text-xs font-medium" style={{ borderColor: "var(--border)", color: "var(--muted)" }}>
+                  <th className="px-4 py-2 text-left">Name</th>
+                  <th className="px-4 py-2 text-left">Type</th>
+                  <th className="px-4 py-2 text-left">Schedule</th>
+                  <th className="px-4 py-2 text-left">Status</th>
+                  <th className="px-4 py-2 text-left">Last Run</th>
+                  <th className="px-4 py-2 text-left">Next Run</th>
+                  <th className="px-4 py-2 text-left">Created By</th>
+                  <th className="px-4 py-2" />
+                </tr>
+              </thead>
+              <tbody>
+                {tasks.map((t) => (
+                  <tr key={t.id} className="border-b last:border-0 hover:bg-[hsl(var(--accent)/.4)] transition-colors" style={{ borderColor: "var(--border)" }}>
+                    <td className="px-4 py-2.5 font-medium">{t.name}</td>
+                    <td className="px-4 py-2.5">
+                      <span className="px-2 py-0.5 rounded-full text-xs bg-[hsl(var(--primary)/.1)] text-[hsl(var(--primary))]">{t.type}</span>
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-xs" style={{ color: "var(--muted)" }}>{t.schedule || "—"}</td>
+                    <td className="px-4 py-2.5">
+                      {editId === t.id ? (
+                        <select
+                          className="text-xs border rounded px-1 py-0.5 bg-transparent"
+                          style={{ borderColor: "var(--border)" }}
+                          value={editStatus}
+                          onChange={(e) => setEditStatus(e.target.value)}
+                          onBlur={() => { if (editStatus) handleStatusChange(t.id, editStatus); else setEditId(null); }}
+                          autoFocus
+                        >
+                          <option value="active">Active</option>
+                          <option value="paused">Paused</option>
+                          <option value="completed">Completed</option>
+                        </select>
+                      ) : (
+                        <button
+                          onClick={() => { setEditId(t.id); setEditStatus(t.status); }}
+                          className="flex items-center gap-1.5 hover:opacity-80 transition-opacity"
+                        >
+                          {STATUS_ICON[t.status] ?? <Clock size={13} />}
+                          <span className="text-xs capitalize">{t.status}</span>
+                        </button>
+                      )}
+                    </td>
+                    <td className="px-4 py-2.5 text-xs" style={{ color: "var(--muted)" }}>{t.last_run_at ? timeAgo(t.last_run_at) : "Never"}</td>
+                    <td className="px-4 py-2.5 text-xs" style={{ color: "var(--muted)" }}>{t.next_run_at ? timeAgo(t.next_run_at) : "—"}</td>
+                    <td className="px-4 py-2.5 text-xs" style={{ color: "var(--muted)" }}>{t.created_by}</td>
+                    <td className="px-4 py-2.5">
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => handleRun(t.id)}
+                          title="Run now"
+                          className="p-1 rounded hover:bg-emerald-500/10 text-emerald-400 transition-colors"
+                        >
+                          <Play size={13} />
+                        </button>
+                        <button onClick={() => handleDelete(t.id)} className="p-1 rounded hover:bg-red-500/10 text-red-400 transition-colors" title="Delete">
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {/* History table */}
+      {activeView === "history" && (
+        <div className="rounded-xl border overflow-hidden text-sm" style={{ borderColor: "var(--border)" }}>
+          {historyLoading ? (
+            <div className="py-12 flex justify-center"><Loader2 size={20} className="animate-spin opacity-40" /></div>
+          ) : events.length === 0 ? (
+            <div className="py-12 text-center text-xs" style={{ color: "var(--muted)" }}>No task history</div>
+          ) : (
+            <table className="w-full">
+              <thead>
+                <tr className="border-b text-xs font-medium" style={{ borderColor: "var(--border)", color: "var(--muted)" }}>
+                  <th className="px-4 py-2 text-left">Time</th>
+                  <th className="px-4 py-2 text-left">Task</th>
+                  <th className="px-4 py-2 text-left">Type</th>
+                  <th className="px-4 py-2 text-left">Action</th>
+                  <th className="px-4 py-2 text-left">Actor</th>
+                </tr>
+              </thead>
+              <tbody>
+                {events.map((e) => (
+                  <tr key={e.id} className="border-b last:border-0 hover:bg-[hsl(var(--accent)/.4)] transition-colors" style={{ borderColor: "var(--border)" }}>
+                    <td className="px-4 py-2.5 text-xs" style={{ color: "var(--muted)" }}>{timeAgo(e.occurred_at)}</td>
+                    <td className="px-4 py-2.5 font-medium">{e.task_name}</td>
+                    <td className="px-4 py-2.5 text-xs">
+                      <span className="px-2 py-0.5 rounded-full bg-[hsl(var(--primary)/.1)] text-[hsl(var(--primary))]">{e.task_type}</span>
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <span className={cn(
+                        "px-2 py-0.5 rounded-full text-xs font-medium",
+                        e.action === "created" ? "bg-emerald-500/10 text-emerald-400" :
+                        e.action === "deleted" ? "bg-red-500/10 text-red-400" :
+                        e.action === "paused"  ? "bg-yellow-500/10 text-yellow-400" :
+                        "bg-sky-500/10 text-sky-400"
+                      )}>{e.action}</span>
+                    </td>
+                    <td className="px-4 py-2.5 text-xs" style={{ color: "var(--muted)" }}>{e.actor}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── Main Page ──────────────────────────────────────────────── */
 
 export default function AgentDetailPage() {
@@ -1098,7 +1405,7 @@ export default function AgentDetailPage() {
   const [activeTab, setActiveTab] = useState<TabId>("overview");
 
   const fetchAgent = useCallback(
-    () => api.get<Agent | { agent: Agent }>(`/api/v1/agents/${agentId}`).then((r) =>
+    (signal: AbortSignal) => api.get<Agent | { agent: Agent }>(`/api/v1/agents/${agentId}`, undefined, signal).then((r) =>
       "agent" in r && typeof r === "object" && r !== null && !Array.isArray(r) && "agent" in (r as Record<string, unknown>)
         ? (r as { agent: Agent }).agent
         : (r as Agent)
@@ -1109,9 +1416,9 @@ export default function AgentDetailPage() {
 
   // Fetch last 200 events for overview breakdown (only when on overview tab)
   const fetchOverviewEvents = useCallback(
-    () =>
+    (signal: AbortSignal) =>
       api
-        .get<{ events?: Event[] } | Event[]>("/api/v1/events", { agent_id: agentId, limit: 200 })
+        .get<{ events?: Event[] } | Event[]>("/api/v1/events", { agent_id: agentId, limit: 200 }, signal)
         .then((r) => (Array.isArray(r) ? r : r.events ?? [])),
     [agentId]
   );
@@ -1240,6 +1547,13 @@ export default function AgentDetailPage() {
           active={activeTab === "event-reference"}
           onClick={setActiveTab}
         />
+        <TabButton
+          id="tasks"
+          label="Scheduled Tasks"
+          icon={<CalendarClock size={13} />}
+          active={activeTab === "tasks"}
+          onClick={setActiveTab}
+        />
       </div>
 
       {/* Tab content */}
@@ -1250,6 +1564,7 @@ export default function AgentDetailPage() {
         {activeTab === "vulnerabilities" && <VulnerabilitiesTab agentId={agentId} />}
         {activeTab === "winevent-config" && <WinEventConfigTab agentId={agentId} />}
         {activeTab === "event-reference" && <EventReferenceTab agentId={agentId} agentOs={agent.os ?? ""} />}
+        {activeTab === "tasks" && <TasksTab agentId={agentId} />}
       </div>
     </div>
   );

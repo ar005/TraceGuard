@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Download } from "lucide-react";
 import { useApi } from "@/hooks/use-api";
 import { useSSE } from "@/hooks/use-sse";
@@ -517,7 +517,7 @@ export default function EventsPage() {
 
   /* API fetch */
   const fetchEvents = useCallback(
-    () =>
+    (signal: AbortSignal) =>
       api
         .get<{ events?: Event[] } | Event[]>("/api/v1/events", {
           event_type: filter || undefined,
@@ -525,7 +525,7 @@ export default function EventsPage() {
           hostname: hostnameFilter || undefined,
           limit: PAGE_SIZE,
           offset,
-        })
+        }, signal)
         .then((r) => (Array.isArray(r) ? r : r.events ?? [])),
     [filter, search, hostnameFilter, offset]
   );
@@ -589,7 +589,7 @@ export default function EventsPage() {
   }, [displayEvents]);
 
   /* Track accumulated events for load more */
-  useMemo(() => {
+  useEffect(() => {
     if (fetchedEvents && !liveMode) {
       if (offset === 0) {
         setAllEvents(fetchedEvents);

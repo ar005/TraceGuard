@@ -216,18 +216,18 @@ export default function VulnerabilitiesPage() {
 
   /* Fetch agents */
   const fetchAgents = useCallback(
-    () => api.get<{ agents?: Agent[] } | Agent[]>("/api/v1/agents").then((r) => (Array.isArray(r) ? r : r.agents ?? [])),
+    (signal: AbortSignal) => api.get<{ agents?: Agent[] } | Agent[]>("/api/v1/agents", undefined, signal).then((r) => (Array.isArray(r) ? r : r.agents ?? [])),
     []
   );
   const { data: agents } = useApi(fetchAgents);
 
   /* Fetch vulnerabilities — all or per-agent */
   const fetchVulns = useCallback(
-    () => {
+    (signal: AbortSignal) => {
       const url = selectedAgent
         ? `/api/v1/agents/${selectedAgent}/vulnerabilities`
         : "/api/v1/vulnerabilities";
-      return api.get<{ vulnerabilities?: Vulnerability[]; stats?: Record<string, number> } | Vulnerability[]>(url)
+      return api.get<{ vulnerabilities?: Vulnerability[]; stats?: Record<string, number> } | Vulnerability[]>(url, undefined, signal)
         .then((r) => {
           if (Array.isArray(r)) return r;
           return r.vulnerabilities ?? [];
@@ -262,9 +262,9 @@ export default function VulnerabilitiesPage() {
 
   /* Fetch packages (only when agent selected + packages tab) */
   const fetchPackages = useCallback(
-    () => {
+    (signal: AbortSignal) => {
       if (!selectedAgent) return Promise.resolve([] as AgentPackage[]);
-      return api.get<{ packages?: AgentPackage[] } | AgentPackage[]>(`/api/v1/agents/${selectedAgent}/packages`)
+      return api.get<{ packages?: AgentPackage[] } | AgentPackage[]>(`/api/v1/agents/${selectedAgent}/packages`, undefined, signal)
         .then((r) => (Array.isArray(r) ? r : r.packages ?? []));
     },
     [selectedAgent]
