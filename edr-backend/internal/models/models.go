@@ -579,6 +579,73 @@ type CustomIOCFeed struct {
 	CreatedAt    time.Time  `db:"created_at"     json:"created_at"`
 }
 
+// CanaryToken represents a honeypot token deployed to detect credential theft.
+type CanaryToken struct {
+	ID           string     `db:"id"            json:"id"`
+	TenantID     string     `db:"tenant_id"     json:"tenant_id"`
+	Name         string     `db:"name"          json:"name"`
+	Type         string     `db:"type"          json:"type"`
+	Token        string     `db:"token"         json:"token"`
+	DeployedTo   string     `db:"deployed_to"   json:"deployed_to"`
+	Description  string     `db:"description"   json:"description"`
+	CreatedAt    time.Time  `db:"created_at"    json:"created_at"`
+	TriggeredAt  *time.Time `db:"triggered_at"  json:"triggered_at"`
+	TriggerCount int        `db:"trigger_count" json:"trigger_count"`
+}
+
+// ExfilSignal represents a detected data exfiltration signal.
+type ExfilSignal struct {
+	ID         string          `db:"id"          json:"id"`
+	TenantID   string          `db:"tenant_id"   json:"tenant_id"`
+	AgentID    string          `db:"agent_id"    json:"agent_id"`
+	Hostname   string          `db:"hostname"    json:"hostname"`
+	SignalType string          `db:"signal_type" json:"signal_type"`
+	Detail     json.RawMessage `db:"detail"      json:"detail"`
+	Bytes      int64           `db:"bytes"       json:"bytes"`
+	DetectedAt time.Time       `db:"detected_at" json:"detected_at"`
+	AlertID    string          `db:"alert_id"    json:"alert_id"`
+}
+
+// ExfilAgentStat summarises exfil signals per agent.
+type ExfilAgentStat struct {
+	AgentID    string `db:"agent_id"    json:"agent_id"`
+	Hostname   string `db:"hostname"    json:"hostname"`
+	EventCount int    `db:"event_count" json:"event_count"`
+	TotalBytes int64  `db:"total_bytes" json:"total_bytes"`
+	LastSeen   string `db:"last_seen"   json:"last_seen"`
+}
+
+// AgentTask is a scheduled task pushed to (or tracked for) an agent.
+type AgentTask struct {
+	ID         string          `db:"id"          json:"id"`
+	TenantID   string          `db:"tenant_id"   json:"tenant_id"`
+	AgentID    string          `db:"agent_id"    json:"agent_id"`
+	Name       string          `db:"name"        json:"name"`
+	Type       string          `db:"type"        json:"type"`
+	Schedule   string          `db:"schedule"    json:"schedule"`
+	Payload    json.RawMessage `db:"payload"     json:"payload"`
+	Status     string          `db:"status"      json:"status"`
+	LastRunAt  *time.Time      `db:"last_run_at" json:"last_run_at"`
+	NextRunAt  *time.Time      `db:"next_run_at" json:"next_run_at"`
+	CreatedAt  time.Time       `db:"created_at"  json:"created_at"`
+	CreatedBy  string          `db:"created_by"  json:"created_by"`
+	UpdatedAt  time.Time       `db:"updated_at"  json:"updated_at"`
+}
+
+// AgentTaskEvent is a history entry for a task change or execution.
+type AgentTaskEvent struct {
+	ID         string          `db:"id"          json:"id"`
+	TaskID     string          `db:"task_id"     json:"task_id"`
+	TenantID   string          `db:"tenant_id"   json:"tenant_id"`
+	AgentID    string          `db:"agent_id"    json:"agent_id"`
+	TaskName   string          `db:"task_name"   json:"task_name"`
+	TaskType   string          `db:"task_type"   json:"task_type"`
+	Action     string          `db:"action"      json:"action"`
+	Actor      string          `db:"actor"       json:"actor"`
+	Detail     json.RawMessage `db:"detail"      json:"detail"`
+	OccurredAt time.Time       `db:"occurred_at" json:"occurred_at"`
+}
+
 // AutoCasePolicy defines criteria for automatic case creation from alerts.
 type AutoCasePolicy struct {
 	ID          string         `db:"id"           json:"id"`

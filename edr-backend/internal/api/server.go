@@ -340,6 +340,19 @@ func (s *Server) registerRoutes() {
 		// Compliance coverage (Feature F)
 		v1.GET("/compliance/coverage", s.handleComplianceCoverage)
 
+		// DNS Intelligence (Feature A)
+		v1.GET("/dns/events", s.handleDNSEvents)
+		v1.GET("/dns/stats",  s.handleDNSStats)
+
+		// Canary Tokens (Feature B)
+		v1.GET("/canary/tokens",        s.handleListCanaryTokens)
+		v1.POST("/canary/tokens",       s.adminOnly(), s.handleCreateCanaryToken)
+		v1.DELETE("/canary/tokens/:id", s.adminOnly(), s.handleDeleteCanaryToken)
+
+		// DLP / Exfil (Feature E)
+		v1.GET("/dlp/events", s.handleDLPEvents)
+		v1.GET("/dlp/stats",  s.handleDLPStats)
+
 		// Reports (I)
 		v1.GET("/reports",                     s.handleListReports)
 		v1.POST("/reports",                    s.handleGenerateReport)
@@ -386,7 +399,22 @@ func (s *Server) registerRoutes() {
 			expw.PUT("/:id",    s.handleUpsertExportDest)
 			expw.DELETE("/:id", s.handleDeleteExportDest)
 		}
+
+		// Agent scheduled tasks
+		v1.GET("/agents/:id/tasks",              s.handleListAgentTasks)
+		v1.GET("/agents/:id/tasks/history",      s.handleListAgentTaskHistory)
+		v1.POST("/agents/:id/tasks",             s.adminOnly(), s.handleCreateAgentTask)
+		v1.PUT("/agents/:id/tasks/:tid",         s.adminOnly(), s.handleUpdateAgentTask)
+		v1.DELETE("/agents/:id/tasks/:tid",      s.adminOnly(), s.handleDeleteAgentTask)
+		v1.POST("/agents/:id/tasks/:tid/run",    s.handleRunAgentTask)
+
+		// Global task views (across all agents)
+		v1.GET("/tasks",         s.handleListAllTasks)
+		v1.GET("/tasks/history", s.handleListAllTaskHistory)
 	}
+
+	// Canary trigger webhook — NO auth (honeypot callback)
+	r.POST("/api/canary/trigger/:token", s.handleCanaryTrigger)
 
 	// Admin-only user management + audit log
 	adm := r.Group("/api/v1/admin", s.authMiddleware(), s.adminOnly())

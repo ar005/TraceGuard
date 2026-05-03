@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 	"github.com/youredr/edr-backend/internal/models"
@@ -3014,4 +3015,438 @@ func mitreToTactic(ids pq.StringArray) string {
 	default:
 		return "Other"
 	}
+}
+
+// ── DNS Intelligence ──────────────────────────────────────────────────────────
+
+// DNSDomainStat holds a base domain and its query statistics.
+type DNSDomainStat struct {
+	Domain     string `db:"domain"      json:"domain"`
+	Count      int    `db:"count"       json:"count"`
+	AgentCount int    `db:"agent_count" json:"agent_count"`
+}
+
+// QueryDNSEvents returns DNS events for a tenant, optionally filtered by agent and domain.
+func (s *Store) QueryDNSEvents(ctx context.Context, tenantID, agentID, domain string, limit, offset int) ([]models.Event, int, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+
+	args := []interface{}{tenantID}
+	where := "WHERE event_type IN ('DNS_QUERY','DNS_LOOKUP','NETWORK_DNS') AND tenant_id=$1"
+	n := 2
+	if agentID != "" {
+		where += fmt.Sprintf(" AND agent_id=$%d", n)
+		args = append(args, agentID)
+		n++
+	}
+	if domain != "" {
+		where += fmt.Sprintf(" AND payload::text ILIKE $%d", n)
+		args = append(args, "%"+domain+"%")
+		n++
+	}
+
+	var total int
+	if err := s.rdb().QueryRowContext(ctx, "SELECT COUNT(*) FROM events "+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	args = append(args, limit, offset)
+	rows, err := s.rdb().QueryxContext(ctx,
+		"SELECT * FROM events "+where+" ORDER BY timestamp DESC LIMIT $"+fmt.Sprint(n)+" OFFSET $"+fmt.Sprint(n+1),
+		args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var evs []models.Event
+	for rows.Next() {
+		var ev models.Event
+		if err := rows.StructScan(&ev); err != nil {
+			return nil, 0, err
+		}
+		evs = append(evs, ev)
+	}
+	return evs, total, rows.Err()
+}
+
+// DNSTopDomains returns the top queried base domains for a tenant in the last hoursBack hours.
+func (s *Store) DNSTopDomains(ctx context.Context, tenantID string, hoursBack, limit int) ([]DNSDomainStat, error) {
+	if hoursBack <= 0 {
+		hoursBack = 24
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	q := fmt.Sprintf(`
+SELECT
+  regexp_replace(
+    lower(coalesce(payload->>'query', payload->>'name', '')),
+    '^(?:.*\.)?([^.]+\.[^.]+)$', '\1'
+  ) AS domain,
+  COUNT(*) AS count,
+  COUNT(DISTINCT agent_id) AS agent_count
+FROM events
+WHERE event_type IN ('DNS_QUERY','DNS_LOOKUP','NETWORK_DNS')
+  AND timestamp > NOW() - INTERVAL '%d hours'
+  AND tenant_id = $1
+GROUP BY domain
+ORDER BY count DESC
+LIMIT $2
+`, hoursBack)
+	rows, err := s.rdb().QueryxContext(ctx, q, tenantID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var stats []DNSDomainStat
+	for rows.Next() {
+		var ds DNSDomainStat
+		if err := rows.StructScan(&ds); err != nil {
+			return nil, err
+		}
+		stats = append(stats, ds)
+	}
+	return stats, rows.Err()
+}
+
+// ── Canary Tokens ─────────────────────────────────────────────────────────────
+
+// CreateCanaryToken inserts a new canary token.
+func (s *Store) CreateCanaryToken(ctx context.Context, t *models.CanaryToken) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO canary_tokens (id, tenant_id, name, type, token, deployed_to, description)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
+	`, t.ID, t.TenantID, t.Name, t.Type, t.Token, t.DeployedTo, t.Description)
+	return err
+}
+
+// ListCanaryTokens returns all canary tokens for a tenant.
+func (s *Store) ListCanaryTokens(ctx context.Context, tenantID string) ([]models.CanaryToken, error) {
+	var tokens []models.CanaryToken
+	err := s.rdb().SelectContext(ctx, &tokens,
+		`SELECT * FROM canary_tokens WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
+	return tokens, err
+}
+
+// GetCanaryTokenByToken looks up a canary token by its secret token value (no tenant filter).
+func (s *Store) GetCanaryTokenByToken(ctx context.Context, token string) (*models.CanaryToken, error) {
+	var ct models.CanaryToken
+	err := s.db.GetContext(ctx, &ct, `SELECT * FROM canary_tokens WHERE token=$1`, token)
+	if err != nil {
+		return nil, err
+	}
+	return &ct, nil
+}
+
+// DeleteCanaryToken removes a canary token owned by the given tenant.
+func (s *Store) DeleteCanaryToken(ctx context.Context, id, tenantID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM canary_tokens WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	return err
+}
+
+// RecordCanaryTrigger increments the trigger count and sets triggered_at.
+func (s *Store) RecordCanaryTrigger(ctx context.Context, token string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE canary_tokens
+		SET trigger_count = trigger_count + 1, triggered_at = NOW()
+		WHERE token = $1
+	`, token)
+	return err
+}
+
+// ── Exfil Signals ─────────────────────────────────────────────────────────────
+
+// InsertExfilSignal persists an exfil signal.
+func (s *Store) InsertExfilSignal(ctx context.Context, sig *models.ExfilSignal) error {
+	detail := sig.Detail
+	if len(detail) == 0 {
+		detail = json.RawMessage("{}")
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO exfil_signals (id, tenant_id, agent_id, hostname, signal_type, detail, bytes, alert_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+	`, sig.ID, sig.TenantID, sig.AgentID, sig.Hostname, sig.SignalType, []byte(detail), sig.Bytes, sig.AlertID)
+	return err
+}
+
+// QueryExfilSignals returns exfil signals for a tenant with optional agent filter.
+func (s *Store) QueryExfilSignals(ctx context.Context, tenantID, agentID string, limit, offset int) ([]models.ExfilSignal, int, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	args := []interface{}{tenantID}
+	where := "WHERE tenant_id=$1"
+	n := 2
+	if agentID != "" {
+		where += fmt.Sprintf(" AND agent_id=$%d", n)
+		args = append(args, agentID)
+		n++
+	}
+
+	var total int
+	if err := s.rdb().QueryRowContext(ctx, "SELECT COUNT(*) FROM exfil_signals "+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	args = append(args, limit, offset)
+	rows, err := s.rdb().QueryxContext(ctx,
+		"SELECT * FROM exfil_signals "+where+" ORDER BY detected_at DESC LIMIT $"+fmt.Sprint(n)+" OFFSET $"+fmt.Sprint(n+1),
+		args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var sigs []models.ExfilSignal
+	for rows.Next() {
+		var sig models.ExfilSignal
+		if err := rows.StructScan(&sig); err != nil {
+			return nil, 0, err
+		}
+		sigs = append(sigs, sig)
+	}
+	return sigs, total, rows.Err()
+}
+
+// ExfilAgentStats returns per-agent exfil statistics for the last hoursBack hours.
+func (s *Store) ExfilAgentStats(ctx context.Context, tenantID string, hoursBack int) ([]models.ExfilAgentStat, error) {
+	if hoursBack <= 0 {
+		hoursBack = 24
+	}
+	q := fmt.Sprintf(`
+SELECT
+  agent_id,
+  hostname,
+  COUNT(*) AS event_count,
+  COALESCE(SUM(bytes), 0) AS total_bytes,
+  MAX(detected_at)::TEXT AS last_seen
+FROM exfil_signals
+WHERE tenant_id=$1
+  AND detected_at > NOW() - INTERVAL '%d hours'
+GROUP BY agent_id, hostname
+ORDER BY total_bytes DESC
+`, hoursBack)
+	var stats []models.ExfilAgentStat
+	err := s.rdb().SelectContext(ctx, &stats, q, tenantID)
+	return stats, err
+}
+
+// ── Agent Scheduled Tasks ──────────────────────────────────────────────────
+
+func (s *Store) logTaskEvent(ctx context.Context, t *models.AgentTask, action, actor string, detail json.RawMessage) {
+	if len(detail) == 0 {
+		detail = json.RawMessage("{}")
+	}
+	_, _ = s.db.ExecContext(ctx, `
+		INSERT INTO agent_task_events (id, task_id, tenant_id, agent_id, task_name, task_type, action, actor, detail)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		"ate-"+uuid.New().String(), t.ID, t.TenantID, t.AgentID, t.Name, t.Type, action, actor, []byte(detail))
+}
+
+func (s *Store) CreateAgentTask(ctx context.Context, t *models.AgentTask, actor string) error {
+	payload := t.Payload
+	if len(payload) == 0 {
+		payload = json.RawMessage("{}")
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO agent_tasks (id, tenant_id, agent_id, name, type, schedule, payload, status, created_by)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,'active',$8)`,
+		t.ID, t.TenantID, t.AgentID, t.Name, t.Type, t.Schedule, []byte(payload), actor)
+	if err != nil {
+		return err
+	}
+	t.CreatedBy = actor
+	s.logTaskEvent(ctx, t, "created", actor, json.RawMessage(`{"schedule":"`+t.Schedule+`"}`))
+	return nil
+}
+
+func (s *Store) ListAgentTasks(ctx context.Context, tenantID, agentID, status string) ([]models.AgentTask, error) {
+	q := `SELECT * FROM agent_tasks WHERE tenant_id=$1 AND status != 'deleted'`
+	args := []interface{}{tenantID}
+	if agentID != "" {
+		q += ` AND agent_id=$2`
+		args = append(args, agentID)
+	}
+	if status != "" {
+		q += fmt.Sprintf(` AND status=$%d`, len(args)+1)
+		args = append(args, status)
+	}
+	q += ` ORDER BY created_at DESC`
+	var tasks []models.AgentTask
+	return tasks, s.rdb().SelectContext(ctx, &tasks, q, args...)
+}
+
+func (s *Store) GetAgentTask(ctx context.Context, id, tenantID string) (*models.AgentTask, error) {
+	var t models.AgentTask
+	err := s.rdb().GetContext(ctx, &t, `SELECT * FROM agent_tasks WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+func (s *Store) UpdateAgentTask(ctx context.Context, id, tenantID, actor string, name, schedule, status string, payload json.RawMessage) (*models.AgentTask, error) {
+	if len(payload) == 0 {
+		payload = json.RawMessage("{}")
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE agent_tasks SET name=$1, schedule=$2, status=$3, payload=$4, updated_at=NOW()
+		WHERE id=$5 AND tenant_id=$6`,
+		name, schedule, status, []byte(payload), id, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	t, err := s.GetAgentTask(ctx, id, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	action := "updated"
+	if status == "paused" {
+		action = "paused"
+	} else if status == "active" {
+		action = "resumed"
+	}
+	s.logTaskEvent(ctx, t, action, actor, json.RawMessage(`{"schedule":"`+schedule+`","status":"`+status+`"}`))
+	return t, nil
+}
+
+func (s *Store) DeleteAgentTask(ctx context.Context, id, tenantID, actor string) error {
+	t, err := s.GetAgentTask(ctx, id, tenantID)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE agent_tasks SET status='deleted', updated_at=NOW() WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	if err != nil {
+		return err
+	}
+	s.logTaskEvent(ctx, t, "deleted", actor, json.RawMessage("{}"))
+	return nil
+}
+
+func (s *Store) ListTaskEvents(ctx context.Context, tenantID, agentID, taskID string, limit, offset int) ([]models.AgentTaskEvent, int, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	base := `FROM agent_task_events WHERE tenant_id=$1`
+	args := []interface{}{tenantID}
+	if agentID != "" {
+		base += ` AND agent_id=$2`
+		args = append(args, agentID)
+	}
+	if taskID != "" {
+		base += fmt.Sprintf(` AND task_id=$%d`, len(args)+1)
+		args = append(args, taskID)
+	}
+	var total int
+	_ = s.rdb().QueryRowContext(ctx, "SELECT COUNT(*) "+base, args...).Scan(&total)
+	dataArgs := append(args, limit, offset)
+	var events []models.AgentTaskEvent
+	err := s.rdb().SelectContext(ctx, &events,
+		"SELECT * "+base+fmt.Sprintf(` ORDER BY occurred_at DESC LIMIT $%d OFFSET $%d`, len(args)+1, len(args)+2),
+		dataArgs...)
+	return events, total, err
+}
+
+// LogTaskRunEvent records an on-demand execution trigger in the task audit log.
+func (s *Store) LogTaskRunEvent(ctx context.Context, t *models.AgentTask, actor string) error {
+	s.logTaskEvent(ctx, t, "executed", actor, json.RawMessage(`{"trigger":"manual"}`))
+	return nil
+}
+
+// nextRunAfter computes the next execution time from a cron-like schedule string.
+// Handles @hourly, @daily, @weekly, @monthly, and Nh/Nm shorthand.
+// Returns zero time for unknown/empty schedules (one-shot).
+func nextRunAfter(schedule string, from time.Time) time.Time {
+	switch schedule {
+	case "", "@once":
+		return time.Time{}
+	case "@hourly":
+		return from.Add(time.Hour)
+	case "@daily", "@midnight":
+		return from.Add(24 * time.Hour)
+	case "@weekly":
+		return from.Add(7 * 24 * time.Hour)
+	case "@monthly":
+		return from.AddDate(0, 1, 0)
+	}
+	// Simple interval shorthand: "30m", "6h", "1h30m" etc.
+	if d, err := time.ParseDuration(schedule); err == nil && d > 0 {
+		return from.Add(d)
+	}
+	// For full cron expressions fall back to 24h to avoid tight loops.
+	if len(strings.Fields(schedule)) == 5 {
+		return from.Add(24 * time.Hour)
+	}
+	return time.Time{}
+}
+
+// ClaimDueAgentTasks returns tasks that are due for the given agent and
+// atomically marks them as in-flight by advancing next_run_at.
+func (s *Store) ClaimDueAgentTasks(ctx context.Context, agentID string) ([]models.AgentTask, error) {
+	var tasks []models.AgentTask
+	err := s.rdb().SelectContext(ctx, &tasks, `
+		SELECT * FROM agent_tasks
+		WHERE agent_id = $1
+		  AND status   = 'active'
+		  AND (next_run_at IS NULL OR next_run_at <= NOW())
+		ORDER BY next_run_at ASC NULLS FIRST`,
+		agentID)
+	if err != nil || len(tasks) == 0 {
+		return tasks, err
+	}
+	now := time.Now()
+	for _, t := range tasks {
+		next := nextRunAfter(t.Schedule, now)
+		if next.IsZero() {
+			// One-shot: mark completed so it won't be re-delivered.
+			_, _ = s.db.ExecContext(ctx,
+				`UPDATE agent_tasks SET last_run_at=$1, next_run_at=NULL, status='completed', updated_at=NOW() WHERE id=$2`,
+				now, t.ID)
+		} else {
+			_, _ = s.db.ExecContext(ctx,
+				`UPDATE agent_tasks SET last_run_at=$1, next_run_at=$2, updated_at=NOW() WHERE id=$3`,
+				now, next, t.ID)
+		}
+	}
+	return tasks, nil
+}
+
+// RecordAgentTaskResult logs an execution result reported by the agent.
+func (s *Store) RecordAgentTaskResult(ctx context.Context, taskID, status, output, errMsg string) error {
+	t, err := s.db.ExecContext(ctx,
+		`UPDATE agent_tasks SET last_run_at=NOW(), updated_at=NOW() WHERE id=$1`,
+		taskID)
+	if err != nil {
+		return err
+	}
+	if n, _ := t.RowsAffected(); n == 0 {
+		return nil
+	}
+	detail, _ := json.Marshal(map[string]string{"status": status, "output": truncate(output, 512), "error": errMsg})
+	_, _ = s.db.ExecContext(ctx, `
+		INSERT INTO agent_task_events (id, task_id, tenant_id, agent_id, task_name, task_type, action, actor, detail)
+		SELECT $1, id, tenant_id, agent_id, name, type, 'executed', 'agent', $2
+		FROM agent_tasks WHERE id=$3`,
+		"ate-"+uuid.New().String(), json.RawMessage(detail), taskID)
+	return nil
+}
+
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
+}
+
+// TriggerAgentTaskNow forces a task to run on the agent's next heartbeat
+// by setting next_run_at to the current time.
+func (s *Store) TriggerAgentTaskNow(ctx context.Context, id, tenantID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE agent_tasks SET next_run_at=NOW(), updated_at=NOW() WHERE id=$1 AND tenant_id=$2 AND status='active'`,
+		id, tenantID)
+	return err
 }

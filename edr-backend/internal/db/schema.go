@@ -1724,6 +1724,81 @@ var migrations = []struct {
     CREATE INDEX IF NOT EXISTS net_lateral_tenant_idx ON network_lateral_state(tenant_id);
     `,
 	},
+	{
+		name: "xdr_phase19_canary_tokens",
+		sql: `
+CREATE TABLE IF NOT EXISTS canary_tokens (
+    id          TEXT PRIMARY KEY,
+    tenant_id   TEXT NOT NULL DEFAULT 'default',
+    name        TEXT NOT NULL,
+    type        TEXT NOT NULL CHECK (type IN ('credential','file','url','dns')),
+    token       TEXT NOT NULL UNIQUE,
+    deployed_to TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    triggered_at TIMESTAMPTZ,
+    trigger_count INT NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_canary_tokens_tenant ON canary_tokens(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_canary_tokens_token  ON canary_tokens(token);
+`,
+	},
+	{
+		name: "xdr_phase20_exfil_signals",
+		sql: `
+CREATE TABLE IF NOT EXISTS exfil_signals (
+    id          TEXT PRIMARY KEY,
+    tenant_id   TEXT NOT NULL DEFAULT 'default',
+    agent_id    TEXT NOT NULL,
+    hostname    TEXT NOT NULL DEFAULT '',
+    signal_type TEXT NOT NULL,
+    detail      JSONB NOT NULL DEFAULT '{}',
+    bytes       BIGINT NOT NULL DEFAULT 0,
+    detected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    alert_id    TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_exfil_signals_tenant   ON exfil_signals(tenant_id, detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_exfil_signals_agent    ON exfil_signals(agent_id, detected_at DESC);
+`,
+	},
+	{
+		name: "xdr_phase21_agent_tasks",
+		sql: `
+CREATE TABLE IF NOT EXISTS agent_tasks (
+    id          TEXT PRIMARY KEY,
+    tenant_id   TEXT NOT NULL DEFAULT 'default',
+    agent_id    TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    type        TEXT NOT NULL,
+    schedule    TEXT NOT NULL,
+    payload     JSONB NOT NULL DEFAULT '{}',
+    status      TEXT NOT NULL DEFAULT 'active',
+    last_run_at TIMESTAMPTZ,
+    next_run_at TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_by  TEXT NOT NULL DEFAULT 'system',
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_agent_tasks_tenant ON agent_tasks(tenant_id, agent_id);
+CREATE INDEX IF NOT EXISTS idx_agent_tasks_status ON agent_tasks(tenant_id, status);
+
+CREATE TABLE IF NOT EXISTS agent_task_events (
+    id          TEXT PRIMARY KEY,
+    task_id     TEXT NOT NULL,
+    tenant_id   TEXT NOT NULL DEFAULT 'default',
+    agent_id    TEXT NOT NULL,
+    task_name   TEXT NOT NULL,
+    task_type   TEXT NOT NULL,
+    action      TEXT NOT NULL,
+    actor       TEXT NOT NULL DEFAULT 'system',
+    detail      JSONB NOT NULL DEFAULT '{}',
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_task_events_tenant  ON agent_task_events(tenant_id, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_task_events_task    ON agent_task_events(task_id, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_task_events_agent   ON agent_task_events(agent_id, occurred_at DESC);
+`,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.

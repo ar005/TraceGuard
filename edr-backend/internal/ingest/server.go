@@ -240,10 +240,36 @@ func (s *Server) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.H
 		Str("hostname", req.Hostname).
 		Msg("heartbeat")
 
+	// Process task results reported by the agent.
+	for _, r := range req.TaskResults {
+		if err := s.store.RecordAgentTaskResult(ctx, r.TaskID, r.Status, r.Output, r.ErrMsg); err != nil {
+			s.log.Warn().Str("task_id", r.TaskID).Err(err).Msg("failed to record task result")
+		}
+	}
+
+	// Deliver tasks that are due for this agent.
+	tasks, err := s.store.ClaimDueAgentTasks(ctx, req.AgentID)
+	if err != nil {
+		s.log.Warn().Str("agent_id", req.AgentID).Err(err).Msg("failed to claim due tasks")
+	}
+	pending := make([]pb.TaskInstruction, 0, len(tasks))
+	for _, t := range tasks {
+		pending = append(pending, pb.TaskInstruction{
+			ID:      t.ID,
+			Name:    t.Name,
+			Type:    t.Type,
+			Payload: t.Payload,
+		})
+	}
+	if len(pending) > 0 {
+		s.log.Info().Str("agent_id", req.AgentID).Int("tasks", len(pending)).Msg("delivering due tasks")
+	}
+
 	return &pb.HeartbeatResponse{
 		Ok:            true,
 		ServerTime:    time.Now().UnixNano(),
 		ConfigVersion: configver.Get(),
+		PendingTasks:  pending,
 	}, nil
 }
 

@@ -7,6 +7,7 @@ package proto
 
 import (
 	"context"
+	"encoding/json"
 
 	"google.golang.org/grpc"
 )
@@ -25,12 +26,13 @@ type EventEnvelope struct {
 }
 
 type HeartbeatRequest struct {
-	AgentID  string      `json:"agent_id"`
-	Hostname string      `json:"hostname"`
-	Timestamp int64      `json:"timestamp"`
-	AgentVer string      `json:"agent_ver"`
-	OS       string      `json:"os"`
-	Stats    *AgentStats `json:"stats,omitempty"`
+	AgentID   string       `json:"agent_id"`
+	Hostname  string       `json:"hostname"`
+	Timestamp int64        `json:"timestamp"`
+	AgentVer  string       `json:"agent_ver"`
+	OS        string       `json:"os"`
+	Stats     *AgentStats  `json:"stats,omitempty"`
+	TaskResults []TaskResult `json:"task_results,omitempty"`
 }
 
 type AgentStats struct {
@@ -41,10 +43,27 @@ type AgentStats struct {
 	MemBytes      uint64  `json:"mem_bytes"`
 }
 
+// TaskInstruction is a task the backend delivers to an agent via heartbeat.
+type TaskInstruction struct {
+	ID      string          `json:"id"`
+	Name    string          `json:"name"`
+	Type    string          `json:"type"`    // script | scan | collect | remediate
+	Payload json.RawMessage `json:"payload"` // type-specific parameters
+}
+
+// TaskResult is the execution report the agent sends back in the next heartbeat.
+type TaskResult struct {
+	TaskID string `json:"task_id"`
+	Status string `json:"status"` // success | failed
+	Output string `json:"output"` // stdout/stderr, capped 64 KB
+	ErrMsg string `json:"error,omitempty"`
+}
+
 type HeartbeatResponse struct {
-	Ok            bool   `json:"ok"`
-	ServerTime    int64  `json:"server_time"`
-	ConfigVersion string `json:"config_version"`
+	Ok            bool              `json:"ok"`
+	ServerTime    int64             `json:"server_time"`
+	ConfigVersion string            `json:"config_version"`
+	PendingTasks  []TaskInstruction `json:"pending_tasks,omitempty"`
 }
 
 type StreamResponse struct {

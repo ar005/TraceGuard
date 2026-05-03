@@ -40,6 +40,7 @@ import (
 	"github.com/youredr/edr-backend/internal/autocase"
 	"github.com/youredr/edr-backend/internal/autoremediate"
 	"github.com/youredr/edr-backend/internal/beaconing"
+	"github.com/youredr/edr-backend/internal/exfil"
 	"github.com/youredr/edr-backend/internal/hostbehavior"
 	"github.com/youredr/edr-backend/internal/netthreat"
 	"github.com/youredr/edr-backend/internal/dnstunnel"
@@ -358,6 +359,9 @@ func main() {
 	// ── XDR Feature E: Network Threat Detector ────────────────────────────────
 	netThreatDetector := netthreat.New(st, fireAlert, logger)
 
+	// ── XDR Feature E2: Data Exfiltration Detector ────────────────────────────
+	exfilDetector := exfil.New(st, logger)
+
 	// ── NATS JetStream (XDR pipeline, optional) ───────────────────────────────
 	var ingestSink ingest.EventSink // nil = inline detection (EDR mode)
 	var natsBus *natsbus.Bus
@@ -456,6 +460,10 @@ func main() {
 		})
 		_ = natsBus.Subscribe(riskCtx, natsbus.ConsumerConfig{Name: "net-threat-detector"}, func(ctx context.Context, ev *models.XdrEvent) error {
 			netThreatDetector.Observe(ctx, ev)
+			return nil
+		})
+		_ = natsBus.Subscribe(riskCtx, natsbus.ConsumerConfig{Name: "exfil-detector"}, func(ctx context.Context, ev *models.XdrEvent) error {
+			exfilDetector.Observe(ctx, ev)
 			return nil
 		})
 
