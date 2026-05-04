@@ -1,9 +1,11 @@
 "use client";
 
+import { useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { useApi } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
+import { ForensicTimeline } from "@/components/forensic-timeline";
 
 interface AttackGraphNode {
   id: string;
@@ -110,16 +112,17 @@ function TacticSummary({ nodes }: { nodes: AttackGraphNode[] }) {
 export default function IncidentAttackGraphPage() {
   const params = useParams();
   const id = typeof params?.id === "string" ? params.id : "";
+  const [activeTab, setActiveTab] = useState<"graph" | "timeline">("graph");
 
   const { data: graph, loading, error } = useApi<AttackGraph>(
-    () => api.get(`/incidents/${id}/attack-graph`),
+    (signal) => api.get(`/incidents/${id}/attack-graph`, {}, signal),
   );
 
   const nodes = graph?.nodes ?? [];
   const edges = graph?.edges ?? [];
 
   return (
-    <div className="space-y-6 max-w-3xl">
+    <div className="space-y-6 max-w-4xl">
       {/* Breadcrumb */}
       <div className="flex items-center gap-2 text-sm">
         <Link href="/incidents" className="text-white/40 hover:text-white transition-colors">
@@ -127,61 +130,74 @@ export default function IncidentAttackGraphPage() {
         </Link>
         <span className="text-white/20">/</span>
         <span className="text-white/60 font-mono text-xs truncate max-w-48">{id}</span>
-        <span className="text-white/20">/</span>
-        <span className="text-white/80">Attack Graph</span>
       </div>
 
       <div>
-        <h1 className="text-xl font-semibold text-white">Attack Graph</h1>
-        <p className="text-sm text-white/50 mt-0.5">
-          Kill-chain progression derived from correlated alerts
-        </p>
+        <h1 className="text-xl font-semibold text-white">Incident Detail</h1>
+        <p className="text-sm text-white/50 mt-0.5">Attack graph and forensic event timeline</p>
       </div>
 
-      {loading && (
-        <div className="rounded-xl border border-white/10 bg-white/[0.02] p-12 text-center text-white/30 text-sm">
-          Loading…
-        </div>
-      )}
+      {/* Tabs */}
+      <div className="flex gap-1 border-b border-white/8 pb-0">
+        {(["graph", "timeline"] as const).map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              activeTab === tab
+                ? "border-white/60 text-white"
+                : "border-transparent text-white/40 hover:text-white/70"
+            }`}
+          >
+            {tab === "graph" ? "Attack Graph" : "Forensic Timeline"}
+          </button>
+        ))}
+      </div>
 
-      {error && (
-        <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-4 text-sm text-red-400">
-          {error}
-        </div>
-      )}
-
-      {!loading && nodes.length === 0 && !error && (
-        <div className="rounded-xl border border-white/10 bg-white/[0.02] p-12 text-center">
-          <p className="text-white/30 text-sm">No correlated alerts for this incident yet.</p>
-          <p className="text-white/20 text-xs mt-1">The attack graph populates as alerts are linked to this incident.</p>
-        </div>
-      )}
-
-      {nodes.length > 0 && (
-        <>
-          {/* Tactic heatmap */}
-          <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4 space-y-2">
-            <p className="text-xs font-medium text-white/40 uppercase tracking-wider">Kill-chain coverage</p>
-            <TacticSummary nodes={nodes} />
-          </div>
-
-          {/* Sequential attack chain */}
-          <div className="rounded-xl border border-white/10 bg-white/[0.02] p-5">
-            <p className="text-xs font-medium text-white/40 uppercase tracking-wider mb-4">
-              Attack sequence — {nodes.length} alert{nodes.length !== 1 ? "s" : ""}, {edges.length} transition{edges.length !== 1 ? "s" : ""}
-            </p>
-            <div className="space-y-0">
-              {nodes.map((node, i) => (
-                <div key={node.id}>
-                  <NodeCard node={node} index={i} />
-                  {i < nodes.length - 1 && (
-                    <Arrow />
-                  )}
-                </div>
-              ))}
+      {activeTab === "graph" && (
+        <div className="space-y-6">
+          {loading && (
+            <div className="rounded-xl border border-white/10 bg-white/[0.02] p-12 text-center text-white/30 text-sm">
+              Loading…
             </div>
-          </div>
-        </>
+          )}
+          {error && (
+            <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-4 text-sm text-red-400">
+              {error}
+            </div>
+          )}
+          {!loading && nodes.length === 0 && !error && (
+            <div className="rounded-xl border border-white/10 bg-white/[0.02] p-12 text-center">
+              <p className="text-white/30 text-sm">No correlated alerts for this incident yet.</p>
+              <p className="text-white/20 text-xs mt-1">The attack graph populates as alerts are linked to this incident.</p>
+            </div>
+          )}
+          {nodes.length > 0 && (
+            <>
+              <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4 space-y-2">
+                <p className="text-xs font-medium text-white/40 uppercase tracking-wider">Kill-chain coverage</p>
+                <TacticSummary nodes={nodes} />
+              </div>
+              <div className="rounded-xl border border-white/10 bg-white/[0.02] p-5">
+                <p className="text-xs font-medium text-white/40 uppercase tracking-wider mb-4">
+                  Attack sequence — {nodes.length} alert{nodes.length !== 1 ? "s" : ""}, {edges.length} transition{edges.length !== 1 ? "s" : ""}
+                </p>
+                <div className="space-y-0">
+                  {nodes.map((node, i) => (
+                    <div key={node.id}>
+                      <NodeCard node={node} index={i} />
+                      {i < nodes.length - 1 && <Arrow />}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {activeTab === "timeline" && (
+        <ForensicTimeline incidentId={id} />
       )}
     </div>
   );

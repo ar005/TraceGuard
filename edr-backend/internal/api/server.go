@@ -335,7 +335,8 @@ func (s *Server) registerRoutes() {
 		v1.POST("/ioc-feeds/:id/sync", s.adminOnly(),         s.handleSyncCustomIOCFeed)
 
 		// Attack graph (H)
-		v1.GET("/incidents/:id/attack-graph", s.handleGetIncidentAttackGraph)
+		v1.GET("/incidents/:id/attack-graph",       s.handleGetIncidentAttackGraph)
+		v1.GET("/incidents/:id/forensic-timeline",  s.handleIncidentForensicTimeline)
 
 		// Compliance coverage (Feature F)
 		v1.GET("/compliance/coverage", s.handleComplianceCoverage)
@@ -368,7 +369,11 @@ func (s *Server) registerRoutes() {
 		v1.GET("/assets/:id", s.handleGetAsset)
 
 		// XDR Network events
-		v1.GET("/xdr/events", s.handleListXdrEvents)
+		v1.GET("/xdr/events",                  s.handleListXdrEvents)
+		v1.GET("/xdr/lateral-graph",           s.handleLateralGraph)
+		v1.GET("/xdr/threat-score",            s.handleGetOrgThreatScore)
+		v1.GET("/xdr/threat-score/history",    s.handleGetEntityRiskHistory)
+		v1.GET("/xdr/attack-surface",          s.handleGetOrgAttackSurface)
 
 		// SOAR Playbooks
 		v1.GET("/playbooks",          s.handleListPlaybooks)
@@ -401,6 +406,8 @@ func (s *Server) registerRoutes() {
 		}
 
 		// Agent scheduled tasks
+		v1.GET("/agents/:id/forensic-timeline",   s.handleAgentForensicTimeline)
+		v1.GET("/agents/:id/attack-surface",      s.handleGetAgentAttackSurface)
 		v1.GET("/agents/:id/tasks",              s.handleListAgentTasks)
 		v1.GET("/agents/:id/tasks/history",      s.handleListAgentTaskHistory)
 		v1.POST("/agents/:id/tasks",             s.adminOnly(), s.handleCreateAgentTask)

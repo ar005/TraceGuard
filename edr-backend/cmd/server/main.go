@@ -49,6 +49,8 @@ import (
 	"github.com/youredr/edr-backend/internal/fim"
 	"github.com/youredr/edr-backend/internal/hostrisk"
 	"github.com/youredr/edr-backend/internal/lateral"
+	"github.com/youredr/edr-backend/internal/riskhist"
+	"github.com/youredr/edr-backend/internal/surface"
 	"github.com/youredr/edr-backend/internal/logintrack"
 	"github.com/youredr/edr-backend/internal/playbook"
 	"github.com/youredr/edr-backend/internal/ransomware"
@@ -412,6 +414,14 @@ func main() {
 	// Lateral movement runs independently of NATS (sweeps the DB).
 	lateralDetector := lateral.New(st, logger)
 	go lateralDetector.Run(detectorCtx)
+
+	// Risk history recorder — hourly snapshots for the Threat Score Dashboard.
+	riskRecorder := riskhist.New(st, logger)
+	go riskRecorder.Run(detectorCtx)
+
+	// Attack surface scanner — 15-min snapshots of open ports + exposed vulns.
+	surfaceScanner := surface.New(st, logger)
+	go surfaceScanner.Run(detectorCtx)
 
 	if natsBus != nil {
 		scorer := userrisk.New(st, logger)

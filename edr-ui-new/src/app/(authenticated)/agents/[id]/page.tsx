@@ -26,7 +26,12 @@ import {
   CheckCircle2,
   PauseCircle,
   Play,
+  ScrollText,
+  ShieldOff,
+  Globe,
+  AlertTriangle,
 } from "lucide-react";
+import { ForensicTimeline } from "@/components/forensic-timeline";
 import { api } from "@/lib/api-client";
 import { useApi } from "@/hooks/use-api";
 import { cn, timeAgo, formatDate, eventTypeColor, severityBgClass } from "@/lib/utils";
@@ -40,7 +45,7 @@ interface PackageInfo {
   architecture: string;
 }
 
-type TabId = "overview" | "events" | "packages" | "vulnerabilities" | "winevent-config" | "event-reference" | "tasks";
+type TabId = "overview" | "events" | "packages" | "vulnerabilities" | "winevent-config" | "event-reference" | "tasks" | "forensic-timeline" | "attack-surface";
 
 /* ── Tab Button ─────────────────────────────────────────────── */
 
@@ -1397,6 +1402,137 @@ function TasksTab({ agentId }: { agentId: string }) {
   );
 }
 
+/* ── Attack Surface Tab ─────────────────────────────────────── */
+
+interface OpenPort { port: number; protocol: string; process: string; pid: number; internet_reachable: boolean; }
+interface ExposedVuln { cve_id: string; severity: string; port: number; service: string; package_name: string; }
+interface AgentSurfaceData {
+  agent_id: string; open_ports: OpenPort[]; exposed_vulns: ExposedVuln[];
+  risk_score: number; recommendations: string[]; snapshot_at: string | null;
+}
+
+function asSevColor(s: string) {
+  switch (s) {
+    case "CRITICAL": return "text-red-400 border-red-500/30 bg-red-500/10";
+    case "HIGH":     return "text-orange-400 border-orange-500/30 bg-orange-500/10";
+    case "MEDIUM":   return "text-amber-400 border-amber-500/30 bg-amber-500/10";
+    case "LOW":      return "text-blue-400 border-blue-500/30 bg-blue-500/10";
+    default:         return "text-white/40 border-white/10 bg-white/5";
+  }
+}
+
+function AgentAttackSurfaceTab({ agentId }: { agentId: string }) {
+  const { data, loading, error, refetch } = useApi<AgentSurfaceData>(
+    (signal) => api.get(`/agents/${agentId}/attack-surface`, {}, signal),
+  );
+
+  if (loading) return <div className="py-12 text-center text-white/30 text-sm">Loading…</div>;
+  if (error) return <div className="py-8 text-center text-sm text-red-400">{error}</div>;
+  if (!data) return null;
+
+  const ports = data.open_ports ?? [];
+  const vulns = data.exposed_vulns ?? [];
+
+  return (
+    <div className="space-y-4 pt-2">
+      {/* Summary row */}
+      <div className="flex items-center gap-6 text-xs text-white/50">
+        <span><span className="text-white font-semibold">{ports.length}</span> open ports</span>
+        <span><span className={vulns.length > 0 ? "text-red-400 font-semibold" : "text-white font-semibold"}>{vulns.length}</span> exposed CVEs</span>
+        {data.snapshot_at && <span>Snapshot: {new Date(data.snapshot_at).toLocaleString()}</span>}
+        <button onClick={() => refetch()} className="ml-auto text-white/30 hover:text-white transition-colors text-[10px]">Refresh</button>
+      </div>
+
+      {/* Recommendations */}
+      {data.recommendations.length > 0 && (
+        <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 space-y-1.5">
+          <p className="text-xs font-medium text-amber-400 uppercase tracking-wider mb-1">Fix First</p>
+          {data.recommendations.map((r, i) => (
+            <div key={i} className="flex items-start gap-2 text-xs text-amber-300/80">
+              <AlertTriangle size={11} className="mt-0.5 shrink-0 text-amber-500" />
+              {r}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {ports.length === 0 && vulns.length === 0 && (
+        <div className="rounded-xl border border-white/10 bg-white/[0.02] p-10 text-center text-white/30 text-sm">
+          No attack surface data yet. The scanner runs every 15 minutes on online agents.
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Open ports */}
+        {ports.length > 0 && (
+          <div className="rounded-xl border border-white/10 bg-white/[0.02] overflow-hidden">
+            <div className="px-4 py-2.5 border-b border-white/8">
+              <p className="text-xs font-medium text-white/40 uppercase tracking-wider">Open Ports</p>
+            </div>
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-white/5 text-white/30">
+                  <th className="px-4 py-2 text-left font-normal">Port</th>
+                  <th className="px-4 py-2 text-left font-normal">Proto</th>
+                  <th className="px-4 py-2 text-left font-normal">Process</th>
+                  <th className="px-4 py-2 text-left font-normal">Exposure</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ports.map((p) => (
+                  <tr key={p.port} className="border-b border-white/5 hover:bg-white/[0.02]">
+                    <td className="px-4 py-2 font-mono text-white/80">{p.port}</td>
+                    <td className="px-4 py-2 text-white/50">{p.protocol}</td>
+                    <td className="px-4 py-2 font-mono text-white/60">{p.process || "—"}</td>
+                    <td className="px-4 py-2">
+                      {p.internet_reachable
+                        ? <span className="flex items-center gap-1 text-red-400"><Globe size={10} />Internet</span>
+                        : <span className="text-white/25">Local</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Exposed vulns */}
+        {vulns.length > 0 && (
+          <div className="rounded-xl border border-white/10 bg-white/[0.02] overflow-hidden">
+            <div className="px-4 py-2.5 border-b border-white/8">
+              <p className="text-xs font-medium text-white/40 uppercase tracking-wider">Exposed Vulnerabilities</p>
+            </div>
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-white/5 text-white/30">
+                  <th className="px-4 py-2 text-left font-normal">CVE</th>
+                  <th className="px-4 py-2 text-left font-normal">Severity</th>
+                  <th className="px-4 py-2 text-left font-normal">Port</th>
+                  <th className="px-4 py-2 text-left font-normal">Package</th>
+                </tr>
+              </thead>
+              <tbody>
+                {vulns.map((v, i) => (
+                  <tr key={i} className="border-b border-white/5 hover:bg-white/[0.02]">
+                    <td className="px-4 py-2 font-mono text-white/70 text-[10px]">{v.cve_id}</td>
+                    <td className="px-4 py-2">
+                      <span className={`rounded border px-1.5 py-0.5 text-[9px] font-medium ${asSevColor(v.severity)}`}>
+                        {v.severity}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2 font-mono text-white/50">{v.port || "—"}</td>
+                    <td className="px-4 py-2 text-white/50 truncate max-w-[100px]">{v.package_name}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ── Main Page ──────────────────────────────────────────────── */
 
 export default function AgentDetailPage() {
@@ -1554,6 +1690,20 @@ export default function AgentDetailPage() {
           active={activeTab === "tasks"}
           onClick={setActiveTab}
         />
+        <TabButton
+          id="forensic-timeline"
+          label="Forensic Timeline"
+          icon={<ScrollText size={13} />}
+          active={activeTab === "forensic-timeline"}
+          onClick={setActiveTab}
+        />
+        <TabButton
+          id="attack-surface"
+          label="Attack Surface"
+          icon={<ShieldOff size={13} />}
+          active={activeTab === "attack-surface"}
+          onClick={setActiveTab}
+        />
       </div>
 
       {/* Tab content */}
@@ -1565,6 +1715,8 @@ export default function AgentDetailPage() {
         {activeTab === "winevent-config" && <WinEventConfigTab agentId={agentId} />}
         {activeTab === "event-reference" && <EventReferenceTab agentId={agentId} agentOs={agent.os ?? ""} />}
         {activeTab === "tasks" && <TasksTab agentId={agentId} />}
+        {activeTab === "forensic-timeline" && <ForensicTimeline agentId={agentId} />}
+        {activeTab === "attack-surface" && <AgentAttackSurfaceTab agentId={agentId} />}
       </div>
     </div>
   );

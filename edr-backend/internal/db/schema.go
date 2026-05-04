@@ -1762,6 +1762,45 @@ CREATE INDEX IF NOT EXISTS idx_exfil_signals_agent    ON exfil_signals(agent_id,
 `,
 	},
 	{
+		name: "xdr_phase23_attack_surface",
+		sql: `
+CREATE TABLE IF NOT EXISTS attack_surface_snapshots (
+    id            TEXT PRIMARY KEY,
+    tenant_id     TEXT NOT NULL DEFAULT 'default',
+    agent_id      TEXT NOT NULL,
+    snapshot_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    open_ports    JSONB NOT NULL DEFAULT '[]',
+    exposed_vulns JSONB NOT NULL DEFAULT '[]',
+    risk_score    SMALLINT NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS as_agent_snap_idx  ON attack_surface_snapshots(agent_id, snapshot_at DESC);
+CREATE INDEX IF NOT EXISTS as_tenant_snap_idx ON attack_surface_snapshots(tenant_id, snapshot_at DESC);
+`,
+	},
+	{
+		name: "xdr_phase24_risk_history",
+		sql: `
+CREATE TABLE IF NOT EXISTS risk_score_history (
+    id           TEXT PRIMARY KEY,
+    tenant_id    TEXT NOT NULL DEFAULT 'default',
+    entity_type  TEXT NOT NULL,
+    entity_id    TEXT NOT NULL,
+    score        SMALLINT NOT NULL,
+    factors      JSONB NOT NULL DEFAULT '[]',
+    recorded_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS rsh_entity_time_idx ON risk_score_history(entity_id, recorded_at DESC);
+CREATE INDEX IF NOT EXISTS rsh_tenant_time_idx ON risk_score_history(tenant_id, recorded_at DESC);
+`,
+	},
+	{
+		name: "xdr_phase22_forensic_idx",
+		sql: `
+CREATE INDEX IF NOT EXISTS events_agent_ts_idx  ON events(agent_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS events_alert_id_idx  ON events(alert_id) WHERE alert_id IS NOT NULL AND alert_id != '';
+`,
+	},
+	{
 		name: "xdr_phase21_agent_tasks",
 		sql: `
 CREATE TABLE IF NOT EXISTS agent_tasks (

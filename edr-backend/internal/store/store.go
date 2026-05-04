@@ -3450,3 +3450,694 @@ func (s *Store) TriggerAgentTaskNow(ctx context.Context, id, tenantID string) er
 		id, tenantID)
 	return err
 }
+
+// ── Attack Surface ────────────────────────────────────────────────────────────
+
+// OpenPort is a listening port entry in the attack surface.
+type OpenPort struct {
+	Port             int    `json:"port"`
+	Protocol         string `json:"protocol"`
+	Process          string `json:"process"`
+	PID              int    `json:"pid"`
+	InternetReachable bool  `json:"internet_reachable"`
+}
+
+// ExposedVuln is a vulnerability that has an associated open port.
+type ExposedVuln struct {
+	CveID       string `json:"cve_id"`
+	Severity    string `json:"severity"`
+	Port        int    `json:"port"`
+	Service     string `json:"service"`
+	PackageName string `json:"package_name"`
+}
+
+// AttackSurfaceSnapshot is the synthesised attack surface for one agent.
+type AttackSurfaceSnapshot struct {
+	ID              string        `json:"id"          db:"id"`
+	TenantID        string        `json:"tenant_id"   db:"tenant_id"`
+	AgentID         string        `json:"agent_id"    db:"agent_id"`
+	SnapshotAt      time.Time     `json:"snapshot_at" db:"snapshot_at"`
+	OpenPorts       json.RawMessage `json:"open_ports"   db:"open_ports"`
+	ExposedVulns    json.RawMessage `json:"exposed_vulns" db:"exposed_vulns"`
+	RiskScore       int16         `json:"risk_score"  db:"risk_score"`
+	Hostname        string        `json:"hostname,omitempty" db:"hostname"`
+	OpenPortCount   int           `json:"open_port_count,omitempty"  db:"open_port_count"`
+	ExposedVulnCount int          `json:"exposed_vuln_count,omitempty" db:"exposed_vuln_count"`
+}
+
+// OrgAttackSurfaceAgent is one row in the org-wide roll-up.
+type OrgAttackSurfaceAgent struct {
+	AgentID          string    `json:"agent_id"           db:"agent_id"`
+	Hostname         string    `json:"hostname"           db:"hostname"`
+	IP               string    `json:"ip"                 db:"ip"`
+	RiskScore        int16     `json:"risk_score"         db:"risk_score"`
+	OpenPortCount    int       `json:"open_port_count"    db:"open_port_count"`
+	ExposedVulnCount int       `json:"exposed_vuln_count" db:"exposed_vuln_count"`
+	SnapshotAt       time.Time `json:"snapshot_at"        db:"snapshot_at"`
+}
+
+// UpsertAttackSurfaceSnapshot writes a fresh snapshot for one agent.
+func (s *Store) UpsertAttackSurfaceSnapshot(ctx context.Context, snap *AttackSurfaceSnapshot) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO attack_surface_snapshots
+		    (id, tenant_id, agent_id, snapshot_at, open_ports, exposed_vulns, risk_score)
+		VALUES ($1,$2,$3,NOW(),$4,$5,$6)`,
+		snap.ID, snap.TenantID, snap.AgentID,
+		snap.OpenPorts, snap.ExposedVulns, snap.RiskScore)
+	return err
+}
+
+// GetAgentAttackSurface returns the most-recent snapshot for one agent,
+// enriched with open ports and exposed vulns.
+func (s *Store) GetAgentAttackSurface(ctx context.Context, agentID string) (*AttackSurfaceSnapshot, error) {
+	var snap AttackSurfaceSnapshot
+	err := s.rdb().GetContext(ctx, &snap, `
+		SELECT id, tenant_id, agent_id, snapshot_at, open_ports, exposed_vulns, risk_score
+		FROM attack_surface_snapshots
+		WHERE agent_id=$1
+		ORDER BY snapshot_at DESC LIMIT 1`, agentID)
+	if err != nil {
+		return nil, err
+	}
+	return &snap, nil
+}
+
+// GetOrgAttackSurface returns the top agents by exposed-vuln count.
+func (s *Store) GetOrgAttackSurface(ctx context.Context, internetOnly bool) ([]OrgAttackSurfaceAgent, error) {
+	q := `
+		SELECT s.agent_id,
+		       COALESCE(a.hostname, s.agent_id) AS hostname,
+		       COALESCE(a.ip, '')               AS ip,
+		       COALESCE(a.risk_score, 0)        AS risk_score,
+		       jsonb_array_length(s.open_ports)    AS open_port_count,
+		       jsonb_array_length(s.exposed_vulns) AS exposed_vuln_count,
+		       s.snapshot_at
+		FROM attack_surface_snapshots s
+		LEFT JOIN agents a ON a.id = s.agent_id
+		WHERE s.snapshot_at = (
+		    SELECT MAX(s2.snapshot_at) FROM attack_surface_snapshots s2
+		    WHERE s2.agent_id = s.agent_id
+		)`
+	if internetOnly {
+		q += ` AND jsonb_path_exists(s.open_ports, '$[*] ? (@.internet_reachable == true)')`
+	}
+	q += ` ORDER BY exposed_vuln_count DESC, open_port_count DESC LIMIT 50`
+
+	var out []OrgAttackSurfaceAgent
+	err := s.rdb().SelectContext(ctx, &out, q)
+	return out, err
+}
+
+// ComputeAgentAttackSurface derives open ports + exposed vulns from events + vulnerabilities tables.
+// Called by the background scanner — does NOT write to the DB.
+func (s *Store) ComputeAgentAttackSurface(ctx context.Context, agentID string) ([]OpenPort, []ExposedVuln, error) {
+	// Open ports: recent NET_ACCEPT events in the last hour, grouped by dst_port
+	type portRow struct {
+		DstPort   int    `db:"dst_port"`
+		Protocol  string `db:"protocol"`
+		Comm      string `db:"comm"`
+		PID       int    `db:"pid"`
+		MaxSrcIP  string `db:"max_src_ip"`
+	}
+	var portRows []portRow
+	err := s.rdb().SelectContext(ctx, &portRows, `
+		SELECT
+		    (payload->>'dst_port')::int              AS dst_port,
+		    COALESCE(payload->>'protocol', 'tcp')    AS protocol,
+		    COALESCE(payload->>'comm', '')            AS comm,
+		    COALESCE((payload->>'pid')::int, 0)      AS pid,
+		    MAX(payload->>'src_ip')                  AS max_src_ip
+		FROM events
+		WHERE agent_id = $1
+		  AND event_type = 'NET_ACCEPT'
+		  AND timestamp > NOW() - INTERVAL '1 hour'
+		  AND (payload->>'dst_port') IS NOT NULL
+		  AND (payload->>'dst_port')::int > 0
+		GROUP BY dst_port, protocol, comm, pid
+		ORDER BY dst_port ASC
+		LIMIT 100`, agentID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	openPorts := make([]OpenPort, 0, len(portRows))
+	portSet := map[int]bool{}
+	for _, r := range portRows {
+		internet := !isPrivateIP(r.MaxSrcIP)
+		openPorts = append(openPorts, OpenPort{
+			Port: r.DstPort, Protocol: r.Protocol,
+			Process: r.Comm, PID: r.PID,
+			InternetReachable: internet,
+		})
+		portSet[r.DstPort] = true
+	}
+
+	// Exposed vulns: vulnerabilities whose package is running on an open port.
+	// Match heuristically: well-known service→port mapping.
+	vulns, err := s.QueryVulnerabilities(ctx, agentID, 200, 0)
+	if err != nil {
+		return openPorts, nil, err
+	}
+
+	sevOrder := map[string]int{"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "UNKNOWN": 0}
+	exposed := make([]ExposedVuln, 0)
+	for _, v := range vulns {
+		port := servicePort(v.PackageName)
+		if port == 0 || !portSet[port] {
+			// If no known port mapping, include when any port is open for critical/high
+			if sevOrder[v.Severity] < 3 {
+				continue
+			}
+			if len(openPorts) == 0 {
+				continue
+			}
+			port = openPorts[0].Port
+		}
+		exposed = append(exposed, ExposedVuln{
+			CveID:       v.CveID,
+			Severity:    v.Severity,
+			Port:        port,
+			Service:     v.PackageName,
+			PackageName: v.PackageName,
+		})
+	}
+	return openPorts, exposed, nil
+}
+
+// isPrivateIP returns true for RFC-1918 / loopback / link-local addresses.
+func isPrivateIP(ip string) bool {
+	if ip == "" {
+		return true
+	}
+	private := []string{"10.", "172.16.", "172.17.", "172.18.", "172.19.",
+		"172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.",
+		"172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.",
+		"192.168.", "127.", "::1", "fc", "fd"}
+	for _, pfx := range private {
+		if strings.HasPrefix(ip, pfx) {
+			return true
+		}
+	}
+	return false
+}
+
+// servicePort maps well-known package names to their default port.
+func servicePort(pkg string) int {
+	p := strings.ToLower(pkg)
+	m := map[string]int{
+		"nginx": 80, "apache2": 80, "apache": 80, "httpd": 80,
+		"nodejs": 3000, "node": 3000,
+		"openssh-server": 22, "openssh": 22, "sshd": 22,
+		"mysql-server": 3306, "mysql": 3306,
+		"postgresql": 5432, "postgres": 5432,
+		"redis-server": 6379, "redis": 6379,
+		"mongodb": 27017, "mongod": 27017,
+		"tomcat": 8080, "tomcat9": 8080,
+		"docker": 2375, "dockerd": 2375,
+		"elasticsearch": 9200, "kibana": 5601,
+		"memcached": 11211, "rabbitmq": 5672,
+		"vsftpd": 21, "proftpd": 21, "pure-ftpd": 21,
+		"postfix": 25, "sendmail": 25, "exim4": 25,
+		"bind9": 53, "named": 53,
+		"ntp": 123, "ntpd": 123,
+		"smbd": 445, "nmbd": 445,
+	}
+	for k, v := range m {
+		if strings.Contains(p, k) {
+			return v
+		}
+	}
+	return 0
+}
+
+// ── Risk Score History ────────────────────────────────────────────────────────
+
+// RiskTrendPoint is a single day's average score in the trend series.
+type RiskTrendPoint struct {
+	Date   string `json:"date"`
+	Score  int16  `json:"score"`
+	Agents int16  `json:"agents"`
+	Users  int16  `json:"users"`
+}
+
+// OrgThreatScore is the full response for GET /xdr/threat-score.
+type OrgThreatScore struct {
+	OrgScore        int16                    `json:"org_score"`
+	ScoreDelta24h   int                      `json:"score_delta_24h"`
+	Trend           []RiskTrendPoint         `json:"trend"`
+	TopAgents       []models.Agent           `json:"top_agents"`
+	TopUsers        []models.IdentityRecord  `json:"top_users"`
+	FactorBreakdown map[string]int           `json:"factor_breakdown"`
+}
+
+// RecordRiskScoreSnapshot inserts one risk score snapshot row.
+func (s *Store) RecordRiskScoreSnapshot(ctx context.Context, tenantID, entityType, entityID string, score int16, factors json.RawMessage) error {
+	if factors == nil {
+		factors = json.RawMessage(`[]`)
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO risk_score_history (id, tenant_id, entity_type, entity_id, score, factors)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		"rsh-"+uuid.New().String(), tenantID, entityType, entityID, score, factors)
+	return err
+}
+
+// ListAllRiskableAgents returns every agent with a non-zero risk score.
+func (s *Store) ListAllRiskableAgents(ctx context.Context) ([]models.Agent, error) {
+	var out []models.Agent
+	err := s.rdb().SelectContext(ctx, &out,
+		`SELECT id, hostname, ip, risk_score, risk_factors, risk_updated_at
+		 FROM agents WHERE risk_score > 0`)
+	return out, err
+}
+
+// ListAllRiskableIdentities returns every identity with a non-zero risk score.
+func (s *Store) ListAllRiskableIdentities(ctx context.Context) ([]models.IdentityRecord, error) {
+	var out []models.IdentityRecord
+	err := s.rdb().SelectContext(ctx, &out,
+		`SELECT id, canonical_uid, display_name, risk_score, risk_factors
+		 FROM identity_graph WHERE risk_score > 0`)
+	return out, err
+}
+
+// GetOrgThreatScore computes the org-wide threat score summary.
+func (s *Store) GetOrgThreatScore(ctx context.Context, tenantID string, days int) (*OrgThreatScore, error) {
+	if days <= 0 {
+		days = 30
+	}
+
+	// Current live scores
+	var agentAvg, userAvg float64
+	_ = s.rdb().GetContext(ctx, &agentAvg, `SELECT COALESCE(AVG(risk_score),0) FROM agents WHERE risk_score > 0`)
+	_ = s.rdb().GetContext(ctx, &userAvg, `SELECT COALESCE(AVG(risk_score),0) FROM identity_graph WHERE risk_score > 0`)
+	orgScore := int16((agentAvg + userAvg) / 2)
+
+	// 24 h delta: compare today's avg vs yesterday's avg from history
+	var prevScore float64
+	_ = s.rdb().GetContext(ctx, &prevScore, `
+		SELECT COALESCE(AVG(score),0) FROM risk_score_history
+		WHERE tenant_id=$1
+		  AND recorded_at BETWEEN NOW()-INTERVAL '48 hours' AND NOW()-INTERVAL '24 hours'`,
+		tenantID)
+	delta := int(orgScore) - int(prevScore)
+
+	// Daily trend from history
+	type trendRow struct {
+		Day        string  `db:"day"`
+		EntityType string  `db:"entity_type"`
+		AvgScore   float64 `db:"avg_score"`
+	}
+	var trendRows []trendRow
+	_ = s.rdb().SelectContext(ctx, &trendRows, `
+		SELECT to_char(date_trunc('day', recorded_at), 'YYYY-MM-DD') AS day,
+		       entity_type,
+		       AVG(score) AS avg_score
+		FROM risk_score_history
+		WHERE tenant_id=$1 AND recorded_at > NOW() - make_interval(days => $2)
+		GROUP BY day, entity_type
+		ORDER BY day ASC`,
+		tenantID, days)
+
+	// Merge agent/user rows into combined trend points
+	trendMap := map[string]*RiskTrendPoint{}
+	for _, r := range trendRows {
+		pt := trendMap[r.Day]
+		if pt == nil {
+			pt = &RiskTrendPoint{Date: r.Day}
+			trendMap[r.Day] = pt
+		}
+		switch r.EntityType {
+		case "agent":
+			pt.Agents = int16(r.AvgScore)
+		case "user":
+			pt.Users = int16(r.AvgScore)
+		}
+		pt.Score = int16((float64(pt.Agents) + float64(pt.Users)) / 2)
+	}
+	trend := make([]RiskTrendPoint, 0, len(trendMap))
+	for _, pt := range trendMap {
+		trend = append(trend, *pt)
+	}
+	// sort by date
+	for i := 1; i < len(trend); i++ {
+		for j := i; j > 0 && trend[j].Date < trend[j-1].Date; j-- {
+			trend[j], trend[j-1] = trend[j-1], trend[j]
+		}
+	}
+
+	// Top agents + users (existing methods)
+	topAgents, _ := s.ListTopRiskAgents(ctx, 10)
+	topUsers, _ := s.TopRiskyIdentities(ctx, 10)
+
+	// Factor breakdown — count by factor name across both tables
+	breakdown := map[string]int{}
+	type factorRow struct {
+		Factor string `db:"factor"`
+		Cnt    int    `db:"cnt"`
+	}
+	var agentFactors, userFactors []factorRow
+	_ = s.rdb().SelectContext(ctx, &agentFactors, `
+		SELECT f.value::text AS factor, COUNT(*) AS cnt
+		FROM agents, jsonb_array_elements_text(risk_factors) f
+		WHERE risk_score > 0
+		GROUP BY factor`)
+	_ = s.rdb().SelectContext(ctx, &userFactors, `
+		SELECT f.value::text AS factor, COUNT(*) AS cnt
+		FROM identity_graph, jsonb_array_elements_text(risk_factors) f
+		WHERE risk_score > 0
+		GROUP BY factor`)
+	for _, r := range agentFactors {
+		breakdown[r.Factor] += r.Cnt
+	}
+	for _, r := range userFactors {
+		breakdown[r.Factor] += r.Cnt
+	}
+
+	if topAgents == nil {
+		topAgents = []models.Agent{}
+	}
+	if topUsers == nil {
+		topUsers = []models.IdentityRecord{}
+	}
+	if trend == nil {
+		trend = []RiskTrendPoint{}
+	}
+
+	return &OrgThreatScore{
+		OrgScore:        orgScore,
+		ScoreDelta24h:   delta,
+		Trend:           trend,
+		TopAgents:       topAgents,
+		TopUsers:        topUsers,
+		FactorBreakdown: breakdown,
+	}, nil
+}
+
+// GetEntityRiskHistory returns daily-averaged score history for one entity.
+func (s *Store) GetEntityRiskHistory(ctx context.Context, entityID, entityType string, days int) ([]RiskTrendPoint, error) {
+	if days <= 0 {
+		days = 30
+	}
+	type row struct {
+		Day   string  `db:"day"`
+		Score float64 `db:"avg_score"`
+	}
+	var rows []row
+	err := s.rdb().SelectContext(ctx, &rows, `
+		SELECT to_char(date_trunc('day', recorded_at), 'YYYY-MM-DD') AS day,
+		       AVG(score) AS avg_score
+		FROM risk_score_history
+		WHERE entity_id=$1 AND entity_type=$2
+		  AND recorded_at > NOW() - make_interval(days => $3)
+		GROUP BY day ORDER BY day ASC`,
+		entityID, entityType, days)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]RiskTrendPoint, len(rows))
+	for i, r := range rows {
+		out[i] = RiskTrendPoint{Date: r.Day, Score: int16(r.Score)}
+	}
+	return out, nil
+}
+
+// ── Lateral Movement Graph ────────────────────────────────────────────────────
+
+// LateralGraphNode is a host node in the tenant-wide lateral movement graph.
+type LateralGraphNode struct {
+	ID         string `json:"id"`
+	Hostname   string `json:"hostname"`
+	IP         string `json:"ip"`
+	RiskScore  int16  `json:"risk_score"`
+	AgentID    string `json:"agent_id"`
+	AlertCount int    `json:"alert_count"`
+}
+
+// LateralGraphEdge represents a connection between two hosts.
+type LateralGraphEdge struct {
+	Src       string    `json:"src"`
+	Dst       string    `json:"dst"`
+	Count     int       `json:"count"`
+	Protocols []string  `json:"protocols"`
+	LastSeen  time.Time `json:"last_seen"`
+}
+
+// LateralGraph is the full tenant-wide lateral movement graph response.
+type LateralGraph struct {
+	Nodes []LateralGraphNode `json:"nodes"`
+	Edges []LateralGraphEdge `json:"edges"`
+}
+
+// GetLateralGraph returns a tenant-wide lateral movement graph.
+// Edges are derived from users with shared login sessions across multiple agents.
+// Nodes are all agents that appear in at least one edge or have open alerts.
+func (s *Store) GetLateralGraph(ctx context.Context, hours, minConnections int) (*LateralGraph, error) {
+	if hours <= 0 || hours > 24*7 {
+		hours = 24
+	}
+	if minConnections <= 0 {
+		minConnections = 1
+	}
+
+	type edgeRow struct {
+		Src      string    `db:"src"`
+		Dst      string    `db:"dst"`
+		Count    int       `db:"cnt"`
+		LastSeen time.Time `db:"last_seen"`
+	}
+	var rawEdges []edgeRow
+	err := s.rdb().SelectContext(ctx, &rawEdges, `
+		SELECT ls1.agent_id AS src, ls2.agent_id AS dst,
+		       COUNT(*) AS cnt,
+		       MAX(GREATEST(ls1.logged_in_at, ls2.logged_in_at)) AS last_seen
+		FROM login_sessions ls1
+		JOIN login_sessions ls2
+		  ON ls1.user_uid = ls2.user_uid AND ls1.agent_id < ls2.agent_id
+		WHERE ls1.logged_in_at > NOW() - make_interval(hours => $1)
+		  AND ls2.logged_in_at > NOW() - make_interval(hours => $1)
+		GROUP BY ls1.agent_id, ls2.agent_id
+		HAVING COUNT(*) >= $2`,
+		hours, minConnections)
+	if err != nil {
+		return nil, err
+	}
+
+	agentSet := map[string]bool{}
+	var edges []LateralGraphEdge
+	for _, e := range rawEdges {
+		agentSet[e.Src] = true
+		agentSet[e.Dst] = true
+		edges = append(edges, LateralGraphEdge{
+			Src:       e.Src,
+			Dst:       e.Dst,
+			Count:     e.Count,
+			Protocols: []string{"auth"},
+			LastSeen:  e.LastSeen,
+		})
+	}
+
+	type nodeRow struct {
+		ID         string `db:"id"`
+		Hostname   string `db:"hostname"`
+		IP         string `db:"ip"`
+		RiskScore  int16  `db:"risk_score"`
+		AlertCount int    `db:"alert_count"`
+	}
+	var nodeRows []nodeRow
+	err = s.rdb().SelectContext(ctx, &nodeRows, `
+		SELECT a.id, a.hostname, a.ip,
+		       COALESCE(a.risk_score, 0) AS risk_score,
+		       COUNT(al.id) FILTER (WHERE al.status='OPEN') AS alert_count
+		FROM agents a
+		LEFT JOIN alerts al ON al.agent_id = a.id AND al.status = 'OPEN'
+		GROUP BY a.id, a.hostname, a.ip, a.risk_score
+		ORDER BY a.last_seen DESC
+		LIMIT 300`)
+	if err != nil {
+		return nil, err
+	}
+
+	var nodes []LateralGraphNode
+	for _, n := range nodeRows {
+		if agentSet[n.ID] || n.AlertCount > 0 {
+			nodes = append(nodes, LateralGraphNode{
+				ID: n.ID, Hostname: n.Hostname, IP: n.IP,
+				RiskScore: n.RiskScore, AgentID: n.ID, AlertCount: n.AlertCount,
+			})
+		}
+	}
+	// If no edges found, still return top-risk agents so the page isn't empty.
+	if len(nodes) == 0 {
+		for i, n := range nodeRows {
+			if i >= 50 {
+				break
+			}
+			nodes = append(nodes, LateralGraphNode{
+				ID: n.ID, Hostname: n.Hostname, IP: n.IP,
+				RiskScore: n.RiskScore, AgentID: n.ID, AlertCount: n.AlertCount,
+			})
+		}
+	}
+	if nodes == nil {
+		nodes = []LateralGraphNode{}
+	}
+	if edges == nil {
+		edges = []LateralGraphEdge{}
+	}
+	return &LateralGraph{Nodes: nodes, Edges: edges}, nil
+}
+
+// ── Forensic Timeline ─────────────────────────────────────────────────────────
+
+// ForensicEvent is a single event entry in the forensic timeline.
+type ForensicEvent struct {
+	ID        string          `json:"id"         db:"id"`
+	Type      string          `json:"type"       db:"event_type"`
+	Timestamp time.Time       `json:"timestamp"  db:"timestamp"`
+	AgentID   string          `json:"agent_id"   db:"agent_id"`
+	Hostname  string          `json:"hostname"   db:"hostname"`
+	Severity  int16           `json:"severity"   db:"severity"`
+	Payload   json.RawMessage `json:"payload"    db:"payload"`
+	AlertID   string          `json:"alert_id,omitempty" db:"alert_id"`
+	Source    string          `json:"source"     db:"-"`
+}
+
+// ForensicTimelineResult is the paginated response for a forensic timeline query.
+type ForensicTimelineResult struct {
+	Events  []ForensicEvent `json:"events"`
+	Total   int             `json:"total"`
+	HasMore bool            `json:"has_more"`
+	Cursor  string          `json:"cursor,omitempty"`
+}
+
+// ForensicOpts holds optional filters for forensic timeline queries.
+type ForensicOpts struct {
+	After  *time.Time
+	Before *time.Time
+	Types  []string
+	Limit  int
+	Offset int
+}
+
+func (s *Store) forensicLabel(e *ForensicEvent) string {
+	if e.AlertID != "" {
+		return "xdr"
+	}
+	switch e.Type {
+	case "NET_CONNECT", "NET_ACCEPT", "DNS_QUERY":
+		return "xdr"
+	case "LOGIN", "LOGOUT", "AUTH_FAIL":
+		return "identity"
+	}
+	return "edr"
+}
+
+// GetIncidentForensicTimeline returns a unified event stream for all agents
+// involved in an incident, ±5 min around the incident window.
+func (s *Store) GetIncidentForensicTimeline(ctx context.Context, incidentID, tenantID string, opts ForensicOpts) (*ForensicTimelineResult, error) {
+	var inc struct {
+		AgentIDs  pq.StringArray `db:"agent_ids"`
+		FirstSeen time.Time      `db:"first_seen"`
+		LastSeen  time.Time      `db:"last_seen"`
+	}
+	if err := s.rdb().GetContext(ctx, &inc,
+		`SELECT agent_ids, first_seen, last_seen FROM incidents WHERE id=$1 AND tenant_id=$2`,
+		incidentID, tenantID); err != nil {
+		return nil, err
+	}
+
+	windowStart := inc.FirstSeen.Add(-5 * time.Minute)
+	windowEnd := inc.LastSeen.Add(5 * time.Minute)
+	if opts.After != nil {
+		windowStart = *opts.After
+	}
+	if opts.Before != nil {
+		windowEnd = *opts.Before
+	}
+
+	limit := opts.Limit
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+
+	args := []interface{}{pq.Array([]string(inc.AgentIDs)), windowStart, windowEnd}
+	q := `SELECT id, event_type, timestamp, agent_id, hostname, severity, payload, alert_id
+	      FROM events
+	      WHERE agent_id = ANY($1) AND timestamp BETWEEN $2 AND $3`
+	if len(opts.Types) > 0 {
+		args = append(args, pq.Array(opts.Types))
+		q += fmt.Sprintf(` AND event_type = ANY($%d)`, len(args))
+	}
+	q += fmt.Sprintf(` ORDER BY timestamp ASC LIMIT $%d OFFSET $%d`, len(args)+1, len(args)+2)
+	args = append(args, limit+1, opts.Offset)
+
+	var rows []ForensicEvent
+	if err := s.rdb().SelectContext(ctx, &rows, q, args...); err != nil {
+		return nil, err
+	}
+
+	hasMore := len(rows) > limit
+	if hasMore {
+		rows = rows[:limit]
+	}
+	var cursor string
+	if hasMore && len(rows) > 0 {
+		cursor = rows[len(rows)-1].Timestamp.Format(time.RFC3339Nano)
+	}
+	for i := range rows {
+		rows[i].Source = s.forensicLabel(&rows[i])
+	}
+	if rows == nil {
+		rows = []ForensicEvent{}
+	}
+	return &ForensicTimelineResult{Events: rows, Total: len(rows), HasMore: hasMore, Cursor: cursor}, nil
+}
+
+// GetAgentForensicTimeline returns a forensic timeline scoped to a single agent.
+func (s *Store) GetAgentForensicTimeline(ctx context.Context, agentID string, opts ForensicOpts) (*ForensicTimelineResult, error) {
+	windowStart := time.Now().Add(-24 * time.Hour)
+	windowEnd := time.Now()
+	if opts.After != nil {
+		windowStart = *opts.After
+	}
+	if opts.Before != nil {
+		windowEnd = *opts.Before
+	}
+
+	limit := opts.Limit
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+
+	args := []interface{}{agentID, windowStart, windowEnd}
+	q := `SELECT id, event_type, timestamp, agent_id, hostname, severity, payload, alert_id
+	      FROM events
+	      WHERE agent_id = $1 AND timestamp BETWEEN $2 AND $3`
+	if len(opts.Types) > 0 {
+		args = append(args, pq.Array(opts.Types))
+		q += fmt.Sprintf(` AND event_type = ANY($%d)`, len(args))
+	}
+	q += fmt.Sprintf(` ORDER BY timestamp ASC LIMIT $%d OFFSET $%d`, len(args)+1, len(args)+2)
+	args = append(args, limit+1, opts.Offset)
+
+	var rows []ForensicEvent
+	if err := s.rdb().SelectContext(ctx, &rows, q, args...); err != nil {
+		return nil, err
+	}
+
+	hasMore := len(rows) > limit
+	if hasMore {
+		rows = rows[:limit]
+	}
+	var cursor string
+	if hasMore && len(rows) > 0 {
+		cursor = rows[len(rows)-1].Timestamp.Format(time.RFC3339Nano)
+	}
+	for i := range rows {
+		rows[i].Source = s.forensicLabel(&rows[i])
+	}
+	if rows == nil {
+		rows = []ForensicEvent{}
+	}
+	return &ForensicTimelineResult{Events: rows, Total: len(rows), HasMore: hasMore, Cursor: cursor}, nil
+}
