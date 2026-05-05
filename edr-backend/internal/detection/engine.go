@@ -23,6 +23,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"github.com/rs/zerolog"
+	"github.com/youredr/edr-backend/internal/inteltask"
 	"github.com/youredr/edr-backend/internal/liveresponse"
 	"github.com/youredr/edr-backend/internal/models"
 	"github.com/youredr/edr-backend/internal/store"
@@ -756,6 +757,7 @@ func (e *Engine) fireIOCAlert(ctx context.Context, ev *models.Event, ioc *models
 	desc := fmt.Sprintf("Event field %q matched %s IOC %q (source: %s). %s",
 		field, ioc.Type, ioc.Value, ioc.Source, ioc.Description)
 
+	intelCtx := inteltask.BuildIOCIntelContext(ioc)
 	alert := &models.Alert{
 		ID: alertID, Title: title, Description: desc,
 		Severity: ioc.Severity, Status: "OPEN",
@@ -763,6 +765,7 @@ func (e *Engine) fireIOCAlert(ctx context.Context, ev *models.Event, ioc *models
 		MitreIDs: []string{}, EventIDs: []string{ev.ID},
 		AgentID: ev.AgentID, Hostname: ev.Hostname,
 		FirstSeen: time.Now(), LastSeen: time.Now(),
+		Enrichments: mergeIntelContext(nil, intelCtx),
 	}
 
 	e.log.Warn().
@@ -918,4 +921,17 @@ func toStringSlice(v interface{}) []string {
 func stringSliceContains(ss []string, target string) bool {
 	for _, s := range ss { if s == target { return true } }
 	return false
+}
+
+// mergeIntelContext merges an intel_context blob into existing alert enrichments JSON.
+func mergeIntelContext(existing, intelCtx json.RawMessage) json.RawMessage {
+	m := map[string]json.RawMessage{}
+	if len(existing) > 0 {
+		_ = json.Unmarshal(existing, &m)
+	}
+	if len(intelCtx) > 0 {
+		m["intel_context"] = intelCtx
+	}
+	b, _ := json.Marshal(m)
+	return b
 }

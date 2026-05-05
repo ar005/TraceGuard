@@ -191,18 +191,23 @@ type VulnStats struct {
 
 // IOC represents an Indicator of Compromise for threat intelligence matching.
 type IOC struct {
-	ID          string     `db:"id"          json:"id"`
-	Type        string     `db:"type"        json:"type"`        // "ip", "domain", "hash_sha256", "hash_md5"
-	Value       string     `db:"value"       json:"value"`       // the indicator value (normalized lowercase)
-	Source      string     `db:"source"      json:"source"`      // feed name or "manual"
-	Severity    int16      `db:"severity"    json:"severity"`    // 0-4 matching alert severity scale
-	Description string     `db:"description" json:"description"`
-	Tags        pq.StringArray `db:"tags"    json:"tags"`
-	Enabled     bool       `db:"enabled"     json:"enabled"`
-	ExpiresAt   *time.Time `db:"expires_at"  json:"expires_at,omitempty"`
-	CreatedAt   time.Time  `db:"created_at"  json:"created_at"`
-	HitCount    int64      `db:"hit_count"   json:"hit_count"`
-	LastHitAt   *time.Time `db:"last_hit_at" json:"last_hit_at,omitempty"`
+	ID          string         `db:"id"             json:"id"`
+	Type        string         `db:"type"           json:"type"`
+	Value       string         `db:"value"          json:"value"`
+	Source      string         `db:"source"         json:"source"`
+	Severity    int16          `db:"severity"       json:"severity"`
+	Description string         `db:"description"    json:"description"`
+	Tags        pq.StringArray `db:"tags"           json:"tags"`
+	Enabled     bool           `db:"enabled"        json:"enabled"`
+	ExpiresAt   *time.Time     `db:"expires_at"     json:"expires_at,omitempty"`
+	CreatedAt   time.Time      `db:"created_at"     json:"created_at"`
+	HitCount    int64          `db:"hit_count"      json:"hit_count"`
+	LastHitAt   *time.Time     `db:"last_hit_at"    json:"last_hit_at,omitempty"`
+	Enrichment    json.RawMessage `db:"enrichment"     json:"enrichment,omitempty"`
+	EnrichedAt    *time.Time      `db:"enriched_at"    json:"enriched_at,omitempty"`
+	EnrichmentVer int16           `db:"enrichment_ver" json:"enrichment_ver"`
+	ActorID    *string `db:"actor_id"    json:"actor_id,omitempty"`
+	CampaignID *string `db:"campaign_id" json:"campaign_id,omitempty"`
 }
 
 
@@ -567,16 +572,39 @@ type AutoRemediationRule struct {
 
 // CustomIOCFeed is a user-defined external IOC feed.
 type CustomIOCFeed struct {
-	ID           string     `db:"id"             json:"id"`
-	TenantID     string     `db:"tenant_id"      json:"tenant_id"`
-	Name         string     `db:"name"           json:"name"`
-	URL          string     `db:"url"            json:"url"`
-	Format       string     `db:"format"         json:"format"`    // txt | csv | stix
-	FeedType     string     `db:"feed_type"      json:"feed_type"` // ip | domain | hash
-	Enabled      bool       `db:"enabled"        json:"enabled"`
-	LastSyncedAt *time.Time `db:"last_synced_at" json:"last_synced_at"`
-	EntryCount   int        `db:"entry_count"    json:"entry_count"`
-	CreatedAt    time.Time  `db:"created_at"     json:"created_at"`
+	ID           string     `db:"id"              json:"id"`
+	TenantID     string     `db:"tenant_id"       json:"tenant_id"`
+	Name         string     `db:"name"            json:"name"`
+	URL          string     `db:"url"             json:"url"`
+	Format       string     `db:"format"          json:"format"`    // txt | csv | stix
+	FeedType     string     `db:"feed_type"       json:"feed_type"` // ip | domain | hash
+	Enabled      bool       `db:"enabled"         json:"enabled"`
+	LastSyncedAt *time.Time `db:"last_synced_at"  json:"last_synced_at"`
+	EntryCount   int        `db:"entry_count"     json:"entry_count"`
+	CreatedAt    time.Time  `db:"created_at"      json:"created_at"`
+	// Feed quality & protocol (phase 2)
+	Protocol       string `db:"protocol"        json:"protocol"`        // http | taxii | misp
+	TAXIIUrl       string `db:"taxii_url"       json:"taxii_url"`
+	TAXIIUsername  string `db:"taxii_username"  json:"taxii_username"`
+	TAXIIPassword  string `db:"taxii_password"  json:"-"`               // encrypted at rest
+	MISPUrl        string `db:"misp_url"        json:"misp_url"`
+	MISPKey        string `db:"misp_key"        json:"-"`               // encrypted at rest
+	HitCount       int    `db:"hit_count"       json:"hit_count"`
+	FalsePosCount  int    `db:"false_pos_count" json:"false_pos_count"`
+	// Computed quality score (not stored)
+	QualityScore int `db:"-" json:"quality_score"`
+}
+
+// FeedSyncLog is one sync run record.
+type FeedSyncLog struct {
+	ID         string     `db:"id"          json:"id"`
+	FeedID     string     `db:"feed_id"     json:"feed_id"`
+	TenantID   string     `db:"tenant_id"   json:"tenant_id"`
+	StartedAt  time.Time  `db:"started_at"  json:"started_at"`
+	FinishedAt *time.Time `db:"finished_at" json:"finished_at"`
+	Added      int        `db:"added"       json:"added"`
+	Updated    int        `db:"updated"     json:"updated"`
+	Error      string     `db:"error"       json:"error,omitempty"`
 }
 
 // CanaryToken represents a honeypot token deployed to detect credential theft.
@@ -657,4 +685,167 @@ type AutoCasePolicy struct {
 	Enabled     bool           `db:"enabled"      json:"enabled"`
 	CreatedAt   time.Time      `db:"created_at"   json:"created_at"`
 	UpdatedAt   time.Time      `db:"updated_at"   json:"updated_at"`
+}
+
+// ThreatActor is a tracked threat group or individual.
+type ThreatActor struct {
+	ID          string         `db:"id"           json:"id"`
+	TenantID    string         `db:"tenant_id"    json:"tenant_id"`
+	Name        string         `db:"name"         json:"name"`
+	Aliases     pq.StringArray `db:"aliases"      json:"aliases"`
+	Country     string         `db:"country"      json:"country"`
+	Motivation  string         `db:"motivation"   json:"motivation"` // espionage|financial|hacktivism|unknown
+	Description string         `db:"description"  json:"description"`
+	MitreGroups pq.StringArray `db:"mitre_groups" json:"mitre_groups"`
+	CreatedAt   time.Time      `db:"created_at"   json:"created_at"`
+	UpdatedAt   time.Time      `db:"updated_at"   json:"updated_at"`
+
+	// Computed on list queries
+	IOCCount      int `db:"ioc_count"      json:"ioc_count"`
+	CampaignCount int `db:"campaign_count" json:"campaign_count"`
+}
+
+// Campaign is a targeted operation attributed to a threat actor.
+type Campaign struct {
+	ID          string         `db:"id"          json:"id"`
+	TenantID    string         `db:"tenant_id"   json:"tenant_id"`
+	Name        string         `db:"name"        json:"name"`
+	ActorID     *string        `db:"actor_id"    json:"actor_id,omitempty"`
+	ActorName   string         `db:"actor_name"  json:"actor_name,omitempty"`
+	StartDate   *time.Time     `db:"start_date"  json:"start_date,omitempty"`
+	EndDate     *time.Time     `db:"end_date"    json:"end_date,omitempty"`
+	Targets     pq.StringArray `db:"targets"     json:"targets"`
+	Techniques  pq.StringArray `db:"techniques"  json:"techniques"`
+	Description string         `db:"description" json:"description"`
+	CreatedAt   time.Time      `db:"created_at"  json:"created_at"`
+	UpdatedAt   time.Time      `db:"updated_at"  json:"updated_at"`
+
+	// Computed on list queries
+	IOCCount int `db:"ioc_count" json:"ioc_count"`
+}
+
+// ReplayJob is a retroactive IOC scan job.
+type ReplayJob struct {
+	ID           string         `db:"id"            json:"id"`
+	TenantID     string         `db:"tenant_id"     json:"tenant_id"`
+	TriggeredBy  string         `db:"triggered_by"  json:"triggered_by"`
+	IOCIDs       pq.StringArray `db:"ioc_ids"       json:"ioc_ids"`
+	LookbackDays int16          `db:"lookback_days" json:"lookback_days"`
+	Status       string         `db:"status"        json:"status"` // queued|running|done|failed
+	MatchedCount int            `db:"matched_count" json:"matched_count"`
+	ScannedCount int            `db:"scanned_count" json:"scanned_count"`
+	CreatedAt    time.Time      `db:"created_at"    json:"created_at"`
+	FinishedAt   *time.Time     `db:"finished_at"   json:"finished_at,omitempty"`
+}
+
+// SharingGroup defines a set of targets to push/export intel to.
+type SharingGroup struct {
+	ID          string          `db:"id"          json:"id"`
+	TenantID    string          `db:"tenant_id"   json:"tenant_id"`
+	Name        string          `db:"name"        json:"name"`
+	Description string          `db:"description" json:"description"`
+	PushTargets json.RawMessage `db:"push_targets" json:"push_targets"` // [{type,url,key}]
+	TLPFloor    string          `db:"tlp_floor"   json:"tlp_floor"`
+	CreatedAt   time.Time       `db:"created_at"  json:"created_at"`
+	UpdatedAt   time.Time       `db:"updated_at"  json:"updated_at"`
+}
+
+// SharingRun is a record of one push execution.
+type SharingRun struct {
+	ID         string     `db:"id"          json:"id"`
+	GroupID    string     `db:"group_id"    json:"group_id"`
+	StartedAt  time.Time  `db:"started_at"  json:"started_at"`
+	FinishedAt *time.Time `db:"finished_at" json:"finished_at,omitempty"`
+	Exported   int        `db:"exported"    json:"exported"`
+	Error      string     `db:"error"       json:"error"`
+}
+
+// PushTarget is one entry in SharingGroup.PushTargets.
+type PushTarget struct {
+	Type string `json:"type"` // "misp"
+	URL  string `json:"url"`
+	Key  string `json:"key"`
+}
+
+// IntelTask is an auto-generated or manually queued intel artifact task.
+type IntelTask struct {
+	ID         string    `db:"id"          json:"id"`
+	TenantID   string    `db:"tenant_id"   json:"tenant_id"`
+	Name       string    `db:"name"        json:"name"`
+	TaskType   string    `db:"task_type"   json:"task_type"`   // hunt|yara_rule|detection_rule
+	SourceType string    `db:"source_type" json:"source_type"` // actor|campaign|ioc|manual
+	SourceID   string    `db:"source_id"   json:"source_id"`
+	ArtifactID string    `db:"artifact_id" json:"artifact_id"`
+	Status     string    `db:"status"      json:"status"` // pending|done|failed
+	CreatedAt  time.Time `db:"created_at"  json:"created_at"`
+	CreatedBy  string    `db:"created_by"  json:"created_by"`
+}
+
+// SavedHunt is a named, reusable hunt query.
+type SavedHunt struct {
+	ID        string    `db:"id"         json:"id"`
+	TenantID  string    `db:"tenant_id"  json:"tenant_id"`
+	Name      string    `db:"name"       json:"name"`
+	Query     string    `db:"query"      json:"query"`
+	SourceID  string    `db:"source_id"  json:"source_id"`
+	CreatedAt time.Time `db:"created_at" json:"created_at"`
+}
+
+// HuntSchedule runs a SavedHunt on a cron schedule.
+type HuntSchedule struct {
+	ID          string     `db:"id"            json:"id"`
+	TenantID    string     `db:"tenant_id"     json:"tenant_id"`
+	SavedHuntID string     `db:"saved_hunt_id" json:"saved_hunt_id"`
+	Name        string     `db:"name"          json:"name"`
+	CronExpr    string     `db:"cron_expr"     json:"cron_expr"`
+	Enabled     bool       `db:"enabled"       json:"enabled"`
+	AlertOnHit  bool       `db:"alert_on_hit"  json:"alert_on_hit"`
+	LastRunAt   *time.Time `db:"last_run_at"   json:"last_run_at"`
+	NextRunAt   *time.Time `db:"next_run_at"   json:"next_run_at"`
+	CreatedAt   time.Time  `db:"created_at"    json:"created_at"`
+}
+
+// HuntScheduleRun records one execution of a HuntSchedule.
+type HuntScheduleRun struct {
+	ID         string     `db:"id"          json:"id"`
+	ScheduleID string     `db:"schedule_id" json:"schedule_id"`
+	TenantID   string     `db:"tenant_id"   json:"tenant_id"`
+	StartedAt  time.Time  `db:"started_at"  json:"started_at"`
+	FinishedAt *time.Time `db:"finished_at" json:"finished_at"`
+	RowCount   int        `db:"row_count"   json:"row_count"`
+	HitCount   int        `db:"hit_count"   json:"hit_count"`
+	Status     string     `db:"status"      json:"status"`
+	Error      string     `db:"error"       json:"error"`
+}
+
+// TAXIIFeed is an external TAXII 2.1 collection to pull IOCs from.
+type TAXIIFeed struct {
+	ID           string     `db:"id"             json:"id"`
+	TenantID     string     `db:"tenant_id"      json:"tenant_id"`
+	Name         string     `db:"name"           json:"name"`
+	DiscoveryURL string     `db:"discovery_url"  json:"discovery_url"`
+	APIRoot      string     `db:"api_root"       json:"api_root"`
+	CollectionID string     `db:"collection_id"  json:"collection_id"`
+	Username     string     `db:"username"       json:"username"`
+	PasswordEnc  string     `db:"password_enc"   json:"-"`
+	PollInterval int        `db:"poll_interval"  json:"poll_interval"`
+	LastPolledAt *time.Time `db:"last_polled_at" json:"last_polled_at"`
+	NextPollAt   *time.Time `db:"next_poll_at"   json:"next_poll_at"`
+	Enabled      bool       `db:"enabled"        json:"enabled"`
+	IOCCount     int        `db:"ioc_count"      json:"ioc_count"`
+	LastError    string     `db:"last_error"     json:"last_error"`
+	CreatedAt    time.Time  `db:"created_at"     json:"created_at"`
+}
+
+// TAXIIPollRun records one polling attempt against a TAXIIFeed.
+type TAXIIPollRun struct {
+	ID             string     `db:"id"              json:"id"`
+	FeedID         string     `db:"feed_id"         json:"feed_id"`
+	TenantID       string     `db:"tenant_id"       json:"tenant_id"`
+	StartedAt      time.Time  `db:"started_at"      json:"started_at"`
+	FinishedAt     *time.Time `db:"finished_at"     json:"finished_at"`
+	ObjectsFetched int        `db:"objects_fetched" json:"objects_fetched"`
+	IOCsImported   int        `db:"iocs_imported"   json:"iocs_imported"`
+	Status         string     `db:"status"          json:"status"`
+	Error          string     `db:"error"           json:"error"`
 }

@@ -50,7 +50,12 @@ import (
 	"github.com/youredr/edr-backend/internal/hostrisk"
 	"github.com/youredr/edr-backend/internal/lateral"
 	"github.com/youredr/edr-backend/internal/riskhist"
+	"github.com/youredr/edr-backend/internal/baseline"
+	"github.com/youredr/edr-backend/internal/huntscheduler"
+	"github.com/youredr/edr-backend/internal/intelreplay"
+	"github.com/youredr/edr-backend/internal/inteltask"
 	"github.com/youredr/edr-backend/internal/surface"
+	"github.com/youredr/edr-backend/internal/taxii"
 	"github.com/youredr/edr-backend/internal/logintrack"
 	"github.com/youredr/edr-backend/internal/playbook"
 	"github.com/youredr/edr-backend/internal/ransomware"
@@ -423,6 +428,14 @@ func main() {
 	surfaceScanner := surface.New(st, logger)
 	go surfaceScanner.Run(detectorCtx)
 
+	// Behavioral baseline updater — 5-min EWMA update + anomaly detection.
+	baselineUpdater := baseline.New(st, logger)
+	go baselineUpdater.Run(detectorCtx)
+
+	// Intel replay scanner — drains queued retroactive IOC scan jobs.
+	replayScanner := intelreplay.New(st, logger)
+	go replayScanner.Run(detectorCtx)
+
 	if natsBus != nil {
 		scorer := userrisk.New(st, logger)
 		hostScorer := hostrisk.New(st, logger)
@@ -538,6 +551,24 @@ func main() {
 	}
 	apiServer.SetPlaybookRunner(pbRunner)
 	apiServer.SetExportManager(exportMgr)
+
+	// IOC enrichment pipeline — background goroutine + API hook.
+	iocEnricher := enrichment.NewIOCPipeline(st, cfg.Enrichment.VirusTotalAPIKey, cfg.Enrichment.WhoisEnabled, logger)
+	go iocEnricher.Run(detectorCtx)
+	apiServer.SetIOCPipeline(iocEnricher)
+
+	// Intel task generator — auto-creates YARA rules and saved hunts from intel data.
+	intelGenerator := inteltask.New(st, "default", logger)
+	apiServer.SetIntelGenerator(intelGenerator)
+
+	// Hunt scheduler — runs saved hunts on cron schedules and fires alerts on hits.
+	huntSched := huntscheduler.New(st, logger)
+	go huntSched.Run(detectorCtx)
+
+	// TAXII poller — pulls STIX indicators from external TAXII 2.1 feeds.
+	taxiiPoller := taxii.NewPoller(st, logger)
+	go taxiiPoller.Run(detectorCtx)
+	apiServer.SetTAXIIPoller(taxiiPoller)
 
 	go func() {
 		if err := apiServer.Listen(cfg.Server.HTTPAddr); err != nil {

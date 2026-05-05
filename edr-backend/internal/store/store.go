@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -2890,19 +2891,78 @@ func (s *Store) GetUEBATimeline(ctx context.Context, tenantID, userUID string, h
 
 func (s *Store) ListCustomIOCFeeds(ctx context.Context, tenantID string) ([]models.CustomIOCFeed, error) {
 	var feeds []models.CustomIOCFeed
-	err := s.db.SelectContext(ctx, &feeds,
-		`SELECT id, tenant_id, name, url, format, feed_type, enabled, last_synced_at, entry_count, created_at
-         FROM custom_ioc_feeds WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
+	err := s.rdb().SelectContext(ctx, &feeds, `
+SELECT id, tenant_id, name, url, format, feed_type, enabled, last_synced_at, entry_count, created_at,
+       COALESCE(protocol,'http') AS protocol,
+       COALESCE(taxii_url,'') AS taxii_url, COALESCE(taxii_username,'') AS taxii_username,
+       COALESCE(taxii_password,'') AS taxii_password,
+       COALESCE(misp_url,'') AS misp_url, COALESCE(misp_key,'') AS misp_key,
+       COALESCE(hit_count,0) AS hit_count, COALESCE(false_pos_count,0) AS false_pos_count
+FROM custom_ioc_feeds WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
+	if feeds == nil {
+		feeds = []models.CustomIOCFeed{}
+	}
+	for i := range feeds {
+		computeFeedQuality(&feeds[i])
+	}
 	return feeds, err
 }
 
+func (s *Store) GetCustomIOCFeed(ctx context.Context, tenantID, id string) (*models.CustomIOCFeed, error) {
+	var f models.CustomIOCFeed
+	err := s.rdb().QueryRowxContext(ctx, `
+SELECT id, tenant_id, name, url, format, feed_type, enabled, last_synced_at, entry_count, created_at,
+       COALESCE(protocol,'http') AS protocol,
+       COALESCE(taxii_url,'') AS taxii_url, COALESCE(taxii_username,'') AS taxii_username,
+       COALESCE(taxii_password,'') AS taxii_password,
+       COALESCE(misp_url,'') AS misp_url, COALESCE(misp_key,'') AS misp_key,
+       COALESCE(hit_count,0) AS hit_count, COALESCE(false_pos_count,0) AS false_pos_count
+FROM custom_ioc_feeds WHERE id=$1 AND tenant_id=$2`, id, tenantID).StructScan(&f)
+	if err != nil {
+		return nil, err
+	}
+	computeFeedQuality(&f)
+	return &f, nil
+}
+
+func computeFeedQuality(f *models.CustomIOCFeed) {
+	if f.EntryCount == 0 {
+		f.QualityScore = 0
+		return
+	}
+	quality := (f.HitCount * 100) / f.EntryCount
+	var staleness int
+	if f.LastSyncedAt != nil {
+		days := int(time.Since(*f.LastSyncedAt).Hours() / 24)
+		staleness = days * 2
+		if staleness > 30 {
+			staleness = 30
+		}
+	}
+	score := quality - staleness
+	if score < 0 {
+		score = 0
+	}
+	if score > 100 {
+		score = 100
+	}
+	f.QualityScore = score
+}
+
 func (s *Store) UpsertCustomIOCFeed(ctx context.Context, f *models.CustomIOCFeed) error {
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO custom_ioc_feeds(id,tenant_id,name,url,format,feed_type,enabled,created_at)
-         VALUES($1,$2,$3,$4,$5,$6,$7,NOW())
-         ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name, url=EXCLUDED.url,
-           format=EXCLUDED.format, feed_type=EXCLUDED.feed_type, enabled=EXCLUDED.enabled`,
-		f.ID, f.TenantID, f.Name, f.URL, f.Format, f.FeedType, f.Enabled)
+	if f.Protocol == "" {
+		f.Protocol = "http"
+	}
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO custom_ioc_feeds(id,tenant_id,name,url,format,feed_type,enabled,protocol,taxii_url,taxii_username,taxii_password,misp_url,misp_key,created_at)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW())
+ON CONFLICT(id) DO UPDATE SET
+  name=EXCLUDED.name, url=EXCLUDED.url, format=EXCLUDED.format, feed_type=EXCLUDED.feed_type,
+  enabled=EXCLUDED.enabled, protocol=EXCLUDED.protocol, taxii_url=EXCLUDED.taxii_url,
+  taxii_username=EXCLUDED.taxii_username, taxii_password=EXCLUDED.taxii_password,
+  misp_url=EXCLUDED.misp_url, misp_key=EXCLUDED.misp_key`,
+		f.ID, f.TenantID, f.Name, f.URL, f.Format, f.FeedType, f.Enabled,
+		f.Protocol, f.TAXIIUrl, f.TAXIIUsername, f.TAXIIPassword, f.MISPUrl, f.MISPKey)
 	return err
 }
 
@@ -2916,6 +2976,41 @@ func (s *Store) MarkCustomFeedSynced(ctx context.Context, id string, count int) 
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE custom_ioc_feeds SET last_synced_at=NOW(), entry_count=$1 WHERE id=$2`, count, id)
 	return err
+}
+
+func (s *Store) IncrementFeedHitCount(ctx context.Context, source string) {
+	_, _ = s.db.ExecContext(ctx,
+		`UPDATE custom_ioc_feeds SET hit_count=hit_count+1 WHERE name=$1`, source)
+}
+
+// Feed sync log methods.
+
+func (s *Store) CreateFeedSyncLog(ctx context.Context, l *models.FeedSyncLog) error {
+	l.ID = "fsl-" + uuid.New().String()
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO feed_sync_log(id,feed_id,tenant_id,started_at) VALUES($1,$2,$3,NOW())`,
+		l.ID, l.FeedID, l.TenantID)
+	return err
+}
+
+func (s *Store) FinishFeedSyncLog(ctx context.Context, id string, added, updated int, syncErr string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE feed_sync_log SET finished_at=NOW(), added=$1, updated=$2, error=$3 WHERE id=$4`,
+		added, updated, syncErr, id)
+	return err
+}
+
+func (s *Store) ListFeedSyncLog(ctx context.Context, feedID string, limit int) ([]models.FeedSyncLog, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	var rows []models.FeedSyncLog
+	err := s.rdb().SelectContext(ctx, &rows,
+		`SELECT * FROM feed_sync_log WHERE feed_id=$1 ORDER BY started_at DESC LIMIT $2`, feedID, limit)
+	if rows == nil {
+		rows = []models.FeedSyncLog{}
+	}
+	return rows, err
 }
 
 // ── Feature H: Attack Graph ───────────────────────────────────────────────
@@ -4140,4 +4235,906 @@ func (s *Store) GetAgentForensicTimeline(ctx context.Context, agentID string, op
 		rows = []ForensicEvent{}
 	}
 	return &ForensicTimelineResult{Events: rows, Total: len(rows), HasMore: hasMore, Cursor: cursor}, nil
+}
+
+// ─── Behavioral Baselines & Anomaly Detection ────────────────────────────────
+
+type EntityBaseline struct {
+	ID          string    `db:"id"`
+	TenantID    string    `db:"tenant_id"`
+	EntityType  string    `db:"entity_type"`
+	EntityID    string    `db:"entity_id"`
+	Metric      string    `db:"metric"`
+	EWMA        float64   `db:"ewma"`
+	EWMASq      float64   `db:"ewma_sq"`
+	SampleCount int       `db:"sample_count"`
+	LastValue   float64   `db:"last_value"`
+	UpdatedAt   time.Time `db:"updated_at"`
+}
+
+type AnomalyScore struct {
+	ID            string     `db:"id" json:"id"`
+	TenantID      string     `db:"tenant_id" json:"tenant_id"`
+	EntityType    string     `db:"entity_type" json:"entity_type"`
+	EntityID      string     `db:"entity_id" json:"entity_id"`
+	EntityLabel   string     `db:"entity_label" json:"entity_label"`
+	Metric        string     `db:"metric" json:"metric"`
+	ZScore        float64    `db:"z_score" json:"z_score"`
+	ObservedValue float64    `db:"observed_value" json:"observed_value"`
+	ExpectedValue float64    `db:"expected_value" json:"expected_value"`
+	StdDev        float64    `db:"std_dev" json:"std_dev"`
+	IsActive      bool       `db:"is_active" json:"is_active"`
+	DetectedAt    time.Time  `db:"detected_at" json:"detected_at"`
+	ResolvedAt    *time.Time `db:"resolved_at" json:"resolved_at,omitempty"`
+}
+
+// GetAllBaselines returns all baselines for the background updater.
+func (s *Store) GetAllBaselines(ctx context.Context) ([]EntityBaseline, error) {
+	var rows []EntityBaseline
+	err := s.rdb().SelectContext(ctx, &rows, `SELECT * FROM entity_baselines`)
+	return rows, err
+}
+
+// UpsertEntityBaseline upserts an EWMA baseline and returns whether a new anomaly should be recorded.
+// Returns (z_score, error). z_score > 3 or < -3 means anomaly.
+func (s *Store) UpsertEntityBaseline(ctx context.Context, tenantID, entityType, entityID, metric string, value float64) (float64, error) {
+	id := "eb-" + uuid.New().String()
+	const q = `
+INSERT INTO entity_baselines(id, tenant_id, entity_type, entity_id, metric, ewma, ewma_sq, sample_count, last_value, updated_at)
+VALUES($1,$2,$3,$4,$5,$6,$7,1,$6,NOW())
+ON CONFLICT(entity_type, entity_id, metric) DO UPDATE
+  SET sample_count = entity_baselines.sample_count + 1,
+      last_value   = EXCLUDED.last_value,
+      ewma         = CASE WHEN entity_baselines.sample_count < 5 THEN
+                       (entity_baselines.ewma * entity_baselines.sample_count + EXCLUDED.last_value) / (entity_baselines.sample_count + 1)
+                     ELSE
+                       0.1 * EXCLUDED.last_value + 0.9 * entity_baselines.ewma
+                     END,
+      ewma_sq      = CASE WHEN entity_baselines.sample_count < 5 THEN
+                       (entity_baselines.ewma_sq * entity_baselines.sample_count + EXCLUDED.last_value * EXCLUDED.last_value) / (entity_baselines.sample_count + 1)
+                     ELSE
+                       0.1 * EXCLUDED.last_value * EXCLUDED.last_value + 0.9 * entity_baselines.ewma_sq
+                     END,
+      updated_at   = NOW()
+RETURNING ewma, ewma_sq, sample_count`
+
+	var row struct {
+		EWMA        float64 `db:"ewma"`
+		EWMASq      float64 `db:"ewma_sq"`
+		SampleCount int     `db:"sample_count"`
+	}
+	if err := s.db.QueryRowxContext(ctx, q, id, tenantID, entityType, entityID, metric, value).StructScan(&row); err != nil {
+		return 0, err
+	}
+	if row.SampleCount < 10 {
+		return 0, nil
+	}
+	variance := row.EWMASq - row.EWMA*row.EWMA
+	if variance < 0 {
+		variance = 0
+	}
+	stdDev := math.Sqrt(variance)
+	if stdDev < 0.01 {
+		return 0, nil
+	}
+	return (value - row.EWMA) / stdDev, nil
+}
+
+// RecordAnomaly inserts a new anomaly record, auto-resolving prior active ones for same entity+metric.
+func (s *Store) RecordAnomaly(ctx context.Context, a *AnomalyScore) error {
+	// Resolve prior active anomalies for this entity+metric
+	_, _ = s.db.ExecContext(ctx,
+		`UPDATE anomaly_scores SET is_active=FALSE, resolved_at=NOW()
+		 WHERE entity_id=$1 AND metric=$2 AND is_active=TRUE`, a.EntityID, a.Metric)
+
+	a.ID = "anom-" + uuid.New().String()
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO anomaly_scores(id,tenant_id,entity_type,entity_id,entity_label,metric,z_score,observed_value,expected_value,std_dev,is_active,detected_at)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,TRUE,NOW())`,
+		a.ID, a.TenantID, a.EntityType, a.EntityID, a.EntityLabel,
+		a.Metric, a.ZScore, a.ObservedValue, a.ExpectedValue, a.StdDev)
+	return err
+}
+
+// ListAnomalies returns org-level anomalies, newest first.
+func (s *Store) ListAnomalies(ctx context.Context, tenantID string, activeOnly bool, limit, offset int) ([]AnomalyScore, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	q := `SELECT * FROM anomaly_scores WHERE tenant_id=$1`
+	args := []interface{}{tenantID}
+	if activeOnly {
+		q += ` AND is_active=TRUE`
+	}
+	q += ` ORDER BY detected_at DESC LIMIT $2 OFFSET $3`
+	args = append(args, limit, offset)
+	var rows []AnomalyScore
+	if err := s.rdb().SelectContext(ctx, &rows, q, args...); err != nil {
+		return nil, err
+	}
+	if rows == nil {
+		rows = []AnomalyScore{}
+	}
+	return rows, nil
+}
+
+// GetEntityAnomalies returns anomalies for a specific entity over the last N days.
+func (s *Store) GetEntityAnomalies(ctx context.Context, entityID string, days int) ([]AnomalyScore, error) {
+	if days <= 0 {
+		days = 7
+	}
+	var rows []AnomalyScore
+	err := s.rdb().SelectContext(ctx, &rows, `
+SELECT * FROM anomaly_scores
+WHERE entity_id=$1 AND detected_at > NOW() - ($2::int * INTERVAL '1 day')
+ORDER BY detected_at DESC LIMIT 100`, entityID, days)
+	if rows == nil {
+		rows = []AnomalyScore{}
+	}
+	return rows, err
+}
+
+// ComputeEntityMetrics returns current 5-minute window metric values for an agent.
+func (s *Store) ComputeAgentMetrics(ctx context.Context, agentID string) (map[string]float64, error) {
+	metrics := make(map[string]float64)
+
+	// process_rate: distinct process create events in last 5 min
+	var processRate float64
+	_ = s.rdb().QueryRowContext(ctx, `
+SELECT COUNT(*) FROM events
+WHERE agent_id=$1 AND type='PROCESS_CREATE' AND timestamp > NOW() - INTERVAL '5 minutes'`, agentID).Scan(&processRate)
+	metrics["process_rate"] = processRate
+
+	// net_bytes_out: sum of net bytes out in last 5 min
+	var netBytes float64
+	_ = s.rdb().QueryRowContext(ctx, `
+SELECT COALESCE(SUM((payload->>'bytes_out')::bigint),0) FROM events
+WHERE agent_id=$1 AND type='NET_CONNECT' AND timestamp > NOW() - INTERVAL '5 minutes'
+  AND payload->>'bytes_out' IS NOT NULL`, agentID).Scan(&netBytes)
+	metrics["net_bytes_out"] = netBytes
+
+	// distinct_users: distinct user_uid values in last 5 min
+	var distinctUsers float64
+	_ = s.rdb().QueryRowContext(ctx, `
+SELECT COUNT(DISTINCT payload->>'user_uid') FROM events
+WHERE agent_id=$1 AND timestamp > NOW() - INTERVAL '5 minutes'
+  AND payload->>'user_uid' IS NOT NULL AND payload->>'user_uid' != ''`, agentID).Scan(&distinctUsers)
+	metrics["distinct_users"] = distinctUsers
+
+	return metrics, nil
+}
+
+// ComputeUserMetrics returns current 5-minute window metric values for a user UID.
+func (s *Store) ComputeUserMetrics(ctx context.Context, userUID string) (map[string]float64, error) {
+	metrics := make(map[string]float64)
+
+	var loginCount float64
+	_ = s.rdb().QueryRowContext(ctx, `
+SELECT COUNT(*) FROM login_sessions
+WHERE user_uid=$1 AND login_at > NOW() - INTERVAL '5 minutes'`, userUID).Scan(&loginCount)
+	metrics["login_count"] = loginCount
+
+	var authFail float64
+	_ = s.rdb().QueryRowContext(ctx, `
+SELECT COUNT(*) FROM events
+WHERE type='AUTH_FAILURE' AND payload->>'user_uid'=$1 AND timestamp > NOW() - INTERVAL '5 minutes'`, userUID).Scan(&authFail)
+	metrics["auth_failures"] = authFail
+
+	var distinctHosts float64
+	_ = s.rdb().QueryRowContext(ctx, `
+SELECT COUNT(DISTINCT agent_id) FROM login_sessions
+WHERE user_uid=$1 AND login_at > NOW() - INTERVAL '5 minutes'`, userUID).Scan(&distinctHosts)
+	metrics["distinct_hosts"] = distinctHosts
+
+	return metrics, nil
+}
+
+// ─── Threat Actors ────────────────────────────────────────────────────────────
+
+func (s *Store) CreateThreatActor(ctx context.Context, a *models.ThreatActor) error {
+	a.ID = "ta-" + uuid.New().String()
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO threat_actors(id,tenant_id,name,aliases,country,motivation,description,mitre_groups)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+		a.ID, a.TenantID, a.Name, a.Aliases, a.Country, a.Motivation, a.Description, a.MitreGroups)
+	return err
+}
+
+func (s *Store) UpdateThreatActor(ctx context.Context, a *models.ThreatActor) error {
+	_, err := s.db.ExecContext(ctx, `
+UPDATE threat_actors SET name=$1,aliases=$2,country=$3,motivation=$4,description=$5,mitre_groups=$6,updated_at=NOW()
+WHERE id=$7 AND tenant_id=$8`,
+		a.Name, a.Aliases, a.Country, a.Motivation, a.Description, a.MitreGroups, a.ID, a.TenantID)
+	return err
+}
+
+func (s *Store) DeleteThreatActor(ctx context.Context, id, tenantID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM threat_actors WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	return err
+}
+
+func (s *Store) GetThreatActor(ctx context.Context, id, tenantID string) (*models.ThreatActor, error) {
+	var a models.ThreatActor
+	err := s.rdb().QueryRowxContext(ctx, `
+SELECT ta.*,
+  (SELECT COUNT(*) FROM iocs WHERE actor_id=ta.id)     AS ioc_count,
+  (SELECT COUNT(*) FROM campaigns WHERE actor_id=ta.id) AS campaign_count
+FROM threat_actors ta WHERE ta.id=$1 AND ta.tenant_id=$2`, id, tenantID).StructScan(&a)
+	if err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
+func (s *Store) ListThreatActors(ctx context.Context, tenantID string) ([]models.ThreatActor, error) {
+	var rows []models.ThreatActor
+	err := s.rdb().SelectContext(ctx, &rows, `
+SELECT ta.*,
+  (SELECT COUNT(*) FROM iocs WHERE actor_id=ta.id)     AS ioc_count,
+  (SELECT COUNT(*) FROM campaigns WHERE actor_id=ta.id) AS campaign_count
+FROM threat_actors ta WHERE ta.tenant_id=$1 ORDER BY ta.name`, tenantID)
+	if rows == nil {
+		rows = []models.ThreatActor{}
+	}
+	return rows, err
+}
+
+// ─── Campaigns ────────────────────────────────────────────────────────────────
+
+func (s *Store) CreateCampaign(ctx context.Context, c *models.Campaign) error {
+	c.ID = "camp-" + uuid.New().String()
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO campaigns(id,tenant_id,name,actor_id,start_date,end_date,targets,techniques,description)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		c.ID, c.TenantID, c.Name, c.ActorID, c.StartDate, c.EndDate, c.Targets, c.Techniques, c.Description)
+	return err
+}
+
+func (s *Store) UpdateCampaign(ctx context.Context, c *models.Campaign) error {
+	_, err := s.db.ExecContext(ctx, `
+UPDATE campaigns SET name=$1,actor_id=$2,start_date=$3,end_date=$4,targets=$5,techniques=$6,description=$7,updated_at=NOW()
+WHERE id=$8 AND tenant_id=$9`,
+		c.Name, c.ActorID, c.StartDate, c.EndDate, c.Targets, c.Techniques, c.Description, c.ID, c.TenantID)
+	return err
+}
+
+func (s *Store) DeleteCampaign(ctx context.Context, id, tenantID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM campaigns WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	return err
+}
+
+func (s *Store) GetCampaign(ctx context.Context, id, tenantID string) (*models.Campaign, error) {
+	var c models.Campaign
+	err := s.rdb().QueryRowxContext(ctx, `
+SELECT c.*, COALESCE(ta.name,'') AS actor_name,
+  (SELECT COUNT(*) FROM iocs WHERE campaign_id=c.id) AS ioc_count
+FROM campaigns c LEFT JOIN threat_actors ta ON ta.id=c.actor_id
+WHERE c.id=$1 AND c.tenant_id=$2`, id, tenantID).StructScan(&c)
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func (s *Store) ListCampaigns(ctx context.Context, tenantID string, actorID string) ([]models.Campaign, error) {
+	q := `
+SELECT c.*, COALESCE(ta.name,'') AS actor_name,
+  (SELECT COUNT(*) FROM iocs WHERE campaign_id=c.id) AS ioc_count
+FROM campaigns c LEFT JOIN threat_actors ta ON ta.id=c.actor_id
+WHERE c.tenant_id=$1`
+	args := []interface{}{tenantID}
+	if actorID != "" {
+		q += ` AND c.actor_id=$2`
+		args = append(args, actorID)
+	}
+	q += ` ORDER BY COALESCE(c.start_date, c.created_at::date) DESC`
+	var rows []models.Campaign
+	if err := s.rdb().SelectContext(ctx, &rows, q, args...); err != nil {
+		return nil, err
+	}
+	if rows == nil {
+		rows = []models.Campaign{}
+	}
+	return rows, nil
+}
+
+// LinkIOCToActor sets actor_id on an IOC.
+func (s *Store) LinkIOCToActor(ctx context.Context, iocID, actorID, tenantID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE iocs SET actor_id=$1 WHERE id=$2 AND tenant_id=$3`, actorID, iocID, tenantID)
+	return err
+}
+
+// LinkIOCToCampaign sets campaign_id on an IOC.
+func (s *Store) LinkIOCToCampaign(ctx context.Context, iocID, campaignID, tenantID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE iocs SET campaign_id=$1 WHERE id=$2 AND tenant_id=$3`, campaignID, iocID, tenantID)
+	return err
+}
+
+// GetActorIOCs returns IOCs attributed to an actor.
+func (s *Store) GetActorIOCs(ctx context.Context, actorID, tenantID string, limit int) ([]models.IOC, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var rows []models.IOC
+	err := s.rdb().SelectContext(ctx, &rows, `
+SELECT id,type,value,source,severity,description,tags,enabled,expires_at,created_at,hit_count,last_hit_at
+FROM iocs WHERE actor_id=$1 AND tenant_id=$2 ORDER BY created_at DESC LIMIT $3`, actorID, tenantID, limit)
+	if rows == nil {
+		rows = []models.IOC{}
+	}
+	return rows, err
+}
+
+// GetCampaignIOCs returns IOCs attributed to a campaign.
+func (s *Store) GetCampaignIOCs(ctx context.Context, campaignID, tenantID string, limit int) ([]models.IOC, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var rows []models.IOC
+	err := s.rdb().SelectContext(ctx, &rows, `
+SELECT id,type,value,source,severity,description,tags,enabled,expires_at,created_at,hit_count,last_hit_at
+FROM iocs WHERE campaign_id=$1 AND tenant_id=$2 ORDER BY created_at DESC LIMIT $3`, campaignID, tenantID, limit)
+	if rows == nil {
+		rows = []models.IOC{}
+	}
+	return rows, err
+}
+
+// ─── Intel Replay Jobs ────────────────────────────────────────────────────────
+
+func (s *Store) CreateReplayJob(ctx context.Context, j *models.ReplayJob) error {
+	j.ID = "replay-" + uuid.New().String()
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO intel_replay_jobs(id, tenant_id, triggered_by, ioc_ids, lookback_days, status)
+VALUES($1,$2,$3,$4,$5,'queued')`,
+		j.ID, j.TenantID, j.TriggeredBy, j.IOCIDs, j.LookbackDays)
+	return err
+}
+
+func (s *Store) GetReplayJob(ctx context.Context, id, tenantID string) (*models.ReplayJob, error) {
+	var j models.ReplayJob
+	err := s.rdb().QueryRowxContext(ctx,
+		`SELECT * FROM intel_replay_jobs WHERE id=$1 AND tenant_id=$2`, id, tenantID).StructScan(&j)
+	if err != nil {
+		return nil, err
+	}
+	return &j, nil
+}
+
+func (s *Store) ListReplayJobs(ctx context.Context, tenantID string, limit int) ([]models.ReplayJob, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	var rows []models.ReplayJob
+	err := s.rdb().SelectContext(ctx, &rows,
+		`SELECT * FROM intel_replay_jobs WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT $2`,
+		tenantID, limit)
+	if rows == nil {
+		rows = []models.ReplayJob{}
+	}
+	return rows, err
+}
+
+func (s *Store) UpdateReplayJobProgress(ctx context.Context, id string, scanned, matched int) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE intel_replay_jobs SET status='running', scanned_count=$1, matched_count=$2 WHERE id=$3`,
+		scanned, matched, id)
+	return err
+}
+
+func (s *Store) FinishReplayJob(ctx context.Context, id string, scanned, matched int, failed bool) error {
+	status := "done"
+	if failed {
+		status = "failed"
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE intel_replay_jobs SET status=$1, scanned_count=$2, matched_count=$3, finished_at=NOW() WHERE id=$4`,
+		status, scanned, matched, id)
+	return err
+}
+
+// DequeueReplayJob atomically claims one queued job for this runner.
+func (s *Store) DequeueReplayJob(ctx context.Context) (*models.ReplayJob, error) {
+	var j models.ReplayJob
+	err := s.db.QueryRowxContext(ctx, `
+UPDATE intel_replay_jobs SET status='running'
+WHERE id = (
+  SELECT id FROM intel_replay_jobs WHERE status='queued' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED
+)
+RETURNING *`).StructScan(&j)
+	if err != nil {
+		return nil, err
+	}
+	return &j, nil
+}
+
+// GetEnabledIOCsForReplay returns IOCs to replay — either the specified IDs or all enabled IOCs.
+func (s *Store) GetEnabledIOCsForReplay(ctx context.Context, tenantID string, iocIDs []string) ([]models.IOC, error) {
+	var rows []models.IOC
+	if len(iocIDs) > 0 {
+		q, args, err := sqlx.In(`SELECT id,type,value,source,severity,description,tags,enabled,expires_at,created_at,hit_count,last_hit_at FROM iocs WHERE id IN (?) AND tenant_id=? AND enabled=TRUE`, iocIDs, tenantID)
+		if err != nil {
+			return nil, err
+		}
+		q = s.rdb().Rebind(q)
+		err = s.rdb().SelectContext(ctx, &rows, q, args...)
+		return rows, err
+	}
+	err := s.rdb().SelectContext(ctx, &rows,
+		`SELECT id,type,value,source,severity,description,tags,enabled,expires_at,created_at,hit_count,last_hit_at FROM iocs WHERE tenant_id=$1 AND enabled=TRUE LIMIT 5000`,
+		tenantID)
+	if rows == nil {
+		rows = []models.IOC{}
+	}
+	return rows, err
+}
+
+// ScanEventsForIOCMatch scans events in a time window for any of the given IOC values by type.
+// Returns matched (eventID, iocID, agentID, hostname, eventTime) tuples.
+type ReplayMatch struct {
+	EventID   string    `db:"id"`
+	AgentID   string    `db:"agent_id"`
+	Hostname  string    `db:"hostname"`
+	EventType string    `db:"event_type"`
+	Timestamp time.Time `db:"timestamp"`
+	IOCValue  string    // set by caller
+	IOCID     string    // set by caller
+}
+
+func (s *Store) ScanIPEvents(ctx context.Context, from, to time.Time, ips []string) ([]ReplayMatch, error) {
+	if len(ips) == 0 {
+		return nil, nil
+	}
+	q := `
+SELECT id, agent_id, hostname, event_type, timestamp
+FROM events
+WHERE timestamp BETWEEN $1 AND $2
+  AND (src_ip = ANY($3::text[]) OR dst_ip = ANY($3::text[]))`
+	var rows []ReplayMatch
+	err := s.rdb().SelectContext(ctx, &rows, q, from, to, pq.StringArray(ips))
+	return rows, err
+}
+
+func (s *Store) ScanDomainEvents(ctx context.Context, from, to time.Time, domains []string) ([]ReplayMatch, error) {
+	if len(domains) == 0 {
+		return nil, nil
+	}
+	q := `
+SELECT id, agent_id, hostname, event_type, timestamp
+FROM events
+WHERE timestamp BETWEEN $1 AND $2
+  AND (
+    payload->>'domain'    = ANY($3::text[]) OR
+    payload->>'dns_query' = ANY($3::text[]) OR
+    payload->>'host'      = ANY($3::text[])
+  )`
+	var rows []ReplayMatch
+	err := s.rdb().SelectContext(ctx, &rows, q, from, to, pq.StringArray(domains))
+	return rows, err
+}
+
+func (s *Store) ScanHashEvents(ctx context.Context, from, to time.Time, hashes []string) ([]ReplayMatch, error) {
+	if len(hashes) == 0 {
+		return nil, nil
+	}
+	q := `
+SELECT id, agent_id, hostname, event_type, timestamp
+FROM events
+WHERE timestamp BETWEEN $1 AND $2
+  AND (
+    payload->>'file_hash' = ANY($3::text[]) OR
+    payload->>'sha256'    = ANY($3::text[]) OR
+    payload->>'md5'       = ANY($3::text[]) OR
+    payload->>'hash'      = ANY($3::text[])
+  )`
+	var rows []ReplayMatch
+	err := s.rdb().SelectContext(ctx, &rows, q, from, to, pq.StringArray(hashes))
+	return rows, err
+}
+
+// ── IOC Enrichment ────────────────────────────────────────────────────────────
+
+// GetIOCsForEnrichment returns up to limit IOCs that need enriching.
+func (s *Store) GetIOCsForEnrichment(ctx context.Context, limit int) ([]models.IOC, error) {
+	var rows []models.IOC
+	err := s.rdb().SelectContext(ctx, &rows, `
+		SELECT id, type, value, source, severity, description, tags, enabled,
+		       expires_at, created_at, hit_count, last_hit_at,
+		       enrichment, enriched_at, enrichment_ver
+		FROM iocs
+		WHERE enabled = true
+		  AND (enriched_at IS NULL OR enrichment_ver < 1)
+		ORDER BY created_at DESC
+		LIMIT $1
+	`, limit)
+	return rows, err
+}
+
+// UpdateIOCEnrichment writes enrichment JSON and bumps enrichment_ver.
+func (s *Store) UpdateIOCEnrichment(ctx context.Context, iocID string, data json.RawMessage) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE iocs
+		SET enrichment = $1, enriched_at = NOW(), enrichment_ver = 1
+		WHERE id = $2
+	`, data, iocID)
+	return err
+}
+
+// ── Sharing Groups ────────────────────────────────────────────────────────────
+
+func (s *Store) CreateSharingGroup(ctx context.Context, g *models.SharingGroup) error {
+	g.ID = "sg-" + uuid.New().String()
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO sharing_groups (id, tenant_id, name, description, push_targets, tlp_floor)
+		VALUES ($1,$2,$3,$4,$5,$6)
+	`, g.ID, g.TenantID, g.Name, g.Description, g.PushTargets, g.TLPFloor)
+	return err
+}
+
+func (s *Store) UpdateSharingGroup(ctx context.Context, g *models.SharingGroup) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE sharing_groups
+		SET name=$1, description=$2, push_targets=$3, tlp_floor=$4, updated_at=NOW()
+		WHERE id=$5 AND tenant_id=$6
+	`, g.Name, g.Description, g.PushTargets, g.TLPFloor, g.ID, g.TenantID)
+	return err
+}
+
+func (s *Store) DeleteSharingGroup(ctx context.Context, id, tenantID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM sharing_groups WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	return err
+}
+
+func (s *Store) GetSharingGroup(ctx context.Context, id, tenantID string) (*models.SharingGroup, error) {
+	var g models.SharingGroup
+	err := s.rdb().GetContext(ctx, &g, `
+		SELECT id, tenant_id, name, description, push_targets, tlp_floor, created_at, updated_at
+		FROM sharing_groups WHERE id=$1 AND tenant_id=$2
+	`, id, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return &g, nil
+}
+
+func (s *Store) ListSharingGroups(ctx context.Context, tenantID string) ([]models.SharingGroup, error) {
+	var rows []models.SharingGroup
+	err := s.rdb().SelectContext(ctx, &rows, `
+		SELECT id, tenant_id, name, description, push_targets, tlp_floor, created_at, updated_at
+		FROM sharing_groups WHERE tenant_id=$1 ORDER BY created_at DESC
+	`, tenantID)
+	return rows, err
+}
+
+func (s *Store) CreateSharingRun(ctx context.Context, r *models.SharingRun) error {
+	r.ID = "sr-" + uuid.New().String()
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO sharing_runs (id, group_id) VALUES ($1,$2)
+	`, r.ID, r.GroupID)
+	return err
+}
+
+func (s *Store) FinishSharingRun(ctx context.Context, id string, exported int, runErr string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE sharing_runs SET finished_at=NOW(), exported=$1, error=$2 WHERE id=$3
+	`, exported, runErr, id)
+	return err
+}
+
+func (s *Store) ListSharingRuns(ctx context.Context, groupID string, limit int) ([]models.SharingRun, error) {
+	var rows []models.SharingRun
+	err := s.rdb().SelectContext(ctx, &rows, `
+		SELECT id, group_id, started_at, finished_at, exported, error
+		FROM sharing_runs WHERE group_id=$1 ORDER BY started_at DESC LIMIT $2
+	`, groupID, limit)
+	return rows, err
+}
+
+// GetIOCsForExport returns enabled IOCs at or above the given TLP floor.
+// TLP order: WHITE < GREEN < AMBER < RED — we filter by stored tlp column.
+func (s *Store) GetIOCsForExport(ctx context.Context, tenantID, tlpFloor string, sincedays int) ([]models.IOC, error) {
+	tlpOrder := map[string]int{"WHITE": 0, "GREEN": 1, "AMBER": 2, "RED": 3}
+	floor := tlpOrder[tlpFloor]
+
+	// Collect TLP values at or below floor (i.e., allowed to export).
+	var allowed []string
+	for tlp, rank := range tlpOrder {
+		if rank <= floor {
+			allowed = append(allowed, tlp)
+		}
+	}
+
+	var rows []models.IOC
+	err := s.rdb().SelectContext(ctx, &rows, `
+		SELECT id, type, value, source, severity, description, tags, enabled,
+		       expires_at, created_at, hit_count, last_hit_at,
+		       enrichment, enriched_at, enrichment_ver
+		FROM iocs
+		WHERE tenant_id=$1 AND enabled=true
+		  AND created_at >= NOW() - ($2::int * INTERVAL '1 day')
+		  AND (tlp = ANY($3) OR tlp = '')
+		ORDER BY created_at DESC
+	`, tenantID, sincedays, pq.StringArray(allowed))
+	return rows, err
+}
+
+// ── Intel Tasks ───────────────────────────────────────────────────────────────
+
+func (s *Store) CreateIntelTask(ctx context.Context, t *models.IntelTask) error {
+	t.ID = "itask-" + uuid.New().String()
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO intel_tasks (id, tenant_id, name, task_type, source_type, source_id, created_by)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
+	`, t.ID, t.TenantID, t.Name, t.TaskType, t.SourceType, t.SourceID, t.CreatedBy)
+	return err
+}
+
+func (s *Store) FinishIntelTask(ctx context.Context, id, artifactID, status string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE intel_tasks SET artifact_id=$1, status=$2 WHERE id=$3
+	`, artifactID, status, id)
+	return err
+}
+
+func (s *Store) ListIntelTasks(ctx context.Context, tenantID string, limit int) ([]models.IntelTask, error) {
+	var rows []models.IntelTask
+	err := s.rdb().SelectContext(ctx, &rows, `
+		SELECT id, tenant_id, name, task_type, source_type, source_id, artifact_id, status, created_at, created_by
+		FROM intel_tasks WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT $2
+	`, tenantID, limit)
+	return rows, err
+}
+
+func (s *Store) GetIntelTask(ctx context.Context, id, tenantID string) (*models.IntelTask, error) {
+	var t models.IntelTask
+	err := s.rdb().GetContext(ctx, &t, `
+		SELECT id, tenant_id, name, task_type, source_type, source_id, artifact_id, status, created_at, created_by
+		FROM intel_tasks WHERE id=$1 AND tenant_id=$2
+	`, id, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+// ── Saved Hunts ───────────────────────────────────────────────────────────────
+
+func (s *Store) CreateSavedHunt(ctx context.Context, h *models.SavedHunt) error {
+	h.ID = "hunt-" + uuid.New().String()
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO saved_hunts (id, tenant_id, name, query, source_id)
+		VALUES ($1,$2,$3,$4,$5)
+	`, h.ID, h.TenantID, h.Name, h.Query, h.SourceID)
+	return err
+}
+
+func (s *Store) ListSavedHunts(ctx context.Context, tenantID string) ([]models.SavedHunt, error) {
+	var rows []models.SavedHunt
+	err := s.rdb().SelectContext(ctx, &rows, `
+		SELECT id, tenant_id, name, query, source_id, created_at
+		FROM saved_hunts WHERE tenant_id=$1 ORDER BY created_at DESC
+	`, tenantID)
+	return rows, err
+}
+
+func (s *Store) GetSavedHunt(ctx context.Context, id, tenantID string) (*models.SavedHunt, error) {
+	var h models.SavedHunt
+	err := s.rdb().GetContext(ctx, &h, `
+		SELECT id, tenant_id, name, query, source_id, created_at
+		FROM saved_hunts WHERE id=$1 AND tenant_id=$2
+	`, id, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return &h, nil
+}
+
+func (s *Store) DeleteSavedHunt(ctx context.Context, id, tenantID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM saved_hunts WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	return err
+}
+
+// ── Intel Dashboard ───────────────────────────────────────────────────────────
+
+type IntelDashboardStats struct {
+	// IOC overview
+	TotalIOCs     int `db:"total_iocs"     json:"total_iocs"`
+	EnabledIOCs   int `db:"enabled_iocs"   json:"enabled_iocs"`
+	EnrichedIOCs  int `db:"enriched_iocs"  json:"enriched_iocs"`
+	TotalHits     int `db:"total_hits"     json:"total_hits"`
+	// Actor / campaign counts
+	ActorCount    int `db:"actor_count"    json:"actor_count"`
+	CampaignCount int `db:"campaign_count" json:"campaign_count"`
+	// Replay summary
+	ReplayTotal   int `db:"replay_total"   json:"replay_total"`
+	ReplayMatches int `db:"replay_matches" json:"replay_matches"`
+	// Task summary
+	TaskTotal     int `db:"task_total"     json:"task_total"`
+	TaskDone      int `db:"task_done"      json:"task_done"`
+	TaskFailed    int `db:"task_failed"    json:"task_failed"`
+	// Sharing
+	SharingGroups int `db:"sharing_groups" json:"sharing_groups"`
+}
+
+func (s *Store) GetIntelDashboardStats(ctx context.Context, tenantID string) (*IntelDashboardStats, error) {
+	var st IntelDashboardStats
+	err := s.rdb().GetContext(ctx, &st, `
+		SELECT
+		  (SELECT COUNT(*) FROM iocs WHERE tenant_id=$1)                                           AS total_iocs,
+		  (SELECT COUNT(*) FROM iocs WHERE tenant_id=$1 AND enabled=true)                          AS enabled_iocs,
+		  (SELECT COUNT(*) FROM iocs WHERE tenant_id=$1 AND enriched_at IS NOT NULL)               AS enriched_iocs,
+		  (SELECT COALESCE(SUM(hit_count),0) FROM iocs WHERE tenant_id=$1)                         AS total_hits,
+		  (SELECT COUNT(*) FROM threat_actors WHERE tenant_id=$1)                                  AS actor_count,
+		  (SELECT COUNT(*) FROM campaigns WHERE tenant_id=$1)                                      AS campaign_count,
+		  (SELECT COUNT(*) FROM intel_replay_jobs WHERE tenant_id=$1)                              AS replay_total,
+		  (SELECT COALESCE(SUM(matched_count),0) FROM intel_replay_jobs WHERE tenant_id=$1 AND status='done') AS replay_matches,
+		  (SELECT COUNT(*) FROM intel_tasks WHERE tenant_id=$1)                                    AS task_total,
+		  (SELECT COUNT(*) FROM intel_tasks WHERE tenant_id=$1 AND status='done')                  AS task_done,
+		  (SELECT COUNT(*) FROM intel_tasks WHERE tenant_id=$1 AND status='failed')                AS task_failed,
+		  (SELECT COUNT(*) FROM sharing_groups WHERE tenant_id=$1)                                 AS sharing_groups
+	`, tenantID)
+	return &st, err
+}
+
+// ─── Hunt Schedules ───────────────────────────────────────────────────────────
+
+func (s *Store) CreateHuntSchedule(ctx context.Context, hs *models.HuntSchedule) error {
+	hs.ID = "hsched-" + uuid.New().String()
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO hunt_schedules (id, tenant_id, saved_hunt_id, name, cron_expr, enabled, alert_on_hit, next_run_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		hs.ID, hs.TenantID, hs.SavedHuntID, hs.Name, hs.CronExpr, hs.Enabled, hs.AlertOnHit, hs.NextRunAt)
+	return err
+}
+
+func (s *Store) UpdateHuntSchedule(ctx context.Context, hs *models.HuntSchedule) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE hunt_schedules SET name=$3, cron_expr=$4, enabled=$5, alert_on_hit=$6, next_run_at=$7
+		WHERE id=$1 AND tenant_id=$2`,
+		hs.ID, hs.TenantID, hs.Name, hs.CronExpr, hs.Enabled, hs.AlertOnHit, hs.NextRunAt)
+	return err
+}
+
+func (s *Store) DeleteHuntSchedule(ctx context.Context, id, tenantID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM hunt_schedules WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	return err
+}
+
+func (s *Store) GetHuntSchedule(ctx context.Context, id, tenantID string) (*models.HuntSchedule, error) {
+	var h models.HuntSchedule
+	err := s.rdb().GetContext(ctx, &h, `SELECT * FROM hunt_schedules WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return &h, nil
+}
+
+func (s *Store) ListHuntSchedules(ctx context.Context, tenantID string) ([]models.HuntSchedule, error) {
+	var rows []models.HuntSchedule
+	err := s.rdb().SelectContext(ctx, &rows,
+		`SELECT * FROM hunt_schedules WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
+	return rows, err
+}
+
+// ListDueHuntSchedules returns enabled schedules whose next_run_at <= now.
+func (s *Store) ListDueHuntSchedules(ctx context.Context) ([]models.HuntSchedule, error) {
+	var rows []models.HuntSchedule
+	err := s.rdb().SelectContext(ctx, &rows,
+		`SELECT * FROM hunt_schedules WHERE enabled=TRUE AND next_run_at <= NOW() ORDER BY next_run_at`)
+	return rows, err
+}
+
+// AdvanceHuntSchedule updates last_run_at and computes the next_run_at for a schedule.
+func (s *Store) AdvanceHuntSchedule(ctx context.Context, id string, nextRun time.Time) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE hunt_schedules SET last_run_at=NOW(), next_run_at=$2 WHERE id=$1`, id, nextRun)
+	return err
+}
+
+func (s *Store) CreateHuntScheduleRun(ctx context.Context, r *models.HuntScheduleRun) error {
+	r.ID = "hrun-" + uuid.New().String()
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO hunt_schedule_runs (id, schedule_id, tenant_id, status)
+		VALUES ($1,$2,$3,$4)`,
+		r.ID, r.ScheduleID, r.TenantID, r.Status)
+	return err
+}
+
+func (s *Store) FinishHuntScheduleRun(ctx context.Context, id string, rowCount, hitCount int, status, errMsg string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE hunt_schedule_runs SET finished_at=NOW(), row_count=$2, hit_count=$3, status=$4, error=$5
+		WHERE id=$1`, id, rowCount, hitCount, status, errMsg)
+	return err
+}
+
+func (s *Store) ListHuntScheduleRuns(ctx context.Context, scheduleID, tenantID string, limit int) ([]models.HuntScheduleRun, error) {
+	var rows []models.HuntScheduleRun
+	err := s.rdb().SelectContext(ctx, &rows,
+		`SELECT * FROM hunt_schedule_runs WHERE schedule_id=$1 AND tenant_id=$2 ORDER BY started_at DESC LIMIT $3`,
+		scheduleID, tenantID, limit)
+	return rows, err
+}
+
+// ─── TAXII Feeds ──────────────────────────────────────────────────────────────
+
+func (s *Store) CreateTAXIIFeed(ctx context.Context, f *models.TAXIIFeed) error {
+	f.ID = "taxii-" + uuid.New().String()
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO taxii_feeds (id, tenant_id, name, discovery_url, api_root, collection_id,
+		                         username, password_enc, poll_interval, enabled, next_poll_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		f.ID, f.TenantID, f.Name, f.DiscoveryURL, f.APIRoot, f.CollectionID,
+		f.Username, f.PasswordEnc, f.PollInterval, f.Enabled, f.NextPollAt)
+	return err
+}
+
+func (s *Store) UpdateTAXIIFeed(ctx context.Context, f *models.TAXIIFeed) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE taxii_feeds SET name=$3, discovery_url=$4, api_root=$5, collection_id=$6,
+		    username=$7, password_enc=$8, poll_interval=$9, enabled=$10, next_poll_at=$11
+		WHERE id=$1 AND tenant_id=$2`,
+		f.ID, f.TenantID, f.Name, f.DiscoveryURL, f.APIRoot, f.CollectionID,
+		f.Username, f.PasswordEnc, f.PollInterval, f.Enabled, f.NextPollAt)
+	return err
+}
+
+func (s *Store) DeleteTAXIIFeed(ctx context.Context, id, tenantID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM taxii_feeds WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	return err
+}
+
+func (s *Store) GetTAXIIFeed(ctx context.Context, id, tenantID string) (*models.TAXIIFeed, error) {
+	var f models.TAXIIFeed
+	err := s.rdb().GetContext(ctx, &f, `SELECT * FROM taxii_feeds WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return &f, nil
+}
+
+func (s *Store) ListTAXIIFeeds(ctx context.Context, tenantID string) ([]models.TAXIIFeed, error) {
+	var rows []models.TAXIIFeed
+	err := s.rdb().SelectContext(ctx, &rows,
+		`SELECT * FROM taxii_feeds WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
+	return rows, err
+}
+
+func (s *Store) ListDueTAXIIFeeds(ctx context.Context) ([]models.TAXIIFeed, error) {
+	var rows []models.TAXIIFeed
+	err := s.rdb().SelectContext(ctx, &rows,
+		`SELECT * FROM taxii_feeds WHERE enabled=TRUE AND (next_poll_at IS NULL OR next_poll_at <= NOW()) ORDER BY next_poll_at`)
+	return rows, err
+}
+
+func (s *Store) FinishTAXIIPoll(ctx context.Context, id string, nextPoll time.Time, iocCount int, lastErr string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE taxii_feeds SET last_polled_at=NOW(), next_poll_at=$2, ioc_count=$3, last_error=$4
+		WHERE id=$1`, id, nextPoll, iocCount, lastErr)
+	return err
+}
+
+func (s *Store) CreateTAXIIPollRun(ctx context.Context, r *models.TAXIIPollRun) error {
+	r.ID = "tpoll-" + uuid.New().String()
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO taxii_poll_runs (id, feed_id, tenant_id, status)
+		VALUES ($1,$2,$3,$4)`,
+		r.ID, r.FeedID, r.TenantID, r.Status)
+	return err
+}
+
+func (s *Store) FinishTAXIIPollRun(ctx context.Context, id string, fetched, imported int, status, errMsg string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE taxii_poll_runs SET finished_at=NOW(), objects_fetched=$2, iocs_imported=$3, status=$4, error=$5
+		WHERE id=$1`, id, fetched, imported, status, errMsg)
+	return err
+}
+
+func (s *Store) ListTAXIIPollRuns(ctx context.Context, feedID, tenantID string, limit int) ([]models.TAXIIPollRun, error) {
+	var rows []models.TAXIIPollRun
+	err := s.rdb().SelectContext(ctx, &rows,
+		`SELECT * FROM taxii_poll_runs WHERE feed_id=$1 AND tenant_id=$2 ORDER BY started_at DESC LIMIT $3`,
+		feedID, tenantID, limit)
+	return rows, err
 }

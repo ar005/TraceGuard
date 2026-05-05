@@ -64,3 +64,5 @@ retention:
 enrichment:
   virustotal_api_key: ""
   abuseipdb_api_key:  ""
+  maxmind_db_path:    ""   # optional — path to GeoLite2-City.mmdb
+  whois_enabled:      true

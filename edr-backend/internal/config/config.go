@@ -24,6 +24,8 @@ type Config struct {
 type EnrichmentConfig struct {
 	VirusTotalAPIKey string `mapstructure:"virustotal_api_key"`
 	AbuseIPDBAPIKey  string `mapstructure:"abuseipdb_api_key"`
+	MaxMindDBPath    string `mapstructure:"maxmind_db_path"`
+	WhoisEnabled     bool   `mapstructure:"whois_enabled"`
 }
 
 type ServerConfig struct {

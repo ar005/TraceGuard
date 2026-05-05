@@ -61,8 +61,40 @@ type Server struct {
 	nodeID     string
 	apiKey     string
 	rateLimit  RateLimitConfig
-	cveFetcher *cvecache.Fetcher
+	cveFetcher  *cvecache.Fetcher
+	iocPipeline  IOCEnricher        // optional — nil if enrichment disabled
+	intelGen     IntelTaskGenerator // optional — nil if not configured
+	taxiiPoller  TAXIIPoller        // optional — nil if TAXII disabled
+	huntScheduler HuntSchedulerRunner // optional — nil if not configured
 }
+
+// IOCEnricher is the subset of enrichment.IOCPipeline used by the API.
+type IOCEnricher interface {
+	EnrichOne(ctx context.Context, ioc *models.IOC) error
+}
+
+// IntelTaskGenerator auto-generates artifacts from intel data.
+type IntelTaskGenerator interface {
+	EnqueueForIOC(ctx context.Context, iocID string)
+	EnqueueForActor(ctx context.Context, actorID string)
+}
+
+// TAXIIPoller polls TAXII feeds and imports indicators.
+type TAXIIPoller interface {
+	PollFeed(ctx context.Context, f models.TAXIIFeed)
+}
+
+// HuntSchedulerRunner is unused via interface currently; kept for future shutdown hooks.
+type HuntSchedulerRunner interface{}
+
+// SetIOCPipeline wires the enrichment pipeline after construction.
+func (s *Server) SetIOCPipeline(p IOCEnricher) { s.iocPipeline = p }
+
+// SetIntelGenerator wires the intel task generator after construction.
+func (s *Server) SetIntelGenerator(g IntelTaskGenerator) { s.intelGen = g }
+
+// SetTAXIIPoller wires the TAXII poller after construction.
+func (s *Server) SetTAXIIPoller(p TAXIIPoller) { s.taxiiPoller = p }
 
 // New creates the API server and registers all routes.
 func New(st *store.Store, eng *detection.Engine, km *apikeys.Manager,
@@ -268,6 +300,34 @@ func (s *Server) registerRoutes() {
 			w.DELETE("/iocs/:id",    s.handleDeleteIOC)
 			w.DELETE("/iocs/source/:source", s.handleDeleteIOCsBySource)
 			w.POST("/iocs/feeds/sync",       strictRateLimitMiddleware(), s.handleSyncFeeds)
+			w.POST("/iocs/:id/enrich",   s.handleEnrichIOC)
+			w.POST("/iocs/:id/actor",    s.handleLinkIOCToActor)
+			w.POST("/iocs/:id/campaign", s.handleLinkIOCToCampaign)
+
+			// Intel — Actors & Campaigns (write — admin only)
+			w.POST("/intel/actors",         s.handleCreateActor)
+			w.PUT("/intel/actors/:id",      s.handleUpdateActor)
+			w.DELETE("/intel/actors/:id",   s.handleDeleteActor)
+			w.POST("/intel/campaigns",      s.handleCreateCampaign)
+			w.PUT("/intel/campaigns/:id",   s.handleUpdateCampaign)
+			w.DELETE("/intel/campaigns/:id", s.handleDeleteCampaign)
+			w.POST("/intel/sharing-groups",             s.handleCreateSharingGroup)
+			w.PUT("/intel/sharing-groups/:id",          s.handleUpdateSharingGroup)
+			w.DELETE("/intel/sharing-groups/:id",       s.handleDeleteSharingGroup)
+			w.POST("/intel/sharing-groups/:id/push",    s.handlePushSharingGroup)
+			w.POST("/intel/tasks",                      s.handleCreateIntelTask)
+			w.DELETE("/intel/saved-hunts/:id",          s.handleDeleteSavedHunt)
+
+			// Hunt schedules (write — admin only)
+			w.POST("/intel/hunt-schedules",          s.handleCreateHuntSchedule)
+			w.PUT("/intel/hunt-schedules/:id",       s.handleUpdateHuntSchedule)
+			w.DELETE("/intel/hunt-schedules/:id",    s.handleDeleteHuntSchedule)
+
+			// TAXII feeds (write — admin only)
+			w.POST("/intel/taxii-feeds",             s.handleCreateTAXIIFeed)
+			w.PUT("/intel/taxii-feeds/:id",          s.handleUpdateTAXIIFeed)
+			w.DELETE("/intel/taxii-feeds/:id",       s.handleDeleteTAXIIFeed)
+			w.POST("/intel/taxii-feeds/:id/poll",    s.handlePollTAXIIFeed)
 
 			// YARA rules (write — admin only)
 			w.POST("/yara/rules",       s.handleCreateYARARule)
@@ -333,6 +393,8 @@ func (s *Server) registerRoutes() {
 		v1.PUT("/ioc-feeds/:id",    s.adminOnly(),            s.handleUpsertCustomIOCFeed)
 		v1.DELETE("/ioc-feeds/:id", s.adminOnly(),            s.handleDeleteCustomIOCFeed)
 		v1.POST("/ioc-feeds/:id/sync", s.adminOnly(),         s.handleSyncCustomIOCFeed)
+		v1.GET("/ioc-feeds/:id/log",                          s.handleGetFeedSyncLog)
+		v1.POST("/ioc-feeds/:id/test", s.adminOnly(),         s.handleTestFeedConnectivity)
 
 		// Attack graph (H)
 		v1.GET("/incidents/:id/attack-graph",       s.handleGetIncidentAttackGraph)
@@ -374,6 +436,36 @@ func (s *Server) registerRoutes() {
 		v1.GET("/xdr/threat-score",            s.handleGetOrgThreatScore)
 		v1.GET("/xdr/threat-score/history",    s.handleGetEntityRiskHistory)
 		v1.GET("/xdr/attack-surface",          s.handleGetOrgAttackSurface)
+		v1.GET("/xdr/anomalies",               s.handleListAnomalies)
+		v1.GET("/identity/:uid/anomalies",     s.handleGetEntityAnomalies)
+
+		// Intel — Actors & Campaigns (read open to analysts)
+		v1.GET("/intel/dashboard",           s.handleIntelDashboard)
+		v1.GET("/intel/actors",              s.handleListActors)
+		v1.GET("/intel/actors/:id",          s.handleGetActor)
+		v1.GET("/intel/campaigns",           s.handleListCampaigns)
+		v1.GET("/intel/campaigns/:id",       s.handleGetCampaign)
+		v1.GET("/intel/replay",              s.handleListReplayJobs)
+		v1.GET("/intel/replay/:id",          s.handleGetReplayJob)
+		v1.POST("/intel/replay",             s.handleCreateReplayJob)
+		v1.GET("/intel/sharing-groups",          s.handleListSharingGroups)
+		v1.GET("/intel/sharing-groups/:id/runs", s.handleListSharingRuns)
+		v1.GET("/intel/export/stix",             s.handleExportSTIX)
+		v1.GET("/intel/tasks",                   s.handleListIntelTasks)
+		v1.GET("/intel/tasks/:id",               s.handleGetIntelTask)
+		v1.GET("/intel/saved-hunts",             s.handleListSavedHunts)
+		v1.GET("/intel/saved-hunts/:id",         s.handleGetSavedHunt)
+
+		// Hunt schedules (read)
+		v1.GET("/intel/hunt-schedules",              s.handleListHuntSchedules)
+		v1.GET("/intel/hunt-schedules/:id",          s.handleGetHuntSchedule)
+		v1.GET("/intel/hunt-schedules/:id/runs",     s.handleListHuntScheduleRuns)
+
+		// TAXII feeds (read)
+		v1.GET("/intel/taxii-feeds",                    s.handleListTAXIIFeeds)
+		v1.GET("/intel/taxii-feeds/:id",                s.handleGetTAXIIFeed)
+		v1.GET("/intel/taxii-feeds/:id/runs",           s.handleListTAXIIPollRuns)
+		v1.GET("/intel/taxii-feeds/:id/collections",    s.handleListTAXIICollections)
 
 		// SOAR Playbooks
 		v1.GET("/playbooks",          s.handleListPlaybooks)
@@ -2873,12 +2965,12 @@ func (s *Server) handleGetIOC(c *gin.Context) {
 // POST /api/v1/iocs
 func (s *Server) handleCreateIOC(c *gin.Context) {
 	var req struct {
-		Type        string   `json:"type" binding:"required"`
-		Value       string   `json:"value" binding:"required"`
-		Source      string   `json:"source"`
-		Severity    int16    `json:"severity"`
-		Description string   `json:"description"`
-		Tags        []string `json:"tags"`
+		Type        string     `json:"type" binding:"required"`
+		Value       string     `json:"value" binding:"required"`
+		Source      string     `json:"source"`
+		Severity    int16      `json:"severity"`
+		Description string     `json:"description"`
+		Tags        []string   `json:"tags"`
 		ExpiresAt   *time.Time `json:"expires_at"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -2922,6 +3014,23 @@ func (s *Server) handleCreateIOC(c *gin.Context) {
 
 	actorID, actorName := currentUser(c)
 	s.al.Log(c.Request.Context(), actorID, actorName, "ioc_create", "ioc", ioc.ID, ioc.Value, c.ClientIP(), fmt.Sprintf("type=%s source=%s", ioc.Type, ioc.Source))
+
+	// Enqueue retroactive replay for this new IOC.
+	go func() {
+		job := &models.ReplayJob{
+			TenantID:     c.GetString("tenant_id"),
+			TriggeredBy:  "system",
+			IOCIDs:       pq.StringArray([]string{ioc.ID}),
+			LookbackDays: 30,
+		}
+		if err := s.store.CreateReplayJob(context.Background(), job); err != nil {
+			s.log.Warn().Err(err).Str("ioc", ioc.ID).Msg("auto-enqueue replay")
+		}
+		if s.intelGen != nil {
+			s.intelGen.EnqueueForIOC(context.Background(), ioc.ID)
+		}
+	}()
+
 	c.JSON(http.StatusCreated, ioc)
 }
 
@@ -2984,6 +3093,31 @@ func (s *Server) handleBulkImportIOCs(c *gin.Context) {
 
 	actorID, actorName := currentUser(c)
 	s.al.Log(c.Request.Context(), actorID, actorName, "ioc_bulk_import", "iocs", "", "", c.ClientIP(), fmt.Sprintf("imported %d IOCs", count))
+
+	// Enqueue retroactive replay for the newly imported IOCs.
+	if count > 0 {
+		go func() {
+			ids := make([]string, 0, len(iocs))
+			for _, ioc := range iocs {
+				ids = append(ids, ioc.ID)
+			}
+			job := &models.ReplayJob{
+				TenantID:     c.GetString("tenant_id"),
+				TriggeredBy:  "system",
+				IOCIDs:       pq.StringArray(ids),
+				LookbackDays: 30,
+			}
+			if err := s.store.CreateReplayJob(context.Background(), job); err != nil {
+				s.log.Warn().Err(err).Int("ioc_count", len(ids)).Msg("auto-enqueue replay")
+			}
+			if s.intelGen != nil {
+				for _, id := range ids {
+					s.intelGen.EnqueueForIOC(context.Background(), id)
+				}
+			}
+		}()
+	}
+
 	c.JSON(http.StatusOK, gin.H{"imported": count, "total_submitted": len(req.IOCs)})
 }
 
@@ -3489,14 +3623,49 @@ func (s *Server) handleDeleteCustomIOCFeed(c *gin.Context) {
 
 // POST /api/v1/ioc-feeds/:id/sync
 func (s *Server) handleSyncCustomIOCFeed(c *gin.Context) {
-	// Stub: mark the feed as synced with count=0.
-	// TODO: fetch feed.URL, parse lines, call store.InsertIOCBatch.
+	tid := c.GetString("tenant_id")
 	id := c.Param("id")
-	if err := s.store.MarkCustomFeedSynced(c.Request.Context(), id, 0); err != nil {
+
+	feed, err := s.store.GetCustomIOCFeed(c.Request.Context(), tid, id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "feed not found"})
+		return
+	}
+
+	cs := iocfeed.NewCustom(s.store, s.log)
+	added, err := cs.SyncFeed(c.Request.Context(), feed)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "feed_id": id, "added": added})
+}
+
+
+// GET /api/v1/ioc-feeds/:id/log
+func (s *Server) handleGetFeedSyncLog(c *gin.Context) {
+	id := c.Param("id")
+	logs, err := s.store.ListFeedSyncLog(c.Request.Context(), id, 20)
+	if err != nil {
+		s.log.Error().Err(err).Msg("list feed sync log")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"status": "sync queued", "feed_id": id})
+	c.JSON(http.StatusOK, gin.H{"logs": logs})
+}
+
+// POST /api/v1/ioc-feeds/:id/test
+func (s *Server) handleTestFeedConnectivity(c *gin.Context) {
+	tid := c.GetString("tenant_id")
+	id := c.Param("id")
+	feed, err := s.store.GetCustomIOCFeed(c.Request.Context(), tid, id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "feed not found"})
+		return
+	}
+	cs := iocfeed.NewCustom(s.store, s.log)
+	ok, detail := cs.TestConnectivity(c.Request.Context(), feed)
+	c.JSON(http.StatusOK, gin.H{"reachable": ok, "detail": detail})
 }
 
 // ── Feature H: Attack Graph ───────────────────────────────────────────────

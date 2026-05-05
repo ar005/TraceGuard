@@ -1838,6 +1838,262 @@ CREATE INDEX IF NOT EXISTS idx_task_events_task    ON agent_task_events(task_id,
 CREATE INDEX IF NOT EXISTS idx_task_events_agent   ON agent_task_events(agent_id, occurred_at DESC);
 `,
 	},
+	{
+		name: "xdr_phase25_baseline_ext",
+		sql: `
+CREATE TABLE IF NOT EXISTS entity_baselines (
+    id           TEXT PRIMARY KEY,
+    tenant_id    TEXT NOT NULL DEFAULT 'default',
+    entity_type  TEXT NOT NULL,
+    entity_id    TEXT NOT NULL,
+    metric       TEXT NOT NULL,
+    ewma         DOUBLE PRECISION NOT NULL DEFAULT 0,
+    ewma_sq      DOUBLE PRECISION NOT NULL DEFAULT 0,
+    sample_count INT NOT NULL DEFAULT 0,
+    last_value   DOUBLE PRECISION NOT NULL DEFAULT 0,
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(entity_type, entity_id, metric)
+);
+CREATE INDEX IF NOT EXISTS eb_entity_metric_idx ON entity_baselines(entity_id, metric);
+CREATE INDEX IF NOT EXISTS eb_tenant_idx        ON entity_baselines(tenant_id);
+
+CREATE TABLE IF NOT EXISTS anomaly_scores (
+    id             TEXT PRIMARY KEY,
+    tenant_id      TEXT NOT NULL DEFAULT 'default',
+    entity_type    TEXT NOT NULL,
+    entity_id      TEXT NOT NULL,
+    entity_label   TEXT NOT NULL DEFAULT '',
+    metric         TEXT NOT NULL,
+    z_score        DOUBLE PRECISION NOT NULL,
+    observed_value DOUBLE PRECISION NOT NULL,
+    expected_value DOUBLE PRECISION NOT NULL,
+    std_dev        DOUBLE PRECISION NOT NULL DEFAULT 0,
+    is_active      BOOLEAN NOT NULL DEFAULT TRUE,
+    detected_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    resolved_at    TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS anoms_tenant_active_idx ON anomaly_scores(tenant_id, is_active, detected_at DESC);
+CREATE INDEX IF NOT EXISTS anoms_entity_idx        ON anomaly_scores(entity_id, detected_at DESC);
+`,
+	},
+	{
+		name: "intel_phase1_actors_campaigns",
+		sql: `
+CREATE TABLE IF NOT EXISTS threat_actors (
+    id           TEXT PRIMARY KEY,
+    tenant_id    TEXT NOT NULL DEFAULT 'default',
+    name         TEXT NOT NULL,
+    aliases      TEXT[] NOT NULL DEFAULT '{}',
+    country      TEXT NOT NULL DEFAULT '',
+    motivation   TEXT NOT NULL DEFAULT 'unknown',
+    description  TEXT NOT NULL DEFAULT '',
+    mitre_groups TEXT[] NOT NULL DEFAULT '{}',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ta_tenant_idx ON threat_actors(tenant_id);
+CREATE INDEX IF NOT EXISTS ta_name_idx   ON threat_actors(tenant_id, name);
+
+CREATE TABLE IF NOT EXISTS campaigns (
+    id          TEXT PRIMARY KEY,
+    tenant_id   TEXT NOT NULL DEFAULT 'default',
+    name        TEXT NOT NULL,
+    actor_id    TEXT REFERENCES threat_actors(id) ON DELETE SET NULL,
+    start_date  DATE,
+    end_date    DATE,
+    targets     TEXT[] NOT NULL DEFAULT '{}',
+    techniques  TEXT[] NOT NULL DEFAULT '{}',
+    description TEXT NOT NULL DEFAULT '',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS camp_tenant_idx ON campaigns(tenant_id);
+CREATE INDEX IF NOT EXISTS camp_actor_idx  ON campaigns(actor_id);
+
+ALTER TABLE iocs ADD COLUMN IF NOT EXISTS actor_id    TEXT REFERENCES threat_actors(id) ON DELETE SET NULL;
+ALTER TABLE iocs ADD COLUMN IF NOT EXISTS campaign_id TEXT REFERENCES campaigns(id) ON DELETE SET NULL;
+ALTER TABLE iocs ADD COLUMN IF NOT EXISTS tlp         TEXT NOT NULL DEFAULT 'AMBER';
+ALTER TABLE iocs ADD COLUMN IF NOT EXISTS confidence  SMALLINT NOT NULL DEFAULT 50;
+`,
+	},
+	{
+		name: "intel_phase2_feed_quality",
+		sql: `
+ALTER TABLE custom_ioc_feeds ADD COLUMN IF NOT EXISTS protocol        TEXT NOT NULL DEFAULT 'http';
+ALTER TABLE custom_ioc_feeds ADD COLUMN IF NOT EXISTS taxii_url       TEXT NOT NULL DEFAULT '';
+ALTER TABLE custom_ioc_feeds ADD COLUMN IF NOT EXISTS taxii_username  TEXT NOT NULL DEFAULT '';
+ALTER TABLE custom_ioc_feeds ADD COLUMN IF NOT EXISTS taxii_password  TEXT NOT NULL DEFAULT '';
+ALTER TABLE custom_ioc_feeds ADD COLUMN IF NOT EXISTS misp_url        TEXT NOT NULL DEFAULT '';
+ALTER TABLE custom_ioc_feeds ADD COLUMN IF NOT EXISTS misp_key        TEXT NOT NULL DEFAULT '';
+ALTER TABLE custom_ioc_feeds ADD COLUMN IF NOT EXISTS hit_count       INT NOT NULL DEFAULT 0;
+ALTER TABLE custom_ioc_feeds ADD COLUMN IF NOT EXISTS false_pos_count INT NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS feed_sync_log (
+    id          TEXT PRIMARY KEY,
+    feed_id     TEXT NOT NULL,
+    tenant_id   TEXT NOT NULL DEFAULT 'default',
+    started_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    finished_at TIMESTAMPTZ,
+    added       INT NOT NULL DEFAULT 0,
+    updated     INT NOT NULL DEFAULT 0,
+    error       TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS fsl_feed_time_idx   ON feed_sync_log(feed_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS fsl_tenant_time_idx ON feed_sync_log(tenant_id, started_at DESC);
+`,
+	},
+	{
+		name: "intel_phase3_replay",
+		sql: `
+CREATE TABLE IF NOT EXISTS intel_replay_jobs (
+    id             TEXT PRIMARY KEY,
+    tenant_id      TEXT NOT NULL DEFAULT 'default',
+    triggered_by   TEXT NOT NULL DEFAULT 'system',
+    ioc_ids        TEXT[] NOT NULL DEFAULT '{}',
+    lookback_days  SMALLINT NOT NULL DEFAULT 30,
+    status         TEXT NOT NULL DEFAULT 'queued',
+    matched_count  INT NOT NULL DEFAULT 0,
+    scanned_count  INT NOT NULL DEFAULT 0,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    finished_at    TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS irj_tenant_status_idx ON intel_replay_jobs(tenant_id, status, created_at DESC);
+`,
+	},
+	{
+		name: "intel_phase4_enrichment",
+		sql: `
+ALTER TABLE iocs ADD COLUMN IF NOT EXISTS enrichment     JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE iocs ADD COLUMN IF NOT EXISTS enriched_at    TIMESTAMPTZ;
+ALTER TABLE iocs ADD COLUMN IF NOT EXISTS enrichment_ver SMALLINT NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS iocs_enriched_idx ON iocs(enriched_at) WHERE enriched_at IS NULL;
+`,
+	},
+	{
+		name: "intel_phase5_sharing",
+		sql: `
+CREATE TABLE IF NOT EXISTS sharing_groups (
+    id           TEXT PRIMARY KEY,
+    tenant_id    TEXT NOT NULL DEFAULT 'default',
+    name         TEXT NOT NULL,
+    description  TEXT NOT NULL DEFAULT '',
+    push_targets JSONB NOT NULL DEFAULT '[]',
+    tlp_floor    TEXT NOT NULL DEFAULT 'AMBER',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS sg_tenant_idx ON sharing_groups(tenant_id);
+
+CREATE TABLE IF NOT EXISTS sharing_runs (
+    id          TEXT PRIMARY KEY,
+    group_id    TEXT NOT NULL REFERENCES sharing_groups(id) ON DELETE CASCADE,
+    started_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    finished_at TIMESTAMPTZ,
+    exported    INT NOT NULL DEFAULT 0,
+    error       TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS sr_group_idx ON sharing_runs(group_id, started_at DESC);
+`,
+	},
+	{
+		name: "intel_phase6_tasking",
+		sql: `
+CREATE TABLE IF NOT EXISTS intel_tasks (
+    id          TEXT PRIMARY KEY,
+    tenant_id   TEXT NOT NULL DEFAULT 'default',
+    name        TEXT NOT NULL,
+    task_type   TEXT NOT NULL,            -- hunt | yara_rule | detection_rule
+    source_type TEXT NOT NULL,            -- actor | campaign | ioc | manual
+    source_id   TEXT NOT NULL DEFAULT '',
+    artifact_id TEXT NOT NULL DEFAULT '', -- id of created hunt/yara/rule
+    status      TEXT NOT NULL DEFAULT 'pending',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_by  TEXT NOT NULL DEFAULT 'system'
+);
+CREATE INDEX IF NOT EXISTS it_tenant_idx ON intel_tasks(tenant_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS saved_hunts (
+    id         TEXT PRIMARY KEY,
+    tenant_id  TEXT NOT NULL DEFAULT 'default',
+    name       TEXT NOT NULL,
+    query      TEXT NOT NULL,
+    source_id  TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS sh_tenant_idx ON saved_hunts(tenant_id, created_at DESC);
+`,
+	},
+	{
+		name: "intel_phase7_scheduled_hunts",
+		sql: `
+CREATE TABLE IF NOT EXISTS hunt_schedules (
+    id            TEXT PRIMARY KEY,
+    tenant_id     TEXT NOT NULL DEFAULT 'default',
+    saved_hunt_id TEXT NOT NULL REFERENCES saved_hunts(id) ON DELETE CASCADE,
+    name          TEXT NOT NULL,
+    cron_expr     TEXT NOT NULL,
+    enabled       BOOLEAN NOT NULL DEFAULT TRUE,
+    alert_on_hit  BOOLEAN NOT NULL DEFAULT TRUE,
+    last_run_at   TIMESTAMPTZ,
+    next_run_at   TIMESTAMPTZ,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS hs_tenant_idx ON hunt_schedules(tenant_id, next_run_at);
+CREATE INDEX IF NOT EXISTS hs_enabled_idx ON hunt_schedules(enabled, next_run_at) WHERE enabled = TRUE;
+
+CREATE TABLE IF NOT EXISTS hunt_schedule_runs (
+    id           TEXT PRIMARY KEY,
+    schedule_id  TEXT NOT NULL REFERENCES hunt_schedules(id) ON DELETE CASCADE,
+    tenant_id    TEXT NOT NULL DEFAULT 'default',
+    started_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    finished_at  TIMESTAMPTZ,
+    row_count    INT NOT NULL DEFAULT 0,
+    hit_count    INT NOT NULL DEFAULT 0,
+    status       TEXT NOT NULL DEFAULT 'running',
+    error        TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS hsr_schedule_idx ON hunt_schedule_runs(schedule_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS hsr_tenant_idx   ON hunt_schedule_runs(tenant_id, started_at DESC);
+`,
+	},
+	{
+		name: "intel_phase8_taxii",
+		sql: `
+CREATE TABLE IF NOT EXISTS taxii_feeds (
+    id              TEXT PRIMARY KEY,
+    tenant_id       TEXT NOT NULL DEFAULT 'default',
+    name            TEXT NOT NULL,
+    discovery_url   TEXT NOT NULL,
+    api_root        TEXT NOT NULL DEFAULT '',
+    collection_id   TEXT NOT NULL DEFAULT '',
+    username        TEXT NOT NULL DEFAULT '',
+    password_enc    TEXT NOT NULL DEFAULT '',
+    poll_interval   INT  NOT NULL DEFAULT 3600,
+    last_polled_at  TIMESTAMPTZ,
+    next_poll_at    TIMESTAMPTZ,
+    enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+    ioc_count       INT NOT NULL DEFAULT 0,
+    last_error      TEXT NOT NULL DEFAULT '',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS tf_tenant_idx   ON taxii_feeds(tenant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS tf_enabled_idx  ON taxii_feeds(enabled, next_poll_at) WHERE enabled = TRUE;
+
+CREATE TABLE IF NOT EXISTS taxii_poll_runs (
+    id               TEXT PRIMARY KEY,
+    feed_id          TEXT NOT NULL REFERENCES taxii_feeds(id) ON DELETE CASCADE,
+    tenant_id        TEXT NOT NULL DEFAULT 'default',
+    started_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    finished_at      TIMESTAMPTZ,
+    objects_fetched  INT NOT NULL DEFAULT 0,
+    iocs_imported    INT NOT NULL DEFAULT 0,
+    status           TEXT NOT NULL DEFAULT 'running',
+    error            TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS tpr_feed_idx   ON taxii_poll_runs(feed_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS tpr_tenant_idx ON taxii_poll_runs(tenant_id, started_at DESC);
+`,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.
