@@ -4,7 +4,7 @@ import { useCallback, useState } from "react";
 import { useApi } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
 import { cn, timeAgo, severityLabel, severityBgClass } from "@/lib/utils";
-import type { IOC, IOCStats } from "@/types";
+import type { IOC, IOCStats, IOCEnrichment } from "@/types";
 
 /* ---------- Constants ---------- */
 const TYPE_FILTERS = [
@@ -209,6 +209,164 @@ function BulkImportForm({ onSubmit, onCancel }: { onSubmit: (iocs: Record<string
   );
 }
 
+/* ---------- Enrichment Drawer ---------- */
+const VT_VERDICT_STYLE: Record<string, string> = {
+  malicious:  "text-red-400 bg-red-500/10 border-red-500/20",
+  suspicious: "text-amber-400 bg-amber-500/10 border-amber-500/20",
+  clean:      "text-emerald-400 bg-emerald-500/10 border-emerald-500/20",
+  unknown:    "text-white/40 bg-white/5 border-white/10",
+};
+
+function EnrichmentDrawer({ ioc, onClose, onReenrich }: {
+  ioc: IOC;
+  onClose: () => void;
+  onReenrich: () => void;
+}) {
+  const [enriching, setEnriching] = useState(false);
+  const e: IOCEnrichment | undefined = ioc.enrichment && Object.keys(ioc.enrichment).length > 0
+    ? ioc.enrichment
+    : undefined;
+
+  async function handleReenrich() {
+    setEnriching(true);
+    try {
+      await api.post(`/api/v1/iocs/${ioc.id}/enrich`);
+      onReenrich();
+    } finally {
+      setEnriching(false);
+    }
+  }
+
+  const vtPct = e?.vt_total_engines ? Math.round((e.vt_detections ?? 0) / e.vt_total_engines * 100) : 0;
+
+  return (
+    <div className="fixed inset-0 z-50 flex" onClick={onClose}>
+      <div className="flex-1" />
+      <div
+        className="w-96 h-full overflow-y-auto border-l shadow-2xl"
+        style={{ background: "var(--surface-0)", borderColor: "var(--border)" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="sticky top-0 z-10 flex items-center justify-between gap-2 px-4 py-3 border-b"
+          style={{ background: "var(--surface-1)", borderColor: "var(--border)" }}>
+          <div className="min-w-0">
+            <p className="text-xs font-mono truncate" style={{ color: "var(--fg)" }}>{ioc.value}</p>
+            <p className="text-[10px] uppercase tracking-wider mt-0.5" style={{ color: "var(--muted)" }}>{ioc.type} · {ioc.source}</p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={handleReenrich}
+              disabled={enriching}
+              className="rounded-md border px-2.5 py-1 text-[10px] font-medium transition-colors disabled:opacity-50"
+              style={{ borderColor: "var(--border)", color: "var(--muted)" }}
+            >
+              {enriching ? "Enriching…" : "Re-enrich"}
+            </button>
+            <button onClick={onClose} className="rounded p-1 hover:bg-[var(--surface-2)] transition-colors" style={{ color: "var(--muted)" }}>
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+            </button>
+          </div>
+        </div>
+
+        <div className="p-4 space-y-4">
+          {/* Enrichment section */}
+          {!e ? (
+            <div className="rounded-lg border p-4 text-center" style={{ borderColor: "var(--border)" }}>
+              <p className="text-xs" style={{ color: "var(--muted)" }}>
+                {ioc.enrichment_ver === 0 ? "Not yet enriched — click Re-enrich above." : "No enrichment data available."}
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {/* VirusTotal */}
+              {e.vt_verdict && (
+                <div className="rounded-lg border p-3 space-y-2" style={{ borderColor: "var(--border)" }}>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--muted)" }}>VirusTotal</span>
+                    <span className={cn("rounded border px-1.5 py-0.5 text-[10px] font-medium", VT_VERDICT_STYLE[e.vt_verdict] ?? VT_VERDICT_STYLE.unknown)}>
+                      {e.vt_verdict}
+                    </span>
+                  </div>
+                  {(e.vt_total_engines ?? 0) > 0 && (
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[10px]" style={{ color: "var(--muted)" }}>
+                        <span>{e.vt_detections ?? 0} / {e.vt_total_engines} engines</span>
+                        <span>{vtPct}%</span>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-white/5">
+                        <div className="h-full rounded-full bg-red-500 transition-all" style={{ width: `${vtPct}%` }} />
+                      </div>
+                    </div>
+                  )}
+                  {e.vt_malware_family && (
+                    <p className="text-[10px]" style={{ color: "var(--muted)" }}>Family: <span className="font-medium text-amber-400">{e.vt_malware_family}</span></p>
+                  )}
+                </div>
+              )}
+
+              {/* Network / Geo */}
+              {(e.asn || e.country || e.geo_city || e.rdns) && (
+                <div className="rounded-lg border p-3 space-y-1.5" style={{ borderColor: "var(--border)" }}>
+                  <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--muted)" }}>Network</span>
+                  {e.asn && <EnrichRow label="ASN" value={e.asn} />}
+                  {e.country && <EnrichRow label="Country" value={e.country} />}
+                  {e.geo_city && <EnrichRow label="City" value={e.geo_city} />}
+                  {e.rdns && <EnrichRow label="rDNS" value={e.rdns} mono />}
+                </div>
+              )}
+
+              {/* WHOIS / Domain */}
+              {(e.whois_registrar || e.domain_age_days) && (
+                <div className="rounded-lg border p-3 space-y-1.5" style={{ borderColor: "var(--border)" }}>
+                  <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--muted)" }}>WHOIS</span>
+                  {e.whois_registrar && <EnrichRow label="Registrar" value={e.whois_registrar} />}
+                  {e.domain_age_days != null && <EnrichRow label="Domain Age" value={`${e.domain_age_days} days`} />}
+                </div>
+              )}
+
+              {e.enriched_at && (
+                <p className="text-[10px] text-right" style={{ color: "var(--muted)" }}>
+                  Enriched {timeAgo(e.enriched_at)}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* IOC metadata */}
+          <div className="rounded-lg border p-3 space-y-1.5" style={{ borderColor: "var(--border)" }}>
+            <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--muted)" }}>Details</span>
+            <EnrichRow label="Severity" value={severityLabel(ioc.severity)} />
+            <EnrichRow label="Hits" value={String(ioc.hit_count)} />
+            <EnrichRow label="Created" value={timeAgo(ioc.created_at)} />
+            {ioc.last_hit_at && <EnrichRow label="Last Hit" value={timeAgo(ioc.last_hit_at)} />}
+            {ioc.description && <EnrichRow label="Description" value={ioc.description} />}
+            {ioc.tags?.length > 0 && (
+              <div className="flex items-start gap-2 text-[10px]">
+                <span className="w-20 shrink-0" style={{ color: "var(--muted)" }}>Tags</span>
+                <div className="flex flex-wrap gap-1">
+                  {ioc.tags.map((t) => (
+                    <span key={t} className="rounded px-1.5 py-0.5 text-[10px] font-medium bg-white/5 text-white/50">{t}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EnrichRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="flex items-start gap-2 text-[10px]">
+      <span className="w-20 shrink-0" style={{ color: "var(--muted)" }}>{label}</span>
+      <span className={cn("break-all", mono && "font-mono")} style={{ color: "var(--fg)" }}>{value}</span>
+    </div>
+  );
+}
+
 /* ---------- IOCs Page ---------- */
 export default function IOCsPage() {
   const [typeFilter, setTypeFilter] = useState("");
@@ -216,6 +374,7 @@ export default function IOCsPage() {
   const [showAddForm, setShowAddForm] = useState(false);
   const [showBulkForm, setShowBulkForm] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [selectedIOC, setSelectedIOC] = useState<IOC | null>(null);
 
   /* Fetch IOC stats */
   const fetchStats = useCallback(
@@ -437,7 +596,8 @@ export default function IOCsPage() {
         {displayIOCs.map((ioc) => (
           <div
             key={ioc.id}
-            className="grid grid-cols-[80px_1fr_100px_50px_60px_70px_100px_50px] gap-2 px-3 py-2 text-xs items-center transition-colors border-b last:border-b-0 hover:bg-[var(--surface-1)]"
+            onClick={() => setSelectedIOC(ioc)}
+            className="grid grid-cols-[80px_1fr_100px_50px_60px_70px_100px_50px] gap-2 px-3 py-2 text-xs items-center transition-colors border-b last:border-b-0 hover:bg-[var(--surface-1)] cursor-pointer"
             style={{ borderColor: "var(--border-subtle)" }}
           >
             <span>
@@ -497,6 +657,18 @@ export default function IOCsPage() {
           </div>
         )}
       </div>
+
+      {/* Enrichment detail drawer */}
+      {selectedIOC && (
+        <EnrichmentDrawer
+          ioc={selectedIOC}
+          onClose={() => setSelectedIOC(null)}
+          onReenrich={() => {
+            refetch();
+            setSelectedIOC(null);
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -17,6 +17,7 @@ import {
   Crosshair,
   Database,
   FileText,
+  Flag,
   FolderOpen,
   FolderCog,
   Ghost,
@@ -47,6 +48,8 @@ import {
   Wifi,
   ClipboardCheck,
   Rss,
+  RotateCcw,
+  Zap,
 } from "lucide-react";
 
 interface NavItem {
@@ -84,6 +87,19 @@ const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
+    title: "Intel",
+    items: [
+      { label: "Dashboard", href: "/intel/dashboard", icon: LayoutDashboard },
+      { label: "Actors", href: "/intel/actors", icon: Users },
+      { label: "Campaigns", href: "/intel/campaigns", icon: Flag },
+      { label: "Replay", href: "/intel/replay", icon: RotateCcw },
+      { label: "Sharing", href: "/intel/sharing", icon: Share2 },
+      { label: "Tasking", href: "/intel/tasks", icon: Zap },
+      { label: "Hunt Schedules", href: "/intel/hunt-schedules", icon: CalendarClock },
+      { label: "TAXII Feeds", href: "/intel/taxii", icon: Rss },
+    ],
+  },
+  {
     title: "Detect",
     items: [
       { label: "Rules", href: "/rules", icon: Shield },
@@ -108,6 +124,7 @@ const NAV_SECTIONS: NavSection[] = [
       { label: "Threat Score", href: "/threat-score", icon: ShieldAlert },
       { label: "UEBA Timeline", href: "/ueba", icon: GitBranch },
       { label: "Lateral Graph", href: "/lateral-graph", icon: GitFork },
+      { label: "Anomalies", href: "/anomalies", icon: Activity },
       { label: "Attack Surface", href: "/attack-surface", icon: ScanSearch },
       { label: "Asset Inventory", href: "/asset-inventory", icon: Server },
       { label: "Containers", href: "/containers", icon: Box },

@@ -222,6 +222,132 @@ function treeToText(nodes: ProcessNode[], depth: number = 0): string {
   return out;
 }
 
+/* ---------- Intel Context Card ---------- */
+interface IntelContext {
+  ioc_id?: string;
+  ioc_type?: string;
+  ioc_value?: string;
+  ioc_source?: string;
+  actor_id?: string;
+  campaign_id?: string;
+  vt_detections?: number;
+  enriched_at?: string;
+}
+
+const IOC_TYPE_COLOR: Record<string, string> = {
+  ip:           "bg-blue-500/15 text-blue-400",
+  domain:       "bg-emerald-500/15 text-emerald-400",
+  hash_sha256:  "bg-purple-500/15 text-purple-400",
+  hash_md5:     "bg-purple-500/15 text-purple-300",
+};
+
+function IntelContextCard({ enrichments }: { enrichments: { intel_context?: IntelContext; [k: string]: unknown } }) {
+  const ctx = enrichments.intel_context;
+  const [actorName, setActorName] = useState<string | null>(null);
+  const [campaignName, setCampaignName] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (ctx?.actor_id) {
+      api.get<{ name?: string; id: string }>(`/intel/actors/${ctx.actor_id}`)
+        .then((r) => setActorName(r.name ?? ctx.actor_id ?? null))
+        .catch(() => setActorName(ctx.actor_id ?? null));
+    }
+    if (ctx?.campaign_id) {
+      api.get<{ name?: string; id: string }>(`/intel/campaigns/${ctx.campaign_id}`)
+        .then((r) => setCampaignName(r.name ?? ctx.campaign_id ?? null))
+        .catch(() => setCampaignName(ctx.campaign_id ?? null));
+    }
+  }, [ctx?.actor_id, ctx?.campaign_id]);
+
+  if (!ctx?.ioc_value) return null;
+
+  const vtPct = ctx.vt_detections != null ? Math.min(ctx.vt_detections, 100) : null;
+
+  return (
+    <div
+      className="rounded-lg border p-3 space-y-2.5"
+      style={{ background: "var(--surface-1)", borderColor: "var(--border)" }}
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--muted)" }}>
+          Intel Attribution
+        </span>
+        <a
+          href={`/iocs?search=${encodeURIComponent(ctx.ioc_value)}`}
+          className="text-[10px] text-blue-400/70 hover:text-blue-400 transition-colors"
+        >
+          View IOC →
+        </a>
+      </div>
+
+      {/* IOC row */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {ctx.ioc_type && (
+          <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${IOC_TYPE_COLOR[ctx.ioc_type] ?? "bg-white/5 text-white/50"}`}>
+            {ctx.ioc_type}
+          </span>
+        )}
+        <span className="font-mono text-[11px] text-white/80 break-all">{ctx.ioc_value}</span>
+        {ctx.ioc_source && (
+          <span className="text-[10px] text-white/30">({ctx.ioc_source})</span>
+        )}
+      </div>
+
+      {/* VT detection bar */}
+      {vtPct != null && vtPct > 0 && (
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-[10px]">
+            <span style={{ color: "var(--muted)" }}>VirusTotal</span>
+            <span className="text-red-400 font-medium">{ctx.vt_detections} detections</span>
+          </div>
+          <div className="h-1.5 rounded-full bg-white/5">
+            <div
+              className="h-full rounded-full bg-red-500 transition-all"
+              style={{ width: `${Math.min(vtPct, 100)}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Actor / Campaign attribution */}
+      {(actorName || campaignName) && (
+        <div className="space-y-1 border-t border-white/8 pt-2">
+          {actorName && (
+            <div className="flex items-center justify-between text-[10px]">
+              <span style={{ color: "var(--muted)" }}>Threat Actor</span>
+              <a
+                href={`/intel/actors?id=${ctx.actor_id}`}
+                className="font-medium text-orange-400 hover:text-orange-300 transition-colors"
+              >
+                {actorName}
+              </a>
+            </div>
+          )}
+          {campaignName && (
+            <div className="flex items-center justify-between text-[10px]">
+              <span style={{ color: "var(--muted)" }}>Campaign</span>
+              <a
+                href={`/intel/campaigns?id=${ctx.campaign_id}`}
+                className="font-medium text-amber-400 hover:text-amber-300 transition-colors"
+              >
+                {campaignName}
+              </a>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* TLP if rule_id contains ioc */}
+      {ctx.ioc_id && !actorName && !campaignName && (
+        <p className="text-[10px]" style={{ color: "var(--muted)" }}>
+          No actor/campaign attribution found for this indicator.
+        </p>
+      )}
+    </div>
+  );
+}
+
 /* ---------- Alert Detail Drawer ---------- */
 function AlertDetail({
   alert,
@@ -247,6 +373,8 @@ function AlertDetail({
   const [enrichments, setEnrichments] = useState<{
     ioc_matches?: Array<Record<string, unknown>>;
     ti_data?: Record<string, unknown>;
+    intel_context?: IntelContext;
+    threat_intel?: Record<string, unknown>;
   } | null>(null);
   const [enrichmentsLoading, setEnrichmentsLoading] = useState(false);
 
@@ -255,7 +383,7 @@ function AlertDetail({
     setEnrichments(null);
     setEnrichmentsLoading(true);
     api
-      .get<{ alert_id: string; enrichments: { ioc_matches?: Array<Record<string, unknown>>; ti_data?: Record<string, unknown> } }>(
+      .get<{ alert_id: string; enrichments: Record<string, unknown> }>(
         `/api/v1/alerts/${alert.id}/enrichments`
       )
       .then((res) => {
@@ -497,6 +625,11 @@ function AlertDetail({
           </div>
           {enrichmentsLoading && (
             <div className="animate-shimmer h-12 rounded" />
+          )}
+          {!enrichmentsLoading && enrichments?.intel_context && (
+            <div className="mb-3">
+              <IntelContextCard enrichments={enrichments} />
+            </div>
           )}
           {!enrichmentsLoading && enrichments && (
             <div

@@ -122,6 +122,20 @@ export interface Incident {
   source_types?: string[];
 }
 
+export interface IOCEnrichment {
+  asn?: string;
+  country?: string;
+  geo_city?: string;
+  rdns?: string;
+  whois_registrar?: string;
+  domain_age_days?: number;
+  vt_detections?: number;
+  vt_total_engines?: number;
+  vt_malware_family?: string;
+  vt_verdict?: string;
+  enriched_at?: string;
+}
+
 export interface IOC {
   id: string;
   type: string;
@@ -135,6 +149,9 @@ export interface IOC {
   created_at: string;
   hit_count: number;
   last_hit_at?: string;
+  enrichment?: IOCEnrichment;
+  enriched_at?: string;
+  enrichment_ver?: number;
 }
 
 export interface IOCStats {
