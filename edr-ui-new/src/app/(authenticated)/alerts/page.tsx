@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useApi } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
 import {
@@ -640,23 +641,29 @@ function AlertDetail({
               {enrichments.ioc_matches && enrichments.ioc_matches.length > 0 ? (
                 <div>
                   <div className="text-[10px] font-semibold mb-1.5" style={{ color: "var(--muted)" }}>
-                    IOC Matches
+                    IOC Matches ({enrichments.ioc_matches.length})
                   </div>
-                  <div className="flex flex-wrap gap-1.5">
+                  <div className="space-y-1.5">
                     {enrichments.ioc_matches.map((match, i) => {
-                      const label =
-                        typeof match.value === "string"
-                          ? match.value
-                          : typeof match.ioc === "string"
-                          ? match.ioc
-                          : JSON.stringify(match);
+                      const value  = typeof match.value  === "string" ? match.value  : JSON.stringify(match);
+                      const type   = typeof match.type   === "string" ? match.type   : "";
+                      const field  = typeof match.field  === "string" ? match.field.replace(/_/g, " ") : "";
+                      const source = typeof match.source === "string" ? match.source : "";
                       return (
-                        <span
-                          key={i}
-                          className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold bg-red-500/15 text-red-400 border border-red-500/20"
-                        >
-                          {label}
-                        </span>
+                        <div key={i} className="flex items-center gap-1.5 flex-wrap">
+                          {type && (
+                            <span className="text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 border border-red-500/20 shrink-0">
+                              {type}
+                            </span>
+                          )}
+                          <span className="font-mono text-[10px] text-white/80 break-all">{value}</span>
+                          {field && (
+                            <span className="text-[9px] shrink-0" style={{ color: "var(--muted)" }}>via {field}</span>
+                          )}
+                          {source && (
+                            <span className="text-[9px] shrink-0" style={{ color: "var(--muted)" }}>· {source}</span>
+                          )}
+                        </div>
                       );
                     })}
                   </div>
@@ -972,6 +979,9 @@ function AlertDetail({
 
 /* ---------- Alerts Page ---------- */
 export default function AlertsPage() {
+  const searchParams = useSearchParams();
+  const chainIDParam = searchParams.get("chain_id") ?? "";
+
   const [statusFilter, setStatusFilter] = useState("");
   const [severityFilter, setSeverityFilter] = useState(-1);
   const [search, setSearch] = useState("");
@@ -987,11 +997,12 @@ export default function AlertsPage() {
           status: statusFilter || undefined,
           severity: severityFilter >= 0 ? severityFilter : undefined,
           search: search || undefined,
+          chain_id: chainIDParam || undefined,
           limit: PAGE_SIZE,
           offset,
         }, signal)
         .then((r) => (Array.isArray(r) ? r : r.alerts ?? [])),
-    [statusFilter, severityFilter, search, offset]
+    [statusFilter, severityFilter, search, chainIDParam, offset]
   );
 
   const { data: fetchedAlerts, loading, error, refetch } = useApi(fetchAlerts);
@@ -1050,6 +1061,14 @@ export default function AlertsPage() {
       >
         Alerts
       </h1>
+
+      {/* Chain ID filter banner */}
+      {chainIDParam && (
+        <div className="flex items-center gap-3 px-3 py-2 rounded-lg border border-violet-500/30 bg-violet-500/10 text-xs">
+          <span className="text-violet-400 font-medium">Filtered by chain:</span>
+          <code className="font-mono text-violet-300">{chainIDParam}</code>
+        </div>
+      )}
 
       {/* Search + filters */}
       <input

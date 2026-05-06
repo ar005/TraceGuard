@@ -61,6 +61,11 @@ export interface Alert {
   triage_at?: string;
 }
 
+export interface SequenceStep {
+  event_type: string;
+  conditions: Array<{ field: string; op: string; value: string }>;
+}
+
 export interface Rule {
   id: string;
   name: string;
@@ -77,6 +82,9 @@ export interface Rule {
   threshold_count: number;
   threshold_window_s: number;
   group_by: string;
+  sequence_steps?: SequenceStep[];
+  sequence_window_s?: number;
+  sequence_by?: string;
 }
 
 export interface RuleCondition {

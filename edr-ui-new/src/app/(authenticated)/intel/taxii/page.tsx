@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useApi } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
 import { Rss, RefreshCw, Trash2, Plus, CheckCircle, XCircle, Clock, ChevronDown, ChevronRight, AlertCircle } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, timeAgo } from "@/lib/utils";
 
 interface TAXIIFeed {
   id: string;
@@ -20,6 +20,9 @@ interface TAXIIFeed {
   ioc_count: number;
   last_error: string;
   created_at: string;
+  hit_count?: number;
+  last_hit_at?: string;
+  quality_score?: number;
 }
 
 interface PollRun {
@@ -58,6 +61,18 @@ function StatusBadge({ feed }: { feed: TAXIIFeed }) {
   return (
     <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border border-yellow-500/40 bg-yellow-500/10 text-yellow-400">
       <Clock size={11} /> pending
+    </span>
+  );
+}
+
+function QualityBadge({ score }: { score: number }) {
+  const cls =
+    score >= 60 ? "border-green-500/40 bg-green-500/10 text-green-400" :
+    score >= 30 ? "border-yellow-500/40 bg-yellow-500/10 text-yellow-400" :
+                  "border-red-500/40 bg-red-500/10 text-red-400";
+  return (
+    <span className={cn("text-xs px-2 py-0.5 rounded-full border font-medium", cls)}>
+      Q{score}
     </span>
   );
 }
@@ -128,9 +143,17 @@ function FeedCard({
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <StatusBadge feed={feed} />
+          {feed.quality_score != null && feed.ioc_count > 0 && (
+            <QualityBadge score={feed.quality_score} />
+          )}
           <span className="text-xs font-mono text-[hsl(var(--muted-foreground))] hidden sm:block">
             {feed.ioc_count.toLocaleString()} IOCs
           </span>
+          {(feed.hit_count ?? 0) > 0 && (
+            <span className="text-xs font-mono text-orange-400 hidden sm:block">
+              {feed.hit_count} hits
+            </span>
+          )}
           {feed.last_polled_at && (
             <span className="text-xs text-[hsl(var(--muted-foreground))] hidden md:block">
               {new Date(feed.last_polled_at).toLocaleString()}
@@ -177,6 +200,56 @@ function FeedCard({
               <p>{feed.next_poll_at ? new Date(feed.next_poll_at).toLocaleString() : "—"}</p>
             </div>
           </div>
+
+          {/* Feed quality panel */}
+          {feed.ioc_count > 0 && (
+            <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--muted)/.15)] px-4 py-3 space-y-2">
+              <p className="text-xs font-medium text-[hsl(var(--muted-foreground))] uppercase tracking-wider">Feed Quality</p>
+              <div className="flex items-center gap-3">
+                <div className="flex-1 h-2 rounded-full bg-[hsl(var(--muted)/.3)] overflow-hidden">
+                  <div
+                    className={cn("h-full rounded-full transition-all",
+                      (feed.quality_score ?? 0) >= 60 ? "bg-green-500" :
+                      (feed.quality_score ?? 0) >= 30 ? "bg-yellow-500" : "bg-red-500"
+                    )}
+                    style={{ width: `${feed.quality_score ?? 0}%` }}
+                  />
+                </div>
+                <span className="text-sm font-semibold font-mono w-8 shrink-0 text-right">
+                  {feed.quality_score ?? 0}
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-3 text-xs">
+                <div>
+                  <p className="text-[hsl(var(--muted-foreground))] uppercase tracking-wider mb-0.5">Alert Hits</p>
+                  <p className="font-semibold font-mono">{(feed.hit_count ?? 0).toLocaleString()}</p>
+                </div>
+                <div>
+                  <p className="text-[hsl(var(--muted-foreground))] uppercase tracking-wider mb-0.5">Hit Rate</p>
+                  <p className="font-semibold font-mono">
+                    {feed.ioc_count > 0
+                      ? `${Math.round(((feed.hit_count ?? 0) / feed.ioc_count) * 100)}%`
+                      : "—"}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[hsl(var(--muted-foreground))] uppercase tracking-wider mb-0.5">Last Hit</p>
+                  <p className="font-semibold">{feed.last_hit_at ? timeAgo(feed.last_hit_at) : "never"}</p>
+                </div>
+              </div>
+              {feed.enabled && (feed.hit_count ?? 0) === 0 && feed.last_polled_at && (() => {
+                const daysSinceFirstPoll = (Date.now() - new Date(feed.last_polled_at).getTime()) / 86_400_000;
+                if (daysSinceFirstPoll > 30) {
+                  return (
+                    <p className="text-xs text-amber-400">
+                      ⚠ No hits in {Math.round(daysSinceFirstPoll)} days — feed may be auto-disabled after 60 days.
+                    </p>
+                  );
+                }
+                return null;
+              })()}
+            </div>
+          )}
           <div>
             <p className="text-xs font-medium text-[hsl(var(--muted-foreground))] uppercase tracking-wider mb-2">Recent polls</p>
             <FeedRunHistory feedId={feed.id} />
@@ -357,9 +430,13 @@ export default function TAXIIFeedsPage() {
     refresh();
   };
 
-  const totalIOCs  = feeds?.reduce((sum, f) => sum + f.ioc_count, 0) ?? 0;
+  const totalIOCs   = feeds?.reduce((sum, f) => sum + f.ioc_count, 0) ?? 0;
+  const totalHits   = feeds?.reduce((sum, f) => sum + (f.hit_count ?? 0), 0) ?? 0;
   const activeCount = feeds?.filter((f) => f.enabled).length ?? 0;
   const errorCount  = feeds?.filter((f) => f.last_error).length ?? 0;
+  const avgQuality  = feeds && feeds.length > 0
+    ? Math.round(feeds.reduce((sum, f) => sum + (f.quality_score ?? 0), 0) / feeds.length)
+    : 0;
 
   return (
     <div className="p-6 space-y-6 max-w-4xl mx-auto">
@@ -376,16 +453,21 @@ export default function TAXIIFeedsPage() {
         </button>
       </div>
 
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-6 gap-4">
         {[
-          { label: "Total Feeds",   value: feeds?.length ?? 0,        danger: false },
-          { label: "Active",        value: activeCount,                danger: false },
-          { label: "IOCs Imported", value: totalIOCs.toLocaleString(), danger: false },
-          { label: "Errors",        value: errorCount,                 danger: errorCount > 0 },
+          { label: "Total Feeds",   value: feeds?.length ?? 0,        danger: false, warn: false },
+          { label: "Active",        value: activeCount,                danger: false, warn: false },
+          { label: "IOCs Imported", value: totalIOCs.toLocaleString(), danger: false, warn: false },
+          { label: "Alert Hits",    value: totalHits.toLocaleString(), danger: false, warn: false },
+          { label: "Avg Quality",   value: avgQuality,                 danger: false, warn: avgQuality < 30 && (feeds?.length ?? 0) > 0 },
+          { label: "Errors",        value: errorCount,                 danger: errorCount > 0, warn: false },
         ].map((s) => (
           <div key={s.label} className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-4 py-3">
             <p className="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{s.label}</p>
-            <p className={cn("text-2xl font-semibold mt-1", s.danger && "text-red-400")}>{s.value}</p>
+            <p className={cn("text-2xl font-semibold mt-1",
+              s.danger && "text-red-400",
+              s.warn && "text-amber-400"
+            )}>{s.value}</p>
           </div>
         ))}
       </div>

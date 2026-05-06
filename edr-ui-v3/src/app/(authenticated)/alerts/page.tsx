@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useApi } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
 import { timeAgo, formatDate } from "@/lib/utils";
@@ -544,6 +545,9 @@ function AlertRow({
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export default function AlertsPage() {
+  const searchParams = useSearchParams();
+  const chainIDParam = searchParams.get("chain_id") ?? "";
+
   const [statusFilter, setStatusFilter] = useState("");
   const [sevFilter, setSevFilter] = useState(-1);
   const [searchQuery, setSearchQuery] = useState("");
@@ -554,9 +558,10 @@ export default function AlertsPage() {
       status: statusFilter || undefined,
       severity: sevFilter >= 0 ? sevFilter : undefined,
       search: searchQuery.trim() || undefined,
+      chain_id: chainIDParam || undefined,
       limit: 100,
     }).then(r => Array.isArray(r) ? r : r.alerts ?? []),
-    [statusFilter, sevFilter, searchQuery]
+    [statusFilter, sevFilter, searchQuery, chainIDParam]
   );
   const { data: alerts, loading, refetch: refresh } = useApi(fetchAlerts);
 
@@ -671,6 +676,15 @@ export default function AlertsPage() {
           ))}
         </div>
       </div>
+
+      {/* Chain ID filter banner */}
+      {chainIDParam && (
+        <div className="flex items-center gap-2 px-4 py-2 bg-violet-500/10 border border-violet-500/20 rounded-lg text-sm">
+          <span className="text-violet-400 font-medium">Filtered by chain:</span>
+          <code className="font-mono text-violet-300">{chainIDParam}</code>
+          <a href="/alerts" className="ml-auto text-violet-400 hover:text-violet-300 text-xs">Clear</a>
+        </div>
+      )}
 
       {/* Column headers */}
       <div

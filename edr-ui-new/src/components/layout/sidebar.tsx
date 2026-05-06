@@ -78,6 +78,7 @@ const NAV_SECTIONS: NavSection[] = [
     title: "Investigate",
     items: [
       { label: "Events", href: "/events", icon: Activity },
+      { label: "Chains", href: "/chains", icon: GitBranch },
       { label: "Commands", href: "/commands", icon: Terminal },
       { label: "Browser", href: "/browser", icon: Globe },
       { label: "USB Devices", href: "/usb", icon: Usb },

@@ -37,6 +37,32 @@ function severityDot(sev: number): string {
   }
 }
 
+function isExpired(ioc: IOC): boolean {
+  return !!ioc.expires_at && new Date(ioc.expires_at) < new Date();
+}
+
+function isStale(ioc: IOC): boolean {
+  if (!ioc.enabled) return false;
+  if (ioc.hit_count > 0 && ioc.last_hit_at) {
+    const daysSinceHit = (Date.now() - new Date(ioc.last_hit_at).getTime()) / 86_400_000;
+    return daysSinceHit > 30;
+  }
+  return false;
+}
+
+function confidenceColor(c: number): string {
+  if (c >= 70) return "bg-emerald-500";
+  if (c >= 40) return "bg-amber-500";
+  return "bg-red-500";
+}
+
+const TLP_BADGE: Record<string, string> = {
+  WHITE: "bg-white/10 text-white/60",
+  GREEN: "bg-emerald-500/15 text-emerald-400",
+  AMBER: "bg-amber-500/15 text-amber-400",
+  RED:   "bg-red-500/15 text-red-400",
+};
+
 /* ---------- Skeleton ---------- */
 function SkeletonRow() {
   return (
@@ -370,11 +396,14 @@ function EnrichRow({ label, value, mono }: { label: string; value: string; mono?
 /* ---------- IOCs Page ---------- */
 export default function IOCsPage() {
   const [typeFilter, setTypeFilter] = useState("");
+  const [staleFilter, setStaleFilter] = useState(false);
   const [search, setSearch] = useState("");
   const [showAddForm, setShowAddForm] = useState(false);
   const [showBulkForm, setShowBulkForm] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [selectedIOC, setSelectedIOC] = useState<IOC | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [retiring, setRetiring] = useState(false);
 
   /* Fetch IOC stats */
   const fetchStats = useCallback(
@@ -435,7 +464,41 @@ export default function IOCsPage() {
     refetch();
   };
 
-  const displayIOCs = iocs ?? [];
+  const toggleSelect = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const handleBulkRetire = async () => {
+    if (selected.size === 0) return;
+    if (!window.confirm(`Retire ${selected.size} selected IOC(s)? They will be disabled.`)) return;
+    setRetiring(true);
+    try {
+      await api.post("/api/v1/iocs/bulk-retire", { ids: Array.from(selected) });
+      setSelected(new Set());
+      refetch();
+    } finally {
+      setRetiring(false);
+    }
+  };
+
+  const allDisplayIds = (iocs ?? []).map((i) => i.id);
+  const allSelected = allDisplayIds.length > 0 && allDisplayIds.every((id) => selected.has(id));
+  const toggleSelectAll = () => {
+    if (allSelected) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(allDisplayIds));
+    }
+  };
+
+  const rawIOCs = iocs ?? [];
+  const displayIOCs = staleFilter
+    ? rawIOCs.filter((ioc) => isStale(ioc) || isExpired(ioc))
+    : rawIOCs;
 
   return (
     <div className="animate-fade-in space-y-4">
@@ -448,6 +511,16 @@ export default function IOCsPage() {
           IOC Management
         </h1>
         <div className="flex items-center gap-2">
+          {selected.size > 0 && (
+            <button
+              onClick={handleBulkRetire}
+              disabled={retiring}
+              className="rounded-md px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50"
+              style={{ background: "var(--destructive, #ef4444)", color: "#fff" }}
+            >
+              {retiring ? "Retiring…" : `Retire ${selected.size} Selected`}
+            </button>
+          )}
           <button
             onClick={handleSyncFeeds}
             disabled={syncing}
@@ -482,19 +555,21 @@ export default function IOCsPage() {
       {/* Stats bar */}
       {stats && (
         <div
-          className="grid grid-cols-6 gap-3 rounded-lg border p-3"
+          className="grid grid-cols-8 gap-3 rounded-lg border p-3"
           style={{ background: "var(--surface-0)", borderColor: "var(--border)" }}
         >
           {[
-            { label: "Total IOCs", value: stats.total_iocs },
-            { label: "IPs", value: stats.ip_count },
-            { label: "Domains", value: stats.domain_count },
-            { label: "Hashes", value: stats.hash_count },
-            { label: "Enabled", value: stats.enabled_count },
-            { label: "Total Hits", value: stats.total_hits },
+            { label: "Total IOCs",    value: stats.total_iocs,           warn: false },
+            { label: "IPs",           value: stats.ip_count,             warn: false },
+            { label: "Domains",       value: stats.domain_count,         warn: false },
+            { label: "Hashes",        value: stats.hash_count,           warn: false },
+            { label: "Enabled",       value: stats.enabled_count,        warn: false },
+            { label: "Total Hits",    value: stats.total_hits,           warn: false },
+            { label: "Stale",         value: stats.stale_count ?? 0,     warn: (stats.stale_count ?? 0) > 0 },
+            { label: "Expiring Soon", value: stats.expiring_soon_count ?? 0, warn: (stats.expiring_soon_count ?? 0) > 0 },
           ].map((s) => (
             <div key={s.label} className="text-center">
-              <div className="text-lg font-semibold font-mono" style={{ color: "var(--fg)" }}>
+              <div className={cn("text-lg font-semibold font-mono", s.warn && s.value > 0 ? "text-amber-400" : "")} style={!s.warn || s.value === 0 ? { color: "var(--fg)" } : {}}>
                 {s.value?.toLocaleString() ?? 0}
               </div>
               <div className="text-[10px] uppercase tracking-wider" style={{ color: "var(--muted)" }}>
@@ -520,21 +595,34 @@ export default function IOCsPage() {
         {TYPE_FILTERS.map((f) => (
           <button
             key={f.value}
-            onClick={() => setTypeFilter(f.value)}
+            onClick={() => { setTypeFilter(f.value); setStaleFilter(false); }}
             className={cn(
               "rounded-full px-3 py-1 text-xs font-medium transition-colors",
-              typeFilter === f.value
+              typeFilter === f.value && !staleFilter
                 ? "text-[var(--primary-fg)]"
                 : "hover:bg-[var(--surface-2)]"
             )}
             style={{
-              background: typeFilter === f.value ? "var(--primary)" : "var(--surface-1)",
-              color: typeFilter === f.value ? "var(--primary-fg)" : "var(--muted)",
+              background: typeFilter === f.value && !staleFilter ? "var(--primary)" : "var(--surface-1)",
+              color: typeFilter === f.value && !staleFilter ? "var(--primary-fg)" : "var(--muted)",
             }}
           >
             {f.label}
           </button>
         ))}
+        <button
+          onClick={() => { setStaleFilter((v) => !v); setTypeFilter(""); }}
+          className={cn(
+            "rounded-full px-3 py-1 text-xs font-medium transition-colors",
+            staleFilter ? "text-amber-900" : "hover:bg-[var(--surface-2)]"
+          )}
+          style={{
+            background: staleFilter ? "rgb(245 158 11)" : "var(--surface-1)",
+            color: staleFilter ? "#1c1400" : "rgb(245 158 11)",
+          }}
+        >
+          Stale / Expired
+        </button>
       </div>
 
       {/* Add IOC form */}
@@ -570,15 +658,25 @@ export default function IOCsPage() {
       >
         {/* Table header */}
         <div
-          className="grid grid-cols-[80px_1fr_100px_50px_60px_70px_100px_50px] gap-2 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider border-b"
+          className="grid grid-cols-[32px_80px_1fr_100px_50px_60px_70px_80px_80px_50px] gap-2 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider border-b"
           style={{ color: "var(--muted-fg)", borderColor: "var(--border)", background: "var(--surface-1)" }}
         >
+          <span className="flex items-center justify-center">
+            <input
+              type="checkbox"
+              checked={allSelected}
+              onChange={toggleSelectAll}
+              className="rounded"
+              onClick={(e) => e.stopPropagation()}
+            />
+          </span>
           <span>Type</span>
           <span>Value</span>
           <span>Source</span>
           <span>Sev</span>
           <span>Enabled</span>
           <span>Hits</span>
+          <span>Confidence</span>
           <span>Created</span>
           <span></span>
         </div>
@@ -593,62 +691,99 @@ export default function IOCsPage() {
         )}
 
         {/* Rows */}
-        {displayIOCs.map((ioc) => (
-          <div
-            key={ioc.id}
-            onClick={() => setSelectedIOC(ioc)}
-            className="grid grid-cols-[80px_1fr_100px_50px_60px_70px_100px_50px] gap-2 px-3 py-2 text-xs items-center transition-colors border-b last:border-b-0 hover:bg-[var(--surface-1)] cursor-pointer"
-            style={{ borderColor: "var(--border-subtle)" }}
-          >
-            <span>
-              <span className={cn("inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase", typeBadgeClass(ioc.type))}>
-                {ioc.type}
-              </span>
-            </span>
-            <span className="truncate font-mono" style={{ color: "var(--fg)" }} title={ioc.value}>
-              {ioc.value}
-            </span>
-            <span className="truncate" style={{ color: "var(--muted)" }}>
-              {ioc.source || "—"}
-            </span>
-            <span className="flex justify-center">
-              <span className={cn("inline-block h-2.5 w-2.5 rounded-full", severityDot(ioc.severity))} />
-            </span>
-            <span className="flex justify-center">
-              <button
-                onClick={() => handleToggleEnabled(ioc)}
-                className={cn(
-                  "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                  ioc.enabled ? "bg-emerald-500" : "bg-neutral-600"
-                )}
-              >
-                <span
-                  className={cn(
-                    "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                    ioc.enabled ? "translate-x-4" : "translate-x-0.5"
-                  )}
+        {displayIOCs.map((ioc) => {
+          const expired = isExpired(ioc);
+          const stale   = isStale(ioc);
+          const conf    = ioc.confidence ?? 50;
+          return (
+            <div
+              key={ioc.id}
+              onClick={() => setSelectedIOC(ioc)}
+              className={cn(
+                "grid grid-cols-[32px_80px_1fr_100px_50px_60px_70px_80px_80px_50px] gap-2 px-3 py-2 text-xs items-center transition-colors border-b last:border-b-0 hover:bg-[var(--surface-1)] cursor-pointer",
+                selected.has(ioc.id) && "bg-[var(--surface-1)]"
+              )}
+              style={{ borderColor: "var(--border-subtle)" }}
+            >
+              {/* Checkbox */}
+              <span className="flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
+                <input
+                  type="checkbox"
+                  checked={selected.has(ioc.id)}
+                  onChange={() => toggleSelect(ioc.id)}
+                  className="rounded"
                 />
-              </button>
-            </span>
-            <span className="font-mono text-center" style={{ color: "var(--fg)" }}>
-              {ioc.hit_count ?? 0}
-            </span>
-            <span className="font-mono truncate" style={{ color: "var(--muted)" }}>
-              {timeAgo(ioc.created_at)}
-            </span>
-            <span className="flex justify-center">
-              <button
-                onClick={() => handleDelete(ioc.id)}
-                className="rounded p-1 text-red-400/60 hover:text-red-400 hover:bg-red-500/10 transition-colors"
-                title="Delete IOC"
-              >
-                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                </svg>
-              </button>
-            </span>
-          </div>
-        ))}
+              </span>
+              {/* Type + staleness badge */}
+              <span className="flex flex-col gap-0.5">
+                <span className={cn("inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase", typeBadgeClass(ioc.type))}>
+                  {ioc.type}
+                </span>
+                {expired && (
+                  <span className="text-[9px] px-1 rounded bg-red-500/15 text-red-400 font-medium">expired</span>
+                )}
+                {!expired && stale && (
+                  <span className="text-[9px] px-1 rounded bg-amber-500/15 text-amber-400 font-medium">stale</span>
+                )}
+              </span>
+              {/* Value */}
+              <span className="truncate font-mono" style={{ color: "var(--fg)" }} title={ioc.value}>
+                {ioc.value}
+              </span>
+              <span className="truncate" style={{ color: "var(--muted)" }}>
+                {ioc.source || "—"}
+              </span>
+              <span className="flex justify-center">
+                <span className={cn("inline-block h-2.5 w-2.5 rounded-full", severityDot(ioc.severity))} />
+              </span>
+              <span className="flex justify-center">
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleToggleEnabled(ioc); }}
+                  className={cn(
+                    "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
+                    ioc.enabled ? "bg-emerald-500" : "bg-neutral-600"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
+                      ioc.enabled ? "translate-x-4" : "translate-x-0.5"
+                    )}
+                  />
+                </button>
+              </span>
+              <span className="font-mono text-center" style={{ color: "var(--fg)" }}>
+                {ioc.hit_count ?? 0}
+              </span>
+              {/* Confidence bar */}
+              <span className="flex items-center gap-1.5">
+                <div className="flex-1 h-1.5 rounded-full bg-white/8 overflow-hidden">
+                  <div
+                    className={cn("h-full rounded-full transition-all", confidenceColor(conf))}
+                    style={{ width: `${conf}%` }}
+                  />
+                </div>
+                <span className="text-[10px] font-mono w-6 text-right shrink-0" style={{ color: "var(--muted)" }}>
+                  {conf}
+                </span>
+              </span>
+              <span className="font-mono truncate" style={{ color: "var(--muted)" }}>
+                {timeAgo(ioc.created_at)}
+              </span>
+              <span className="flex justify-center">
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleDelete(ioc.id); }}
+                  className="rounded p-1 text-red-400/60 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                  title="Delete IOC"
+                >
+                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                </button>
+              </span>
+            </div>
+          );
+        })}
 
         {/* Empty state */}
         {!loading && displayIOCs.length === 0 && (

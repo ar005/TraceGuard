@@ -10,7 +10,7 @@ import {
   eventTypeColor,
   timeAgo,
 } from "@/lib/utils";
-import type { Rule, RuleCondition } from "@/types";
+import type { Rule, RuleCondition, SequenceStep } from "@/types";
 
 /* ---------- Constants ---------- */
 const ALL_EVENT_TYPES = [
@@ -52,10 +52,16 @@ function RuleBuilder({
   const [conditions, setConditions] = useState<RuleCondition[]>([
     { field: "", op: "eq", value: "" },
   ]);
-  const [ruleType, setRuleType] = useState<"match" | "threshold">("match");
+  const [ruleType, setRuleType] = useState<"match" | "threshold" | "sequence">("match");
   const [thresholdCount, setThresholdCount] = useState(5);
   const [thresholdWindow, setThresholdWindow] = useState(60);
   const [groupBy, setGroupBy] = useState("");
+  const [seqWindow, setSeqWindow] = useState(120);
+  const [seqBy, setSeqBy] = useState("chain_id");
+  const [seqSteps, setSeqSteps] = useState<SequenceStep[]>([
+    { event_type: "", conditions: [] },
+    { event_type: "", conditions: [] },
+  ]);
   const [mitreInput, setMitreInput] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -114,6 +120,9 @@ function RuleBuilder({
       threshold_count: ruleType === "threshold" ? thresholdCount : 0,
       threshold_window_s: ruleType === "threshold" ? thresholdWindow : 0,
       group_by: ruleType === "threshold" ? groupBy.trim() : "",
+      sequence_steps: ruleType === "sequence" ? seqSteps : undefined,
+      sequence_window_s: ruleType === "sequence" ? seqWindow : 0,
+      sequence_by: ruleType === "sequence" ? seqBy : "",
     };
 
     setSubmitting(true);
@@ -421,6 +430,22 @@ function RuleBuilder({
           >
             Threshold
           </button>
+          <button
+            onClick={() => setRuleType("sequence")}
+            className={cn(
+              "rounded-md px-3 py-1 text-xs font-semibold transition-all",
+              ruleType === "sequence"
+                ? "bg-fuchsia-500/15 text-fuchsia-400"
+                : "text-neutral-400 hover:text-neutral-200"
+            )}
+            style={
+              ruleType !== "sequence"
+                ? { background: "var(--surface-1)" }
+                : undefined
+            }
+          >
+            Sequence
+          </button>
         </div>
         {ruleType === "threshold" && (
           <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -474,6 +499,141 @@ function RuleBuilder({
                   color: "var(--fg)",
                 }}
               />
+            </div>
+          </div>
+        )}
+        {ruleType === "sequence" && (
+          <div className="mt-3 space-y-4">
+            {/* Sequence window + group-by */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[10px] font-medium mb-1" style={{ color: "var(--muted-fg)" }}>
+                  Sequence Window (seconds)
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  value={seqWindow}
+                  onChange={(e) => setSeqWindow(parseInt(e.target.value) || 0)}
+                  className="w-full rounded-md border px-3 py-1.5 text-xs font-mono outline-none transition-colors focus:border-[var(--primary)]"
+                  style={{
+                    background: "var(--surface-1)",
+                    borderColor: "var(--border)",
+                    color: "var(--fg)",
+                  }}
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-medium mb-1" style={{ color: "var(--muted-fg)" }}>
+                  Group By
+                </label>
+                <select
+                  value={seqBy}
+                  onChange={(e) => setSeqBy(e.target.value)}
+                  className="w-full rounded-md border px-3 py-1.5 text-xs font-mono outline-none transition-colors focus:border-[var(--primary)]"
+                  style={{
+                    background: "var(--surface-1)",
+                    borderColor: "var(--border)",
+                    color: "var(--fg)",
+                  }}
+                >
+                  <option value="chain_id">chain_id</option>
+                  <option value="agent_id">agent_id</option>
+                  <option value="user_uid">user_uid</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Sequence steps */}
+            <div>
+              <div className="text-[10px] font-semibold uppercase tracking-wider mb-2" style={{ color: "var(--muted)" }}>
+                Steps (in order)
+              </div>
+              <div className="space-y-2">
+                {seqSteps.map((step, si) => (
+                  <div
+                    key={si}
+                    className="rounded-md border p-3 space-y-2"
+                    style={{ background: "var(--surface-1)", borderColor: "var(--border)" }}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-semibold" style={{ color: "var(--muted)" }}>
+                        Step {si + 1}
+                      </span>
+                      <button
+                        onClick={() =>
+                          setSeqSteps((prev) => prev.filter((_, i) => i !== si))
+                        }
+                        disabled={seqSteps.length <= 2}
+                        className="rounded p-0.5 text-red-400/60 hover:text-red-400 hover:bg-red-500/15 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+                        title="Remove step"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                      </button>
+                    </div>
+                    <input
+                      type="text"
+                      value={step.event_type}
+                      onChange={(e) =>
+                        setSeqSteps((prev) =>
+                          prev.map((s, i) =>
+                            i === si ? { ...s, event_type: e.target.value } : s
+                          )
+                        )
+                      }
+                      placeholder="Event type, e.g. PROCESS_EXEC"
+                      className="w-full rounded-md border px-3 py-1.5 text-xs font-mono outline-none transition-colors focus:border-[var(--primary)]"
+                      style={{
+                        background: "var(--surface-2)",
+                        borderColor: "var(--border)",
+                        color: "var(--fg)",
+                      }}
+                    />
+                    <textarea
+                      value={
+                        step.conditions.length > 0
+                          ? JSON.stringify(step.conditions, null, 2)
+                          : ""
+                      }
+                      onChange={(e) => {
+                        try {
+                          const parsed = e.target.value.trim()
+                            ? JSON.parse(e.target.value)
+                            : [];
+                          setSeqSteps((prev) =>
+                            prev.map((s, i) =>
+                              i === si ? { ...s, conditions: parsed } : s
+                            )
+                          );
+                        } catch {
+                          // ignore parse errors while user is typing
+                        }
+                      }}
+                      rows={3}
+                      placeholder={`Conditions JSON (optional):\n[{"field":"process.comm","op":"eq","value":"bash"}]`}
+                      className="w-full rounded-md border px-3 py-1.5 text-xs font-mono outline-none transition-colors focus:border-[var(--primary)] resize-y"
+                      style={{
+                        background: "var(--surface-2)",
+                        borderColor: "var(--border)",
+                        color: "var(--fg)",
+                      }}
+                    />
+                  </div>
+                ))}
+              </div>
+              <button
+                onClick={() =>
+                  setSeqSteps((prev) => [...prev, { event_type: "", conditions: [] }])
+                }
+                className="mt-2 rounded-md border px-3 py-1 text-[10px] font-medium transition-colors hover:bg-[var(--surface-2)]"
+                style={{
+                  borderColor: "var(--border)",
+                  color: "var(--primary)",
+                  background: "var(--surface-1)",
+                }}
+              >
+                + Add Step
+              </button>
             </div>
           </div>
         )}
@@ -623,6 +783,51 @@ function RuleDetail({ rule }: { rule: Rule }) {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Sequence settings */}
+      {rule.rule_type === "sequence" && (
+        <div>
+          <div
+            className="text-[10px] font-semibold uppercase tracking-wider mb-2"
+            style={{ color: "var(--muted)" }}
+          >
+            Sequence Steps
+          </div>
+          <div className="space-y-1 mb-2" style={{ color: "var(--fg)" }}>
+            <div>
+              Window:{" "}
+              <span className="font-mono">{rule.sequence_window_s ?? 0}s</span>
+            </div>
+            {rule.sequence_by && (
+              <div>
+                Group By: <span className="font-mono">{rule.sequence_by}</span>
+              </div>
+            )}
+          </div>
+          {rule.sequence_steps && rule.sequence_steps.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {rule.sequence_steps.map((step, idx) => (
+                <div key={idx} className="flex items-center gap-1.5">
+                  <span
+                    className="rounded px-2 py-0.5 text-[10px] font-mono font-semibold"
+                    style={{ background: "var(--surface-2)", color: "var(--primary)" }}
+                  >
+                    {idx + 1}. {step.event_type || "ANY"}
+                    {step.conditions && step.conditions.length > 0 && (
+                      <span className="opacity-60">
+                        {" "}({step.conditions.map((c) => `${c.field} ${c.op} ${c.value}`).join(", ")})
+                      </span>
+                    )}
+                  </span>
+                  {idx < (rule.sequence_steps?.length ?? 0) - 1 && (
+                    <span style={{ color: "var(--muted)" }}>→</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -945,6 +1150,8 @@ export default function RulesPage() {
                     "rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase",
                     rule.rule_type === "threshold"
                       ? "bg-violet-500/15 text-violet-400"
+                      : rule.rule_type === "sequence"
+                      ? "bg-fuchsia-500/15 text-fuchsia-400"
                       : "bg-sky-500/15 text-sky-400"
                   )}
                 >

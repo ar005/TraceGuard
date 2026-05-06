@@ -61,6 +61,11 @@ export interface Alert {
   risk_score?: number;
 }
 
+export interface SequenceStep {
+  event_type: string;
+  conditions: RuleCondition[];
+}
+
 export interface Rule {
   id: string;
   name: string;
@@ -77,6 +82,9 @@ export interface Rule {
   threshold_count: number;
   threshold_window_s: number;
   group_by: string;
+  sequence_steps?: SequenceStep[];
+  sequence_window_s?: number;
+  sequence_by?: string;
 }
 
 export interface RuleCondition {
@@ -152,6 +160,8 @@ export interface IOC {
   enrichment?: IOCEnrichment;
   enriched_at?: string;
   enrichment_ver?: number;
+  confidence?: number;
+  tlp?: string;
 }
 
 export interface IOCStats {
@@ -161,6 +171,8 @@ export interface IOCStats {
   hash_count: number;
   enabled_count: number;
   total_hits: number;
+  stale_count?: number;
+  expiring_soon_count?: number;
 }
 
 export interface Vulnerability {

@@ -38,6 +38,7 @@ import {
   WifiOff,
   Mail,
   ScanSearch,
+  GitBranch,
 } from "lucide-react";
 
 interface NavItem {
@@ -66,7 +67,8 @@ const NAV: NavGroup[] = [
   {
     label: "Investigate",
     items: [
-      { href: "/events",        icon: Activity,  label: "Events" },
+      { href: "/events",        icon: Activity,   label: "Events" },
+      { href: "/chains",        icon: GitBranch,  label: "Chains" },
       { href: "/commands",      icon: Terminal,  label: "Commands" },
       { href: "/browser",       icon: Globe,     label: "Browser" },
       { href: "/usb",           icon: Usb,       label: "USB Devices" },
