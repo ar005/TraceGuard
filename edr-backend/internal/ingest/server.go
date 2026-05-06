@@ -23,6 +23,7 @@ import (
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/peer"
 
+	"github.com/youredr/edr-backend/internal/chainid"
 	"github.com/youredr/edr-backend/internal/configver"
 	"github.com/youredr/edr-backend/internal/detection"
 	"github.com/youredr/edr-backend/internal/liveresponse"
@@ -59,6 +60,7 @@ type Server struct {
 	sseBroker *sse.Broker
 	lr        *liveresponse.Manager
 	sink      EventSink // nil = inline detection (EDR mode); non-nil = NATS pipeline (XDR mode)
+	chains    *chainid.Assigner
 	log       zerolog.Logger
 	grpc      *grpc.Server
 
@@ -85,6 +87,7 @@ func New(st *store.Store, eng *detection.Engine, sb *sse.Broker, lr *liverespons
 		sseBroker: sb,
 		sink:      sink,
 		lr:        lr,
+		chains:    chainid.New(),
 		log:       log.With().Str("component", "ingest").Logger(),
 	}
 
@@ -296,6 +299,24 @@ func (s *Server) processEvent(env *pb.EventEnvelope) {
 		ts = time.Now()
 	}
 
+	// Prefer agent-supplied chain_id (Phase 2+); fall back to backend assigner.
+	chainID := env.ChainID
+	if chainID == "" {
+		chainID = s.chains.Assign(env.AgentID, env.EventType, env.Payload)
+	}
+
+	// Notify assigner of process exit so it can clean up the cache entry.
+	if env.EventType == "PROCESS_EXIT" {
+		var exitPayload struct {
+			Process struct {
+				PID uint32 `json:"pid"`
+			} `json:"process"`
+		}
+		if err := json.Unmarshal(env.Payload, &exitPayload); err == nil && exitPayload.Process.PID != 0 {
+			s.chains.NotifyExit(env.AgentID, exitPayload.Process.PID)
+		}
+	}
+
 	ev := &models.Event{
 		ID:        eventID,
 		AgentID:   env.AgentID,
@@ -303,6 +324,7 @@ func (s *Server) processEvent(env *pb.EventEnvelope) {
 		EventType: env.EventType,
 		Timestamp: ts,
 		Payload:   json.RawMessage(env.Payload),
+		ChainID:   chainID,
 	}
 
 	// Add to batch instead of inserting immediately.
@@ -401,6 +423,11 @@ func (s *Server) flushBatch(batch []*batchEntry) {
 		if b.env.EventType == "PROCESS_EXEC" || b.env.EventType == "PROCESS_FORK" {
 			go s.upsertContainerFromPayload(b.event.AgentID, b.event.Hostname, b.env.Payload)
 		}
+
+		// Upsert chain record for events that carry a chain ID.
+		if b.event.ChainID != "" {
+			go s.upsertChainFromEvent(b.event, b.env.Payload)
+		}
 	}
 }
 
@@ -431,6 +458,54 @@ func (s *Server) upsertContainerFromPayload(agentID, hostname string, payload []
 		Namespace:   p.Process.Namespace,
 	}); err != nil {
 		s.log.Warn().Err(err).Str("container", p.Process.ContainerID).Msg("container upsert failed")
+	}
+}
+
+// upsertChainFromEvent persists a chain record, extracting root process metadata
+// from PROCESS_EXEC payloads. For other event types the chain row is touched
+// (event_count++) but root metadata is left as the zero value.
+func (s *Server) upsertChainFromEvent(ev *models.Event, payload []byte) {
+	chain := &models.Chain{
+		ID:      ev.ChainID,
+		AgentID: ev.AgentID,
+		Hostname: ev.Hostname,
+	}
+
+	if ev.EventType == "PROCESS_EXEC" {
+		var p struct {
+			Process struct {
+				PID       uint32    `json:"pid"`
+				Comm      string    `json:"comm"`
+				Cmdline   string    `json:"cmdline"`
+				StartTime time.Time `json:"start_time"`
+			} `json:"process"`
+			Ancestry []struct {
+				PID       uint32    `json:"pid"`
+				Comm      string    `json:"comm"`
+				Cmdline   string    `json:"cmdline"`
+				StartTime time.Time `json:"start_time"`
+			} `json:"ancestry"`
+		}
+		if err := json.Unmarshal(payload, &p); err == nil {
+			root := p.Process
+			if len(p.Ancestry) > 0 {
+				last := p.Ancestry[len(p.Ancestry)-1]
+				root.PID = last.PID
+				root.Comm = last.Comm
+				root.Cmdline = last.Cmdline
+				root.StartTime = last.StartTime
+			}
+			chain.RootPID = int32(root.PID)
+			chain.RootComm = root.Comm
+			chain.RootCmdline = root.Cmdline
+			chain.RootStartTime = root.StartTime
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.store.UpsertChain(ctx, chain); err != nil {
+		s.log.Debug().Err(err).Str("chain_id", ev.ChainID).Msg("upsert chain failed")
 	}
 }
 

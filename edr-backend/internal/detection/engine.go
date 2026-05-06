@@ -68,6 +68,11 @@ type Engine struct {
 	// dedupMu serialises the FindOpenAlert+insert pair per (rule_id, agent_id) to
 	// prevent duplicate alerts when two events match the same rule concurrently.
 	dedupMu sync.Map // map[string]*dedupEntry
+
+	// Chain-scoped sequence detection state.
+	// seqStates tracks per-(rule, chain) progress through sequence steps.
+	seqMu     sync.Mutex
+	seqStates map[seqStateKey]*chainSeqState
 }
 
 // dedupEntry wraps a per-(rule,agent) mutex with an access timestamp for eviction.
@@ -87,6 +92,7 @@ func New(st *store.Store, log zerolog.Logger, onAlert AlertCallback) *Engine {
 		iocIPs:     make(map[string]*models.IOC),
 		iocDomains: make(map[string]*models.IOC),
 		iocHashes:  make(map[string]*models.IOC),
+		seqStates:  make(map[seqStateKey]*chainSeqState),
 	}
 	// Prune stale windows every 5 minutes to prevent unbounded memory growth.
 	go func() {
@@ -121,6 +127,8 @@ func New(st *store.Store, log zerolog.Logger, onAlert AlertCallback) *Engine {
 			e.reloadIOCs()
 		}
 	}()
+	// Clean up expired chain sequence states once per minute.
+	go e.cleanSeqStates()
 	return e
 }
 
@@ -196,6 +204,8 @@ func (e *Engine) Evaluate(ctx context.Context, ev *models.Event) {
 		switch rule.RuleType {
 		case "threshold":
 			e.evaluateThreshold(ctx, ev, rule, payload)
+		case "sequence":
+			e.evaluateSequence(ctx, ev, rule, payload)
 		default: // "match" or empty
 			e.fireAlert(ctx, ev, rule)
 		}
@@ -249,6 +259,8 @@ func (e *Engine) evaluateWithRulesSlice(ctx context.Context, ev *models.Event, r
 		switch rule.RuleType {
 		case "threshold":
 			e.evaluateThreshold(ctx, ev, rule, payload)
+		case "sequence":
+			e.evaluateSequence(ctx, ev, rule, payload)
 		default: // "match" or empty
 			e.fireAlert(ctx, ev, rule)
 		}
@@ -362,6 +374,8 @@ func (e *Engine) resolveGroupKey(ev *models.Event, payload map[string]interface{
 	switch groupBy {
 	case "agent_id":
 		return ev.AgentID
+	case "chain_id":
+		return ev.ChainID
 	case "hostname":
 		return ev.Hostname
 	case "event_type":
@@ -381,6 +395,21 @@ type sequenceState struct {
 	step      int
 	startedAt time.Time
 	events    []string // event IDs captured so far
+}
+
+// seqStateKey uniquely identifies an in-progress sequence for a given rule
+// and process chain.
+type seqStateKey struct {
+	ruleID  string
+	chainID string
+}
+
+// chainSeqState tracks which step within a chain-scoped sequence rule has been
+// reached and when the sequence started (for window enforcement).
+type chainSeqState struct {
+	nextStep  int       // index of next step to match
+	startedAt time.Time // when step 0 was matched
+	lastEvent string    // event ID of the most recent matched step
 }
 
 // evaluateSequenceCross checks sequence_cross rules against the current XdrEvent.
@@ -434,6 +463,101 @@ func (e *Engine) evaluateSequenceCross(ctx context.Context, ev *models.XdrEvent,
 			continue
 		}
 		e.winMu.Unlock()
+	}
+}
+
+// evaluateSequence handles chain-scoped sequence detection rules (rule_type = "sequence").
+// Events are correlated by chain_id: each step must be satisfied in order within the
+// configured time window.
+func (e *Engine) evaluateSequence(ctx context.Context, ev *models.Event, rule *models.Rule, payload map[string]interface{}) {
+	if ev.ChainID == "" || rule.SequenceSteps == nil || rule.SequenceWindowS <= 0 {
+		return
+	}
+
+	var steps []models.SequenceStep
+	if err := json.Unmarshal(*rule.SequenceSteps, &steps); err != nil || len(steps) == 0 {
+		return
+	}
+
+	key := seqStateKey{ruleID: rule.ID, chainID: ev.ChainID}
+	window := time.Duration(rule.SequenceWindowS) * time.Second
+	now := time.Now()
+
+	e.seqMu.Lock()
+	defer e.seqMu.Unlock()
+
+	state := e.seqStates[key]
+
+	// If state exists but the window has expired, reset it.
+	if state != nil && now.Sub(state.startedAt) > window {
+		delete(e.seqStates, key)
+		state = nil
+	}
+
+	// Determine which step we are waiting to match next.
+	nextStep := 0
+	if state != nil {
+		nextStep = state.nextStep
+	}
+	if nextStep >= len(steps) {
+		return
+	}
+
+	step := steps[nextStep]
+
+	// Check event type filter for this step.
+	if step.EventType != "" && step.EventType != ev.EventType {
+		return
+	}
+
+	// Check per-step conditions (AND logic, same as matchesAll).
+	for _, cond := range step.Conditions {
+		if !e.matchCondition(payload, cond) {
+			return
+		}
+	}
+
+	// Step matched — advance the state.
+	if nextStep == 0 {
+		// First step: create new state.
+		e.seqStates[key] = &chainSeqState{
+			nextStep:  1,
+			startedAt: now,
+			lastEvent: ev.ID,
+		}
+	} else {
+		state.nextStep++
+		state.lastEvent = ev.ID
+	}
+
+	// Check if all steps are now complete.
+	if nextStep+1 == len(steps) {
+		delete(e.seqStates, key)
+		e.log.Warn().
+			Str("rule", rule.Name).
+			Str("chain_id", ev.ChainID).
+			Int("steps", len(steps)).
+			Msg("chain sequence rule fired")
+		e.fireAlertWithContext(ctx, ev, rule,
+			fmt.Sprintf("sequence matched %d steps within %ds on chain %s", len(steps), rule.SequenceWindowS, ev.ChainID))
+	}
+}
+
+// cleanSeqStates periodically removes chain sequence states that have been idle
+// longer than 24 hours (generous backstop — actual window enforcement happens per
+// event in evaluateSequence).
+func (e *Engine) cleanSeqStates() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		cutoff := time.Now().Add(-24 * time.Hour)
+		e.seqMu.Lock()
+		for k, v := range e.seqStates {
+			if v.startedAt.Before(cutoff) {
+				delete(e.seqStates, k)
+			}
+		}
+		e.seqMu.Unlock()
 	}
 }
 
@@ -635,6 +759,122 @@ func (e *Engine) fireAlertWithContext(ctx context.Context, ev *models.Event, rul
 		Msg("rule fired — new alert")
 
 	if e.onAlert != nil { e.onAlert(ctx, alert) }
+
+	// Async IOC enrichment: look up event observables against in-memory IOC
+	// cache and attach any matches to the alert's enrichments column.
+	go e.enrichRuleAlert(alertID, ev)
+}
+
+// enrichRuleAlert looks up event observables (IPs, domains, hashes) against
+// the in-memory IOC cache and writes matching intel into the alert's enrichments
+// column. Called as a goroutine from fireAlertWithContext so it never blocks
+// the detection hot path.
+func (e *Engine) enrichRuleAlert(alertID string, ev *models.Event) {
+	e.iocMu.RLock()
+	ips    := e.iocIPs
+	doms   := e.iocDomains
+	hashes := e.iocHashes
+	e.iocMu.RUnlock()
+
+	var payload map[string]interface{}
+	if len(ev.Payload) > 0 {
+		_ = json.Unmarshal(ev.Payload, &payload)
+	}
+
+	type iocMatch struct {
+		Value  string `json:"value"`
+		Type   string `json:"type"`
+		Field  string `json:"field"`
+		Source string `json:"source,omitempty"`
+	}
+	var matches []iocMatch
+	var firstIOC *models.IOC
+	// Track matched IOC IDs to propagate hit counts to feeds.
+	hitIDs := map[string]struct{}{}
+
+	strVal := func(key string) string {
+		if v, ok := payload[key]; ok && v != nil {
+			return fmt.Sprintf("%v", v)
+		}
+		return ""
+	}
+	checkIP := func(field, val string) {
+		val = strings.ToLower(strings.TrimSpace(val))
+		if val == "" { return }
+		if ioc, ok := ips[val]; ok {
+			matches = append(matches, iocMatch{Value: val, Type: "ip", Field: field, Source: ioc.Source})
+			hitIDs[ioc.ID] = struct{}{}
+			if firstIOC == nil { firstIOC = ioc }
+		}
+	}
+	checkDomain := func(field, val string) {
+		val = strings.ToLower(strings.TrimSpace(val))
+		if val == "" { return }
+		if ioc, ok := doms[val]; ok {
+			matches = append(matches, iocMatch{Value: val, Type: "domain", Field: field, Source: ioc.Source})
+			hitIDs[ioc.ID] = struct{}{}
+			if firstIOC == nil { firstIOC = ioc }
+		}
+	}
+	checkHash := func(field, val string) {
+		val = strings.ToLower(strings.TrimSpace(val))
+		if val == "" { return }
+		if ioc, ok := hashes[val]; ok {
+			matches = append(matches, iocMatch{Value: val, Type: ioc.Type, Field: field, Source: ioc.Source})
+			hitIDs[ioc.ID] = struct{}{}
+			if firstIOC == nil { firstIOC = ioc }
+		}
+	}
+
+	// Struct-level network fields.
+	if ev.SrcIP != nil { checkIP("src_ip", *ev.SrcIP) }
+	if ev.DstIP != nil { checkIP("dst_ip", *ev.DstIP) }
+
+	// Payload fields.
+	for _, f := range []string{"src_ip", "dst_ip"} { checkIP(f, strVal(f)) }
+	for _, f := range []string{"dns_query", "resolved_domain", "query"} { checkDomain(f, strVal(f)) }
+	for _, f := range []string{"exe_hash", "hash_after", "hash_before"} { checkHash(f, strVal(f)) }
+
+	enrichMap := map[string]interface{}{}
+
+	if len(matches) > 0 {
+		enrichMap["ioc_matches"] = matches
+		if firstIOC != nil {
+			enrichMap["intel_context"] = json.RawMessage(inteltask.BuildIOCIntelContext(firstIOC))
+		}
+	}
+
+	// Attach chain ID if the triggering event belongs to a chain.
+	if ev.ChainID != "" {
+		enrichMap["chain_id"] = ev.ChainID
+	}
+
+	if len(enrichMap) == 0 {
+		return
+	}
+
+	b, err := json.Marshal(enrichMap)
+	if err != nil {
+		return
+	}
+	tenantID := ev.TenantID
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	if err := e.store.UpdateAlertEnrichments(context.Background(), alertID, tenantID, json.RawMessage(b)); err != nil {
+		e.log.Warn().Err(err).Str("alert", alertID).Msg("enrichRuleAlert: failed to write enrichments")
+	}
+
+	// Propagate hit counts for all matched IOCs (and their originating feeds).
+	for id := range hitIDs {
+		iocID := id
+		go func() { _ = e.store.IncrIOCHits(context.Background(), iocID) }()
+	}
+
+	// Increment chain alert counter.
+	if ev.ChainID != "" {
+		go func() { _ = e.store.IncrChainAlertCount(context.Background(), ev.ChainID) }()
+	}
 }
 
 // ─── IOC matching ─────────────────────────────────────────────────────────────

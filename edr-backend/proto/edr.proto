@@ -17,6 +17,7 @@ message EventEnvelope {
   bytes   payload     = 6;  // JSON-encoded typed event struct
   string  os          = 7;  // linux / windows / darwin
   string  agent_ver   = 8;  // semver
+  string  chain_id    = 9;  // assigned by agent (Phase 2+); empty = backend will assign
 }
 
 // ─── Heartbeat ────────────────────────────────────────────────────────────────

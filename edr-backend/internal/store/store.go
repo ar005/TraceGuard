@@ -128,10 +128,10 @@ func (s *Store) ListAgents(ctx context.Context) ([]models.Agent, error) {
 
 func (s *Store) InsertEvent(ctx context.Context, e *models.Event) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO events (id, agent_id, hostname, event_type, timestamp, payload, received_at, severity, rule_id, alert_id)
-		VALUES ($1,$2,$3,$4,$5,$6,NOW(),$7,$8,$9)
+		INSERT INTO events (id, agent_id, hostname, event_type, timestamp, payload, received_at, severity, rule_id, alert_id, chain_id)
+		VALUES ($1,$2,$3,$4,$5,$6,NOW(),$7,$8,$9,$10)
 		ON CONFLICT (id) DO NOTHING
-	`, e.ID, e.AgentID, e.Hostname, e.EventType, e.Timestamp, e.Payload, e.Severity, e.RuleID, e.AlertID)
+	`, e.ID, e.AgentID, e.Hostname, e.EventType, e.Timestamp, e.Payload, e.Severity, e.RuleID, e.AlertID, e.ChainID)
 	return err
 }
 
@@ -144,8 +144,8 @@ func (s *Store) InsertEventBatch(ctx context.Context, events []*models.Event) er
 	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO events (id, agent_id, hostname, event_type, timestamp, payload, received_at, severity, rule_id, alert_id)
-		VALUES ($1,$2,$3,$4,$5,$6,NOW(),$7,$8,$9)
+		INSERT INTO events (id, agent_id, hostname, event_type, timestamp, payload, received_at, severity, rule_id, alert_id, chain_id)
+		VALUES ($1,$2,$3,$4,$5,$6,NOW(),$7,$8,$9,$10)
 		ON CONFLICT (id) DO NOTHING
 	`)
 	if err != nil {
@@ -156,7 +156,7 @@ func (s *Store) InsertEventBatch(ctx context.Context, events []*models.Event) er
 	for _, e := range events {
 		if _, err := stmt.ExecContext(ctx,
 			e.ID, e.AgentID, e.Hostname, e.EventType, e.Timestamp,
-			e.Payload, e.Severity, e.RuleID, e.AlertID,
+			e.Payload, e.Severity, e.RuleID, e.AlertID, e.ChainID,
 		); err != nil {
 			return err
 		}
@@ -362,6 +362,7 @@ type QueryAlertsParams struct {
 	RuleID   string
 	Search   string
 	TenantID string
+	ChainID  string
 	Limit    int
 	Offset   int
 }
@@ -403,6 +404,11 @@ func (s *Store) QueryAlerts(ctx context.Context, p QueryAlertsParams) ([]models.
 	if p.TenantID != "" {
 		query += fmt.Sprintf(" AND tenant_id = $%d", argN)
 		args = append(args, p.TenantID)
+		argN++
+	}
+	if p.ChainID != "" {
+		query += fmt.Sprintf(" AND chain_id = $%d", argN)
+		args = append(args, p.ChainID)
 		argN++
 	}
 
@@ -1917,18 +1923,28 @@ func (s *Store) GetVulnStats(ctx context.Context, agentID string) (*models.VulnS
 // ─── IOCs (Indicators of Compromise) ──────────────────────────────────────────
 
 func (s *Store) InsertIOC(ctx context.Context, ioc *models.IOC) error {
+	conf := ioc.Confidence
+	if conf == 0 {
+		conf = 50
+	}
+	tlp := ioc.TLP
+	if tlp == "" {
+		tlp = "AMBER"
+	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO iocs (id, type, value, source, severity, description, tags, enabled, expires_at, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		INSERT INTO iocs (id, type, value, source, severity, description, tags, enabled, expires_at, created_at, confidence, tlp)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 		ON CONFLICT (type, value) DO UPDATE SET
 			source      = EXCLUDED.source,
 			severity    = EXCLUDED.severity,
 			description = EXCLUDED.description,
 			tags        = EXCLUDED.tags,
 			enabled     = EXCLUDED.enabled,
-			expires_at  = EXCLUDED.expires_at
+			expires_at  = EXCLUDED.expires_at,
+			confidence  = EXCLUDED.confidence,
+			tlp         = EXCLUDED.tlp
 	`, ioc.ID, ioc.Type, ioc.Value, ioc.Source, ioc.Severity, ioc.Description,
-		pq.Array(coalesceStringSlice(ioc.Tags)), ioc.Enabled, ioc.ExpiresAt, ioc.CreatedAt)
+		pq.Array(coalesceStringSlice(ioc.Tags)), ioc.Enabled, ioc.ExpiresAt, ioc.CreatedAt, conf, tlp)
 	return err
 }
 
@@ -2311,7 +2327,102 @@ func (s *Store) UpsertCVE(ctx context.Context, c *models.CVEDetail) error {
 func (s *Store) IncrIOCHits(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE iocs SET hit_count = hit_count + 1, last_hit_at = NOW() WHERE id=$1`, id)
+	if err != nil {
+		return err
+	}
+	// Propagate hit to the TAXII feed whose name matches this IOC's source field.
+	_, _ = s.db.ExecContext(ctx, `
+		UPDATE taxii_feeds SET hit_count = hit_count + 1, last_hit_at = NOW()
+		WHERE name = (SELECT source FROM iocs WHERE id = $1)`, id)
+	return nil
+}
+
+// BulkRetireIOCs disables a list of IOCs by ID, returning the count affected.
+func (s *Store) BulkRetireIOCs(ctx context.Context, ids []string) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE iocs SET enabled=FALSE WHERE id = ANY($1)`, pq.Array(ids))
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// RefreshFeedQualityScores recomputes quality_score for all TAXII feeds.
+// Score = hit_rate (0-80 pts) + recency (0-20 pts).
+// hit_rate = min(80, hit_count * 80 / max(1, ioc_count))
+// recency = 20 pts if hit in last 30 days, scaled down linearly to 0 at 90 days.
+func (s *Store) RefreshFeedQualityScores(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE taxii_feeds SET quality_score = GREATEST(0, LEAST(100,
+			-- hit rate component (0-80)
+			CASE WHEN ioc_count > 0 THEN (hit_count * 80 / ioc_count) ELSE 0 END
+			+
+			-- recency component (0-20): full 20 pts if hit in last 30 days, zero after 90 days
+			CASE
+				WHEN last_hit_at IS NULL THEN 0
+				WHEN last_hit_at >= NOW() - INTERVAL '30 days' THEN 20
+				WHEN last_hit_at >= NOW() - INTERVAL '90 days' THEN
+					20 - (EXTRACT(EPOCH FROM (NOW() - last_hit_at)) / 86400 - 30) * 20 / 60
+				ELSE 0
+			END
+		))
+	`)
 	return err
+}
+
+// AutoDisableStaleFeeds disables TAXII feeds that have been enabled for 60+ days
+// without a single IOC hit, returning the count disabled.
+func (s *Store) AutoDisableStaleFeeds(ctx context.Context) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE taxii_feeds SET enabled = FALSE
+		WHERE enabled = TRUE
+		  AND ioc_count > 0
+		  AND hit_count = 0
+		  AND last_polled_at IS NOT NULL
+		  AND last_polled_at < NOW() - INTERVAL '60 days'`)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// DecayStaleIOCs runs the IOC lifecycle maintenance:
+//  1. Expires IOCs whose expires_at has passed (disables them).
+//  2. Decays confidence by 10 for enabled IOCs not hit in the last 30 days.
+//  3. Disables IOCs whose confidence has reached 0.
+//
+// Returns the number of IOCs expired and the number whose confidence was decayed.
+func (s *Store) DecayStaleIOCs(ctx context.Context) (expired, decayed int64, err error) {
+	// Step 1: disable expired IOCs.
+	r1, e := s.db.ExecContext(ctx,
+		`UPDATE iocs SET enabled=FALSE WHERE expires_at IS NOT NULL AND expires_at < NOW() AND enabled=TRUE`)
+	if e != nil {
+		return 0, 0, e
+	}
+	expired, _ = r1.RowsAffected()
+
+	// Step 2: reduce confidence for IOCs that haven't had a hit in 30+ days.
+	r2, e := s.db.ExecContext(ctx, `
+		UPDATE iocs
+		SET confidence = GREATEST(0, confidence - 10)
+		WHERE enabled=TRUE
+		  AND hit_count > 0
+		  AND (last_hit_at IS NULL OR last_hit_at < NOW() - INTERVAL '30 days')`)
+	if e != nil {
+		return expired, 0, e
+	}
+	decayed, _ = r2.RowsAffected()
+
+	// Step 3: disable IOCs that have decayed to zero confidence.
+	_, e = s.db.ExecContext(ctx,
+		`UPDATE iocs SET enabled=FALSE WHERE confidence = 0 AND enabled=TRUE`)
+	if e != nil {
+		return expired, decayed, e
+	}
+	return expired, decayed, nil
 }
 
 // IOCStatsBySource returns IOC counts grouped by source, optionally filtered by time range.
@@ -2345,7 +2456,9 @@ func (s *Store) IOCStats(ctx context.Context) (*models.IOCStats, error) {
 			COUNT(*) FILTER (WHERE type='domain')          AS domain_count,
 			COUNT(*) FILTER (WHERE type IN ('hash_sha256','hash_md5')) AS hash_count,
 			COUNT(*) FILTER (WHERE enabled=TRUE)           AS enabled_count,
-			COALESCE(SUM(hit_count), 0)                    AS total_hits
+			COALESCE(SUM(hit_count), 0)                    AS total_hits,
+			COUNT(*) FILTER (WHERE enabled=TRUE AND (last_hit_at IS NULL OR last_hit_at < NOW() - INTERVAL '30 days') AND hit_count > 0) AS stale_count,
+			COUNT(*) FILTER (WHERE enabled=TRUE AND expires_at IS NOT NULL AND expires_at BETWEEN NOW() AND NOW() + INTERVAL '7 days') AS expiring_soon_count
 		FROM iocs
 	`)
 	return &stats, err
@@ -5137,4 +5250,126 @@ func (s *Store) ListTAXIIPollRuns(ctx context.Context, feedID, tenantID string, 
 		`SELECT * FROM taxii_poll_runs WHERE feed_id=$1 AND tenant_id=$2 ORDER BY started_at DESC LIMIT $3`,
 		feedID, tenantID, limit)
 	return rows, err
+}
+
+// ─── ChainID ──────────────────────────────────────────────────────────────────
+
+// UpsertChain inserts or updates a chain record, incrementing event_count by 1
+// and refreshing last_seen.
+func (s *Store) UpsertChain(ctx context.Context, c *models.Chain) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO chains (id, agent_id, tenant_id, hostname, root_pid, root_comm, root_cmdline, root_start_time)
+		VALUES ($1, $2,
+		        COALESCE((SELECT tenant_id FROM agents WHERE agent_id=$2 LIMIT 1), ''),
+		        $3, $4, $5, $6, $7)
+		ON CONFLICT (id) DO UPDATE SET
+			event_count = chains.event_count + 1,
+			last_seen   = NOW(),
+			is_active   = TRUE
+	`, c.ID, c.AgentID, c.Hostname, c.RootPID, c.RootComm, c.RootCmdline, c.RootStartTime)
+	return err
+}
+
+// GetChain returns a single chain by ID for the given tenant.
+func (s *Store) GetChain(ctx context.Context, id, tenantID string) (*models.Chain, error) {
+	var c models.Chain
+	err := s.rdb().GetContext(ctx, &c,
+		`SELECT * FROM chains WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// ListChainsParams defines filters for chain list queries.
+type ListChainsParams struct {
+	TenantID  string
+	AgentID   string
+	Hostname  string
+	RootComm  string
+	Active    *bool
+	HasAlerts *bool
+	Limit     int
+	Offset    int
+}
+
+// ListChains returns matching chains ordered newest-first.
+func (s *Store) ListChains(ctx context.Context, p ListChainsParams) ([]models.ChainSummary, int, error) {
+	if p.Limit == 0 {
+		p.Limit = 50
+	}
+
+	where := "tenant_id=$1"
+	args := []any{p.TenantID}
+	n := 2
+
+	if p.AgentID != "" {
+		where += fmt.Sprintf(" AND agent_id=$%d", n)
+		args = append(args, p.AgentID)
+		n++
+	}
+	if p.Hostname != "" {
+		where += fmt.Sprintf(" AND hostname ILIKE $%d", n)
+		args = append(args, "%"+p.Hostname+"%")
+		n++
+	}
+	if p.RootComm != "" {
+		where += fmt.Sprintf(" AND (root_comm ILIKE $%d OR root_cmdline ILIKE $%d)", n, n)
+		args = append(args, "%"+p.RootComm+"%")
+		n++
+	}
+	if p.Active != nil {
+		where += fmt.Sprintf(" AND is_active=$%d", n)
+		args = append(args, *p.Active)
+		n++
+	}
+	if p.HasAlerts != nil {
+		if *p.HasAlerts {
+			where += " AND alert_count > 0"
+		} else {
+			where += " AND alert_count = 0"
+		}
+	}
+
+	var total int
+	if err := s.rdb().GetContext(ctx, &total,
+		"SELECT COUNT(*) FROM chains WHERE "+where, args...); err != nil {
+		return nil, 0, err
+	}
+
+	args = append(args, p.Limit, p.Offset)
+	var rows []models.ChainSummary
+	err := s.rdb().SelectContext(ctx, &rows,
+		`SELECT id, agent_id, hostname, root_comm, root_cmdline,
+		        first_seen, last_seen, event_count, alert_count, is_active
+		 FROM chains WHERE `+where+
+			fmt.Sprintf(` ORDER BY last_seen DESC LIMIT $%d OFFSET $%d`, n, n+1),
+		args...)
+	return rows, total, err
+}
+
+// GetChainEvents returns events belonging to a chain, newest-first.
+func (s *Store) GetChainEvents(ctx context.Context, chainID, tenantID string, limit, offset int) ([]models.Event, error) {
+	if limit == 0 {
+		limit = 100
+	}
+	var rows []models.Event
+	err := s.rdb().SelectContext(ctx, &rows, `
+		SELECT e.id, e.agent_id, e.hostname, e.event_type, e.timestamp,
+		       e.payload, e.received_at, e.severity, e.rule_id, e.alert_id, e.chain_id
+		FROM events e
+		JOIN agents a ON a.agent_id = e.agent_id AND a.tenant_id = $2
+		WHERE e.chain_id = $1
+		ORDER BY e.timestamp ASC
+		LIMIT $3 OFFSET $4
+	`, chainID, tenantID, limit, offset)
+	return rows, err
+}
+
+// IncrChainAlertCount increments the alert counter on a chain.
+func (s *Store) IncrChainAlertCount(ctx context.Context, chainID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE chains SET alert_count = alert_count + 1, last_seen = NOW() WHERE id=$1`,
+		chainID)
+	return err
 }

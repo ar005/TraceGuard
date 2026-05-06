@@ -56,6 +56,38 @@ type Event struct {
 	ProcessName string          `db:"process_name" json:"process_name,omitempty"`
 	RawLog      string          `db:"raw_log"      json:"raw_log,omitempty"`
 	Enrichments json.RawMessage `db:"enrichments"  json:"enrichments,omitempty"`
+	ChainID     string          `db:"chain_id"     json:"chain_id,omitempty"`
+}
+
+// Chain represents a causal execution chain (ChainID feature).
+type Chain struct {
+	ID            string    `db:"id"              json:"id"`
+	AgentID       string    `db:"agent_id"        json:"agent_id"`
+	TenantID      string    `db:"tenant_id"       json:"tenant_id"`
+	Hostname      string    `db:"hostname"        json:"hostname"`
+	RootPID       int32     `db:"root_pid"        json:"root_pid"`
+	RootComm      string    `db:"root_comm"       json:"root_comm"`
+	RootCmdline   string    `db:"root_cmdline"    json:"root_cmdline"`
+	RootStartTime time.Time `db:"root_start_time" json:"root_start_time"`
+	FirstSeen     time.Time `db:"first_seen"      json:"first_seen"`
+	LastSeen      time.Time `db:"last_seen"       json:"last_seen"`
+	EventCount    int       `db:"event_count"     json:"event_count"`
+	AlertCount    int       `db:"alert_count"     json:"alert_count"`
+	IsActive      bool      `db:"is_active"       json:"is_active"`
+}
+
+// ChainSummary is a lightweight view used in list responses.
+type ChainSummary struct {
+	ID          string    `db:"id"          json:"id"`
+	AgentID     string    `db:"agent_id"    json:"agent_id"`
+	Hostname    string    `db:"hostname"    json:"hostname"`
+	RootComm    string    `db:"root_comm"   json:"root_comm"`
+	RootCmdline string    `db:"root_cmdline" json:"root_cmdline"`
+	FirstSeen   time.Time `db:"first_seen"  json:"first_seen"`
+	LastSeen    time.Time `db:"last_seen"   json:"last_seen"`
+	EventCount  int       `db:"event_count" json:"event_count"`
+	AlertCount  int       `db:"alert_count" json:"alert_count"`
+	IsActive    bool      `db:"is_active"   json:"is_active"`
 }
 
 // Alert represents a security alert.
@@ -208,6 +240,8 @@ type IOC struct {
 	EnrichmentVer int16           `db:"enrichment_ver" json:"enrichment_ver"`
 	ActorID    *string `db:"actor_id"    json:"actor_id,omitempty"`
 	CampaignID *string `db:"campaign_id" json:"campaign_id,omitempty"`
+	Confidence int16   `db:"confidence"  json:"confidence"`
+	TLP        string  `db:"tlp"         json:"tlp,omitempty"`
 }
 
 
@@ -229,12 +263,14 @@ type YARARule struct {
 
 // IOCStats holds IOC counts by type.
 type IOCStats struct {
-	TotalIOCs    int64 `db:"total_iocs"    json:"total_iocs"`
-	IPCount      int64 `db:"ip_count"      json:"ip_count"`
-	DomainCount  int64 `db:"domain_count"  json:"domain_count"`
-	HashCount    int64 `db:"hash_count"    json:"hash_count"`
-	EnabledCount int64 `db:"enabled_count" json:"enabled_count"`
-	TotalHits    int64 `db:"total_hits"    json:"total_hits"`
+	TotalIOCs        int64 `db:"total_iocs"          json:"total_iocs"`
+	IPCount          int64 `db:"ip_count"            json:"ip_count"`
+	DomainCount      int64 `db:"domain_count"        json:"domain_count"`
+	HashCount        int64 `db:"hash_count"          json:"hash_count"`
+	EnabledCount     int64 `db:"enabled_count"       json:"enabled_count"`
+	TotalHits        int64 `db:"total_hits"          json:"total_hits"`
+	StaleCount       int64 `db:"stale_count"         json:"stale_count"`
+	ExpiringSoon     int64 `db:"expiring_soon_count" json:"expiring_soon_count"`
 }
 
 // IOCSourceStats holds per-source IOC statistics.
@@ -835,6 +871,9 @@ type TAXIIFeed struct {
 	IOCCount     int        `db:"ioc_count"      json:"ioc_count"`
 	LastError    string     `db:"last_error"     json:"last_error"`
 	CreatedAt    time.Time  `db:"created_at"     json:"created_at"`
+	HitCount     int        `db:"hit_count"      json:"hit_count"`
+	LastHitAt    *time.Time `db:"last_hit_at"    json:"last_hit_at,omitempty"`
+	QualityScore int16      `db:"quality_score"  json:"quality_score"`
 }
 
 // TAXIIPollRun records one polling attempt against a TAXIIFeed.

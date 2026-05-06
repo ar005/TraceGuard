@@ -297,6 +297,7 @@ func (s *Server) registerRoutes() {
 
 			w.POST("/iocs",          s.handleCreateIOC)
 			w.POST("/iocs/bulk",     strictRateLimitMiddleware(), s.handleBulkImportIOCs)
+			w.POST("/iocs/bulk-retire", s.handleBulkRetireIOCs)
 			w.DELETE("/iocs/:id",    s.handleDeleteIOC)
 			w.DELETE("/iocs/source/:source", s.handleDeleteIOCsBySource)
 			w.POST("/iocs/feeds/sync",       strictRateLimitMiddleware(), s.handleSyncFeeds)
@@ -510,6 +511,12 @@ func (s *Server) registerRoutes() {
 		// Global task views (across all agents)
 		v1.GET("/tasks",         s.handleListAllTasks)
 		v1.GET("/tasks/history", s.handleListAllTaskHistory)
+
+		// Chain ID — causal execution chains
+		v1.GET("/chains",              s.handleListChains)
+		v1.GET("/chains/:id",          s.handleGetChain)
+		v1.GET("/chains/:id/events",   s.handleGetChainEvents)
+		v1.GET("/events/:id/chain",    s.handleGetEventChain)
 	}
 
 	// Canary trigger webhook — NO auth (honeypot callback)
@@ -1463,6 +1470,7 @@ func (s *Server) handleListAlerts(c *gin.Context) {
 		Status:   c.Query("status"),
 		RuleID:   c.Query("rule_id"),
 		Search:   c.Query("search"),
+		ChainID:  c.Query("chain_id"),
 		TenantID: tid,
 		Limit:    intQuery(c, "limit", 50),
 		Offset:   intQuery(c, "offset", 0),
@@ -3121,6 +3129,34 @@ func (s *Server) handleBulkImportIOCs(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"imported": count, "total_submitted": len(req.IOCs)})
 }
 
+// POST /api/v1/iocs/bulk-retire
+func (s *Server) handleBulkRetireIOCs(c *gin.Context) {
+	var req struct {
+		IDs []string `json:"ids" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if len(req.IDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ids must not be empty"})
+		return
+	}
+	if len(req.IDs) > 1000 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "maximum 1000 IDs per request"})
+		return
+	}
+	count, err := s.store.BulkRetireIOCs(c.Request.Context(), req.IDs)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	actorID, actorName := currentUser(c)
+	s.al.Log(c.Request.Context(), actorID, actorName, "ioc_bulk_retire", "iocs", "", "", c.ClientIP(),
+		fmt.Sprintf("retired %d IOCs", count))
+	c.JSON(http.StatusOK, gin.H{"retired": count})
+}
+
 // DELETE /api/v1/iocs/:id
 func (s *Server) handleDeleteIOC(c *gin.Context) {
 	id := c.Param("id")
@@ -3708,4 +3744,105 @@ func (s *Server) handleComplianceCoverage(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, report)
+}
+
+// ── ChainID handlers ──────────────────────────────────────────────────────────
+
+// queryInt parses an integer query parameter, returning def on parse failure.
+func queryInt(c *gin.Context, key string, def int) int {
+	if v := c.Query(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return def
+}
+
+// GET /api/v1/chains
+func (s *Server) handleListChains(c *gin.Context) {
+	tid := c.GetString("tenant_id")
+	p := store.ListChainsParams{
+		TenantID: tid,
+		AgentID:  c.Query("agent_id"),
+		Hostname: c.Query("hostname"),
+		RootComm: c.Query("root_comm"),
+		Limit:    queryInt(c, "limit", 50),
+		Offset:   queryInt(c, "offset", 0),
+	}
+	if v := c.Query("active"); v == "true" {
+		t := true
+		p.Active = &t
+	} else if v == "false" {
+		f := false
+		p.Active = &f
+	}
+	if v := c.Query("has_alerts"); v == "true" {
+		t := true
+		p.HasAlerts = &t
+	} else if v == "false" {
+		f := false
+		p.HasAlerts = &f
+	}
+	rows, total, err := s.store.ListChains(c.Request.Context(), p)
+	if err != nil {
+		s.log.Error().Err(err).Msg("list chains")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"chains": rows, "total": total})
+}
+
+// GET /api/v1/chains/:id
+func (s *Server) handleGetChain(c *gin.Context) {
+	tid := c.GetString("tenant_id")
+	chain, err := s.store.GetChain(c.Request.Context(), c.Param("id"), tid)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "chain not found"})
+		return
+	}
+	c.JSON(http.StatusOK, chain)
+}
+
+// GET /api/v1/chains/:id/events
+func (s *Server) handleGetChainEvents(c *gin.Context) {
+	tid := c.GetString("tenant_id")
+	chainID := c.Param("id")
+	limit  := queryInt(c, "limit", 200)
+	offset := queryInt(c, "offset", 0)
+
+	// Verify the chain belongs to this tenant before returning events.
+	if _, err := s.store.GetChain(c.Request.Context(), chainID, tid); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "chain not found"})
+		return
+	}
+
+	events, err := s.store.GetChainEvents(c.Request.Context(), chainID, tid, limit, offset)
+	if err != nil {
+		s.log.Error().Err(err).Str("chain_id", chainID).Msg("get chain events")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"events": events, "chain_id": chainID})
+}
+
+// GET /api/v1/events/:id/chain — returns the chain that an event belongs to
+func (s *Server) handleGetEventChain(c *gin.Context) {
+	tid := c.GetString("tenant_id")
+	eventID := c.Param("id")
+
+	ev, err := s.store.GetEvent(c.Request.Context(), eventID, tid)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "event not found"})
+		return
+	}
+	if ev.ChainID == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "event has no chain"})
+		return
+	}
+	chain, err := s.store.GetChain(c.Request.Context(), ev.ChainID, tid)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "chain not found"})
+		return
+	}
+	c.JSON(http.StatusOK, chain)
 }

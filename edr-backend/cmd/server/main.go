@@ -52,6 +52,7 @@ import (
 	"github.com/youredr/edr-backend/internal/riskhist"
 	"github.com/youredr/edr-backend/internal/baseline"
 	"github.com/youredr/edr-backend/internal/huntscheduler"
+	"github.com/youredr/edr-backend/internal/ioclifecycle"
 	"github.com/youredr/edr-backend/internal/intelreplay"
 	"github.com/youredr/edr-backend/internal/inteltask"
 	"github.com/youredr/edr-backend/internal/surface"
@@ -564,6 +565,9 @@ func main() {
 	// Hunt scheduler — runs saved hunts on cron schedules and fires alerts on hits.
 	huntSched := huntscheduler.New(st, logger)
 	go huntSched.Run(detectorCtx)
+
+	// IOC lifecycle — nightly confidence decay and expiry.
+	go ioclifecycle.New(st, logger).Run(detectorCtx)
 
 	// TAXII poller — pulls STIX indicators from external TAXII 2.1 feeds.
 	taxiiPoller := taxii.NewPoller(st, logger)

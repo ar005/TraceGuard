@@ -23,6 +23,7 @@ type EventEnvelope struct {
 	Payload   []byte `json:"payload"`
 	OS        string `json:"os"`
 	AgentVer  string `json:"agent_ver"`
+	ChainID   string `json:"chain_id,omitempty"`
 }
 
 type HeartbeatRequest struct {

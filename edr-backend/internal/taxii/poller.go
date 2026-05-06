@@ -111,6 +111,7 @@ func (p *Poller) fetch(ctx context.Context, f *models.TAXIIFeed) (fetched, impor
 		if ioc == nil {
 			continue
 		}
+		ioc.Source = f.Name // use feed name so hits can be traced back
 		if uerr := p.st.InsertIOC(ctx, ioc); uerr != nil {
 			p.log.Warn().Err(uerr).Str("ioc", ioc.Value).Msg("taxii: insert ioc")
 			continue

@@ -2094,6 +2094,96 @@ CREATE INDEX IF NOT EXISTS tpr_feed_idx   ON taxii_poll_runs(feed_id, started_at
 CREATE INDEX IF NOT EXISTS tpr_tenant_idx ON taxii_poll_runs(tenant_id, started_at DESC);
 `,
 	},
+	{
+		name: "intel_phase9_feed_quality",
+		sql: `
+ALTER TABLE taxii_feeds ADD COLUMN IF NOT EXISTS hit_count    INT          NOT NULL DEFAULT 0;
+ALTER TABLE taxii_feeds ADD COLUMN IF NOT EXISTS last_hit_at  TIMESTAMPTZ;
+ALTER TABLE taxii_feeds ADD COLUMN IF NOT EXISTS quality_score SMALLINT    NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS tf_quality_idx ON taxii_feeds(quality_score) WHERE enabled = TRUE;
+`,
+	},
+	{
+		name: "chainid_phase1",
+		sql: `
+ALTER TABLE events ADD COLUMN IF NOT EXISTS chain_id TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS events_chain_id_idx ON events(chain_id) WHERE chain_id != '';
+
+CREATE TABLE IF NOT EXISTS chains (
+    id              TEXT        PRIMARY KEY,
+    agent_id        TEXT        NOT NULL,
+    tenant_id       TEXT        NOT NULL DEFAULT '',
+    hostname        TEXT        NOT NULL DEFAULT '',
+    root_pid        INT         NOT NULL DEFAULT 0,
+    root_comm       TEXT        NOT NULL DEFAULT '',
+    root_cmdline    TEXT        NOT NULL DEFAULT '',
+    root_start_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    first_seen      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    event_count     INT         NOT NULL DEFAULT 0,
+    alert_count     INT         NOT NULL DEFAULT 0,
+    is_active       BOOL        NOT NULL DEFAULT TRUE
+);
+CREATE INDEX IF NOT EXISTS chains_agent_id_idx  ON chains(agent_id, first_seen DESC);
+CREATE INDEX IF NOT EXISTS chains_tenant_id_idx ON chains(tenant_id, first_seen DESC);
+CREATE INDEX IF NOT EXISTS chains_last_seen_idx ON chains(last_seen DESC);
+`,
+	},
+	{
+		name: "seed_chainscoped_sequence_rules",
+		sql: `
+INSERT INTO rules (id, name, description, severity, event_types, conditions, mitre_ids, author,
+                   rule_type, sequence_window_s, sequence_by, sequence_steps)
+VALUES
+(
+    'rule-chain-office-macro',
+    'Office App → Interpreter → Outbound (Chain)',
+    'Macro execution pattern: office application spawns a script interpreter which then makes an outbound network connection — classic macro-to-C2.',
+    4,
+    ARRAY['PROCESS_EXEC','NET_CONNECT'],
+    '[]',
+    ARRAY['T1566.001','T1059','T1071'],
+    'system',
+    'sequence', 300, 'chain_id',
+    '[
+      {"event_type":"PROCESS_EXEC","conditions":[{"field":"process.comm","op":"in","value":["winword","excel","powerpnt","outlook","libreoffice","soffice"]}]},
+      {"event_type":"PROCESS_EXEC","conditions":[{"field":"process.comm","op":"in","value":["cmd","powershell","pwsh","bash","sh","wscript","cscript","python","python3","perl","ruby"]}]},
+      {"event_type":"NET_CONNECT","conditions":[{"field":"direction","op":"eq","value":"OUTBOUND"}]}
+    ]'::jsonb
+),
+(
+    'rule-chain-download-exec',
+    'Downloader → New Executable (Chain)',
+    'A process downloads a file then executes it — classic download-and-execute attack pattern.',
+    4,
+    ARRAY['NET_CONNECT','FILE_CREATE','PROCESS_EXEC'],
+    '[]',
+    ARRAY['T1105','T1204'],
+    'system',
+    'sequence', 120, 'chain_id',
+    '[
+      {"event_type":"NET_CONNECT","conditions":[{"field":"direction","op":"eq","value":"OUTBOUND"},{"field":"process.comm","op":"in","value":["curl","wget","python","python3","powershell","pwsh","certutil","bitsadmin"]}]},
+      {"event_type":"PROCESS_EXEC","conditions":[]}
+    ]'::jsonb
+),
+(
+    'rule-chain-cred-exfil',
+    'Credential Read → Network Exfil (Chain)',
+    'A process reads a credential file (shadow, passwd, .ssh, browser passwords) then makes an outbound network connection.',
+    4,
+    ARRAY['FILE_OPEN','FILE_READ','NET_CONNECT'],
+    '[]',
+    ARRAY['T1552','T1041'],
+    'system',
+    'sequence', 60, 'chain_id',
+    '[
+      {"event_type":"FILE_OPEN","conditions":[{"field":"path","op":"regex","value":"(/etc/shadow|/etc/passwd|\\.ssh/|id_rsa|credentials)"}]},
+      {"event_type":"NET_CONNECT","conditions":[{"field":"direction","op":"eq","value":"OUTBOUND"}]}
+    ]'::jsonb
+)
+ON CONFLICT (id) DO NOTHING;
+`,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.
