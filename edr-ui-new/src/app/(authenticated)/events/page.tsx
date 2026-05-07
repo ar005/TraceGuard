@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Download } from "lucide-react";
 import { useApi } from "@/hooks/use-api";
 import { useSSE } from "@/hooks/use-sse";
@@ -515,19 +515,28 @@ export default function EventsPage() {
   const [showFilters, setShowFilters] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
 
+  /* Debounce search — only hit the API after 350ms of no typing */
+  const [debouncedSearch, setDebouncedSearch] = useState(search);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => setDebouncedSearch(search), 350);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [search]);
+
   /* API fetch */
   const fetchEvents = useCallback(
     (signal: AbortSignal) =>
       api
         .get<{ events?: Event[] } | Event[]>("/api/v1/events", {
           event_type: filter || undefined,
-          search: search || undefined,
+          search: debouncedSearch || undefined,
           hostname: hostnameFilter || undefined,
           limit: PAGE_SIZE,
           offset,
         }, signal)
         .then((r) => (Array.isArray(r) ? r : r.events ?? [])),
-    [filter, search, hostnameFilter, offset]
+    [filter, debouncedSearch, hostnameFilter, offset]
   );
 
   const { data: fetchedEvents, loading, error } = useApi(fetchEvents);

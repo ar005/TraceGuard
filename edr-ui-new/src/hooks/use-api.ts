@@ -49,8 +49,10 @@ export function useApi<T>(fetchFn: (signal: AbortSignal) => Promise<T>): UseApiR
       mountedRef.current = false;
       controller.abort();
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tick]); // fetchFn intentionally excluded — use fetchFnRef.current instead
+  // fetchFn is included so that useCallback-wrapped fetchers re-fire when
+  // their deps change (e.g. search/filter state). All consumers must wrap
+  // their fetch function in useCallback to control when this triggers.
+  }, [tick, fetchFn]);
 
   return { data, loading, error, refetch };
 }
