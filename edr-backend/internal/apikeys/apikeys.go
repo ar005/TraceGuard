@@ -67,9 +67,12 @@ func New(db *sqlx.DB) *Manager { return &Manager{db: db} }
 // ─── CRUD ─────────────────────────────────────────────────────────────────────
 
 // Create generates a new key, stores its bcrypt hash, and returns the raw key.
-func (m *Manager) Create(ctx context.Context, name, createdBy string, expiresAt *time.Time) (*CreateResult, error) {
+func (m *Manager) Create(ctx context.Context, name, createdBy, role string, expiresAt *time.Time) (*CreateResult, error) {
 	if strings.TrimSpace(name) == "" {
 		return nil, fmt.Errorf("name is required")
+	}
+	if role != "admin" && role != "analyst" {
+		role = "admin"
 	}
 	raw, err := generateKey()
 	if err != nil {
@@ -88,11 +91,12 @@ func (m *Manager) Create(ctx context.Context, name, createdBy string, expiresAt 
 		ExpiresAt: expiresAt,
 		CreatedBy: createdBy,
 		Enabled:   true,
+		Role:      role,
 	}
 	_, err = m.db.ExecContext(ctx, `
-		INSERT INTO api_keys (id, name, prefix, hash, created_at, expires_at, created_by, enabled)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-	`, k.ID, k.Name, k.Prefix, k.Hash, k.CreatedAt, k.ExpiresAt, k.CreatedBy, k.Enabled)
+		INSERT INTO api_keys (id, name, prefix, hash, created_at, expires_at, created_by, enabled, role)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+	`, k.ID, k.Name, k.Prefix, k.Hash, k.CreatedAt, k.ExpiresAt, k.CreatedBy, k.Enabled, k.Role)
 	if err != nil {
 		return nil, fmt.Errorf("insert key: %w", err)
 	}
@@ -154,7 +158,7 @@ func (m *Manager) Validate(ctx context.Context, raw string) (*Key, error) {
 	// Only load rows whose prefix matches — keeps bcrypt calls to 1 typically.
 	var candidates []Key
 	if err := m.db.SelectContext(ctx, &candidates,
-		`SELECT id,name,prefix,hash,created_at,expires_at,last_used_at,created_by,enabled
+		`SELECT id,name,prefix,hash,created_at,expires_at,last_used_at,created_by,enabled,role
 		   FROM api_keys
 		  WHERE prefix=$1 AND enabled=TRUE
 		    AND (expires_at IS NULL OR expires_at > NOW())`,

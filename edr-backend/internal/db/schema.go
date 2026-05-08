@@ -1919,6 +1919,19 @@ ALTER TABLE iocs ADD COLUMN IF NOT EXISTS confidence  SMALLINT NOT NULL DEFAULT 
 	{
 		name: "intel_phase2_feed_quality",
 		sql: `
+CREATE TABLE IF NOT EXISTS custom_ioc_feeds (
+    id          TEXT PRIMARY KEY,
+    tenant_id   TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    url         TEXT NOT NULL DEFAULT '',
+    format      TEXT NOT NULL DEFAULT 'txt',
+    feed_type   TEXT NOT NULL DEFAULT 'ip',
+    enabled     BOOLEAN NOT NULL DEFAULT TRUE,
+    last_synced_at TIMESTAMPTZ,
+    entry_count INT NOT NULL DEFAULT 0,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_custom_feeds_tenant ON custom_ioc_feeds(tenant_id);
 ALTER TABLE custom_ioc_feeds ADD COLUMN IF NOT EXISTS protocol        TEXT NOT NULL DEFAULT 'http';
 ALTER TABLE custom_ioc_feeds ADD COLUMN IF NOT EXISTS taxii_url       TEXT NOT NULL DEFAULT '';
 ALTER TABLE custom_ioc_feeds ADD COLUMN IF NOT EXISTS taxii_username  TEXT NOT NULL DEFAULT '';
@@ -2182,6 +2195,42 @@ VALUES
     ]'::jsonb
 )
 ON CONFLICT (id) DO NOTHING;
+`,
+	},
+	{
+		name: "rules_tenant_id",
+		sql: `
+ALTER TABLE rules ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
+CREATE INDEX IF NOT EXISTS rules_tenant_idx ON rules(tenant_id);
+`,
+	},
+	{
+		name: "repair_missing_columns",
+		sql: `
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS risk_score SMALLINT NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS alerts_risk_score_idx ON alerts(tenant_id, risk_score DESC);
+`,
+	},
+	{
+		name: "alerts_chain_id",
+		sql: `
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS chain_id TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS alerts_chain_id_idx ON alerts(chain_id) WHERE chain_id != '';
+`,
+	},
+	{
+		name: "alerts_src_ip_to_text",
+		sql: `
+ALTER TABLE alerts ALTER COLUMN src_ip TYPE TEXT USING COALESCE(src_ip::TEXT, '');
+ALTER TABLE alerts ALTER COLUMN src_ip SET NOT NULL;
+ALTER TABLE alerts ALTER COLUMN src_ip SET DEFAULT '';
+`,
+	},
+	{
+		name: "iocs_tenant_id",
+		sql: `
+ALTER TABLE iocs ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
+CREATE INDEX IF NOT EXISTS iocs_tenant_idx ON iocs(tenant_id);
 `,
 	},
 }

@@ -121,6 +121,7 @@ type Alert struct {
 	TriageAt      *time.Time      `db:"triage_at"      json:"triage_at,omitempty"`
 	Enrichments   json.RawMessage `db:"enrichments"    json:"enrichments,omitempty"`
 	RiskScore     int16           `db:"risk_score"     json:"risk_score"`
+	ChainID       string          `db:"chain_id"       json:"chain_id,omitempty"`
 }
 
 // Rule represents a detection rule.
@@ -144,6 +145,7 @@ type Rule struct {
 	SequenceWindowS    int             `db:"sequence_window_s"   json:"sequence_window_s"`
 	SequenceBy         string          `db:"sequence_by"         json:"sequence_by"`
 	SourceTypes        pq.StringArray  `db:"source_types"        json:"source_types"`
+	TenantID           string          `db:"tenant_id"           json:"tenant_id,omitempty"`
 }
 
 // SuppressionRule silences events that match its conditions before detection runs.
@@ -242,6 +244,7 @@ type IOC struct {
 	CampaignID *string `db:"campaign_id" json:"campaign_id,omitempty"`
 	Confidence int16   `db:"confidence"  json:"confidence"`
 	TLP        string  `db:"tlp"         json:"tlp,omitempty"`
+	TenantID   string  `db:"tenant_id"   json:"tenant_id,omitempty"`
 }
 
 

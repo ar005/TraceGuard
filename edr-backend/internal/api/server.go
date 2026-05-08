@@ -6,7 +6,9 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -106,6 +108,7 @@ func New(st *store.Store, eng *detection.Engine, km *apikeys.Manager,
 	r := gin.New()
 	r.Use(ginLogger(log), gin.Recovery())
 	r.Use(TraceGuardMiddleware())
+	r.Use(requestBodyLimitMiddleware(10 << 20)) // 10 MB global body limit
 
 	// Don't trust X-Forwarded-For from arbitrary clients — only loopback.
 	// Operators behind a known reverse proxy should set this to their proxy IP(s).
@@ -168,10 +171,10 @@ func (s *Server) registerRoutes() {
 
 	auth := r.Group("/api/v1/auth")
 	{
-		auth.POST("/login",              strictRateLimitMiddleware(), s.handleLogin)
+		auth.POST("/login",              strictRateLimitMiddleware(s.rateLimit), s.handleLogin)
 		auth.POST("/logout",             s.handleLogout)
-		auth.POST("/refresh",            strictRateLimitMiddleware(), s.handleRefresh)
-		auth.POST("/totp/verify-login",  strictRateLimitMiddleware(), s.handleTOTPVerifyLogin)
+		auth.POST("/refresh",            strictRateLimitMiddleware(s.rateLimit), s.handleRefresh)
+		auth.POST("/totp/verify-login",  strictRateLimitMiddleware(s.rateLimit), s.handleTOTPVerifyLogin)
 	}
 
 	v1 := r.Group("/api/v1", s.authMiddleware())
@@ -251,8 +254,8 @@ func (s *Server) registerRoutes() {
 		v1.GET("/iocs/sources", s.handleIOCSourceStats)
 
 		// Threat Hunting
-		v1.POST("/hunt",          strictRateLimitMiddleware(), s.handleHunt)
-		v1.POST("/hunt/generate", strictRateLimitMiddleware(), s.handleGenerateHuntQuery)
+		v1.POST("/hunt",          strictRateLimitMiddleware(s.rateLimit), s.handleHunt)
+		v1.POST("/hunt/generate", strictRateLimitMiddleware(s.rateLimit), s.handleGenerateHuntQuery)
 
 		// Settings (read)
 		v1.GET("/settings/retention", s.handleGetRetention)
@@ -276,7 +279,7 @@ func (s *Server) registerRoutes() {
 			w.PATCH("/agents/:id",    s.handleUpdateAgent)
 			w.PATCH("/agents/:id/winevent-config", s.handleUpdateAgentWinEventConfig)
 
-			w.POST("/events/inject", strictRateLimitMiddleware(), s.handleInjectEvent)
+			w.POST("/events/inject", strictRateLimitMiddleware(s.rateLimit), s.handleInjectEvent)
 
 			w.POST("/rules",              s.handleCreateRule)
 			w.PUT("/rules/:id",           s.handleUpdateRule)
@@ -296,11 +299,11 @@ func (s *Server) registerRoutes() {
 			w.POST("/agents/:id/scan-packages", s.handleScanPackages)
 
 			w.POST("/iocs",          s.handleCreateIOC)
-			w.POST("/iocs/bulk",     strictRateLimitMiddleware(), s.handleBulkImportIOCs)
+			w.POST("/iocs/bulk",     strictRateLimitMiddleware(s.rateLimit), s.handleBulkImportIOCs)
 			w.POST("/iocs/bulk-retire", s.handleBulkRetireIOCs)
 			w.DELETE("/iocs/:id",    s.handleDeleteIOC)
 			w.DELETE("/iocs/source/:source", s.handleDeleteIOCsBySource)
-			w.POST("/iocs/feeds/sync",       strictRateLimitMiddleware(), s.handleSyncFeeds)
+			w.POST("/iocs/feeds/sync",       strictRateLimitMiddleware(s.rateLimit), s.handleSyncFeeds)
 			w.POST("/iocs/:id/enrich",   s.handleEnrichIOC)
 			w.POST("/iocs/:id/actor",    s.handleLinkIOCToActor)
 			w.POST("/iocs/:id/campaign", s.handleLinkIOCToCampaign)
@@ -339,8 +342,8 @@ func (s *Server) registerRoutes() {
 			w.POST("/settings/llm",        s.handleSetLLMSettings)
 			w.POST("/settings/llm/test",   s.handleTestLLM)
 
-			w.POST("/migrate/export", strictRateLimitMiddleware(), s.handleMigrateExport)
-			w.POST("/migrate/import", strictRateLimitMiddleware(), s.handleMigrateImport)
+			w.POST("/migrate/export", strictRateLimitMiddleware(s.rateLimit), s.handleMigrateExport)
+			w.POST("/migrate/import", strictRateLimitMiddleware(s.rateLimit), s.handleMigrateImport)
 		}
 
 		// API key management
@@ -562,6 +565,9 @@ func (s *Server) Listen(addr string) error {
 func (s *Server) Shutdown(ctx context.Context) error {
 	return s.http.Shutdown(ctx)
 }
+
+// Handler returns the underlying http.Handler for use in tests.
+func (s *Server) Handler() http.Handler { return s.router }
 
 // ─── Auth cookie ─────────────────────────────────────────────────────────────
 
@@ -1312,6 +1318,10 @@ func (s *Server) handleListAgents(c *gin.Context) {
 func (s *Server) handleGetAgent(c *gin.Context) {
 	agent, err := s.store.GetAgent(c.Request.Context(), c.Param("id"))
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "agent not found"})
+			return
+		}
 		s.jsonError(c, err)
 		return
 	}
@@ -1387,7 +1397,7 @@ func (s *Server) handleListEvents(c *gin.Context) {
 	tid, _ := tenantID.(string)
 	p := store.QueryEventsParams{
 		AgentID:  c.Query("agent_id"),
-		Search:   c.Query("q"),
+		Search:   firstNonEmpty(c.Query("search"), c.Query("q")),
 		Limit:    intQuery(c, "limit", 50),
 		Offset:   intQuery(c, "offset", 0),
 		TenantID: tid,
@@ -1408,6 +1418,10 @@ func (s *Server) handleListEvents(c *gin.Context) {
 		}
 	}
 	if pid := c.Query("pid"); pid != "" {
+		if _, err := strconv.Atoi(pid); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "pid must be a numeric value"})
+			return
+		}
 		p.PID = pid
 	}
 	if hn := c.Query("hostname"); hn != "" {
@@ -1495,6 +1509,10 @@ func (s *Server) handleGetAlert(c *gin.Context) {
 
 	alert, err := s.store.GetAlert(c.Request.Context(), c.Param("id"), tid)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "alert not found"})
+			return
+		}
 		s.jsonError(c, err)
 		return
 	}
@@ -1527,6 +1545,10 @@ func (s *Server) handleUpdateAlert(c *gin.Context) {
 	if err := s.store.UpdateAlertStatus(c.Request.Context(),
 		c.Param("id"), tid, body.Status, body.Assignee, body.Notes,
 	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "alert not found"})
+			return
+		}
 		s.jsonError(c, err)
 		return
 	}
@@ -1566,6 +1588,15 @@ func (s *Server) handleInjectEvent(c *gin.Context) {
 	if hostname == "" { hostname = "test-injection" }
 	agentID  := body.AgentID
 	if agentID  == "" { agentID  = "test-injection" }
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	if tid == "" { tid = "default" }
+
+	ctx := c.Request.Context()
+	// Auto-create agent record so the FK constraint is satisfied.
+	_, _ = s.store.DB().ExecContext(ctx,
+		`INSERT INTO agents (id, hostname, os, ip) VALUES ($1,$2,'unknown','0.0.0.0') ON CONFLICT (id) DO NOTHING`,
+		agentID, hostname)
 
 	ev := &models.Event{
 		ID:        "evt-inject-" + uuid.New().String(),
@@ -1574,9 +1605,9 @@ func (s *Server) handleInjectEvent(c *gin.Context) {
 		EventType: body.EventType,
 		Timestamp: time.Now(),
 		Payload:   json.RawMessage(payloadBytes),
+		TenantID:  tid,
 	}
 
-	ctx := c.Request.Context()
 	if err := s.store.InsertEvent(ctx, ev); err != nil {
 		s.jsonError(c, err)
 		return
@@ -2022,6 +2053,10 @@ func (s *Server) handleGetIncident(c *gin.Context) {
 	tid, _ := tenantID.(string)
 	inc, err := s.store.GetIncident(c.Request.Context(), c.Param("id"), tid)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "incident not found"})
+			return
+		}
 		s.jsonError(c, err)
 		return
 	}
@@ -2133,6 +2168,10 @@ func (s *Server) handleListEnabledYARARules(c *gin.Context) {
 func (s *Server) handleGetYARARule(c *gin.Context) {
 	r, err := s.store.GetYARARule(c.Request.Context(), c.Param("id"))
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "YARA rule not found"})
+			return
+		}
 		s.jsonError(c, err)
 		return
 	}
@@ -2383,7 +2422,13 @@ func (s *Server) handleUpdateRule(c *gin.Context) {
 }
 
 func (s *Server) handleDeleteRule(c *gin.Context) {
-	if err := s.store.DeleteRule(c.Request.Context(), c.Param("id")); err != nil {
+	tenantID, _ := c.Get("tenant_id")
+	tid, _ := tenantID.(string)
+	if err := s.store.DeleteRule(c.Request.Context(), c.Param("id"), tid); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "rule not found"})
+			return
+		}
 		s.jsonError(c, err)
 		return
 	}
@@ -2479,6 +2524,7 @@ func (s *Server) handleListKeys(c *gin.Context) {
 func (s *Server) handleCreateKey(c *gin.Context) {
 	var body struct {
 		Name      string  `json:"name"       binding:"required"`
+		Role      string  `json:"role"`
 		ExpiresAt *string `json:"expires_at"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -2496,7 +2542,7 @@ func (s *Server) handleCreateKey(c *gin.Context) {
 	}
 
 	actorID, actorName := currentUser(c)
-	result, err := s.keys.Create(c.Request.Context(), body.Name, actorID, expiresAt)
+	result, err := s.keys.Create(c.Request.Context(), body.Name, actorID, body.Role, expiresAt)
 	if err != nil {
 		s.jsonError(c, err)
 		return
@@ -2665,6 +2711,15 @@ func isContainmentAction(action string) bool {
 	return false
 }
 
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 func intQuery(c *gin.Context, key string, def int) int {
 	if v := c.Query(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -2680,6 +2735,19 @@ func marshalToRaw(v interface{}) ([]byte, error) {
 		return []byte("[]"), err
 	}
 	return import_json, nil
+}
+
+// requestBodyLimitMiddleware rejects requests whose Content-Length exceeds max
+// bytes with 413 Request Entity Too Large, and caps actual body reads.
+func requestBodyLimitMiddleware(max int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.ContentLength > max {
+			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body too large"})
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, max)
+		c.Next()
+	}
 }
 
 func TraceGuardMiddleware() gin.HandlerFunc {
@@ -3013,6 +3081,7 @@ func (s *Server) handleCreateIOC(c *gin.Context) {
 		Enabled:     true,
 		ExpiresAt:   req.ExpiresAt,
 		CreatedAt:   time.Now(),
+		TenantID:    c.GetString("tenant_id"),
 	}
 
 	if err := s.store.InsertIOC(c.Request.Context(), ioc); err != nil {

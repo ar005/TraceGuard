@@ -163,7 +163,7 @@ func (s *Store) ListCaseAlerts(ctx context.Context, caseID, tenantID string) ([]
 		var a models.Alert
 		if err := rows.Scan(
 			&a.ID, &a.Title, &a.Description, &a.Severity, &a.Status,
-			&a.RuleID, &a.RuleName, pq.Array(&a.MitreIDs), pq.Array(&a.EventIDs),
+			&a.RuleID, &a.RuleName, &a.MitreIDs, &a.EventIDs,
 			&a.AgentID, &a.Hostname, &a.FirstSeen, &a.LastSeen,
 			&a.Assignee, &a.Notes, &a.HitCount, &a.IncidentID,
 		); err != nil {
@@ -271,7 +271,7 @@ func (s *Store) UpdateCaseNote(ctx context.Context, noteID, caseID, tenantID, bo
 	if tenantID == "" {
 		tenantID = "default"
 	}
-	_, err := s.db.ExecContext(ctx,
+	res, err := s.db.ExecContext(ctx,
 		`UPDATE case_notes SET body=$2, updated_at=NOW()
 		 WHERE id=$1
 		   AND case_id=$3
@@ -281,7 +281,13 @@ func (s *Store) UpdateCaseNote(ctx context.Context, noteID, caseID, tenantID, bo
 		         AND (c.tenant_id=$4 OR c.tenant_id='default' OR $4='default')
 		   )`,
 		noteID, body, caseID, tenantID)
-	return err
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("note not found or access denied")
+	}
+	return nil
 }
 
 func (s *Store) DeleteCaseNote(ctx context.Context, noteID, caseID, tenantID string) error {

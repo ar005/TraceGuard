@@ -152,8 +152,12 @@ func rateLimitMiddleware(cfg RateLimitConfig) gin.HandlerFunc {
 
 // strictRateLimitMiddleware applies a much tighter per-IP limit for expensive
 // or dangerous endpoints (bulk imports, event injection, threat hunting, etc.).
-// Default: 2 requests/second, burst of 5.
-func strictRateLimitMiddleware() gin.HandlerFunc {
+// Default: 2 requests/second, burst of 5. Disabled when cfg.Enabled is false.
+func strictRateLimitMiddleware(cfg RateLimitConfig) gin.HandlerFunc {
+	if !cfg.Enabled {
+		return func(c *gin.Context) { c.Next() }
+	}
+
 	store := newRateLimiterStore(2, 5, 5*time.Minute, 10*time.Minute)
 
 	return func(c *gin.Context) {

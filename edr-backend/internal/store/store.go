@@ -9,6 +9,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -127,11 +128,15 @@ func (s *Store) ListAgents(ctx context.Context) ([]models.Agent, error) {
 // ─── Events ───────────────────────────────────────────────────────────────────
 
 func (s *Store) InsertEvent(ctx context.Context, e *models.Event) error {
+	tid := e.TenantID
+	if tid == "" {
+		tid = "default"
+	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO events (id, agent_id, hostname, event_type, timestamp, payload, received_at, severity, rule_id, alert_id, chain_id)
-		VALUES ($1,$2,$3,$4,$5,$6,NOW(),$7,$8,$9,$10)
+		INSERT INTO events (id, agent_id, hostname, event_type, timestamp, payload, received_at, severity, rule_id, alert_id, chain_id, tenant_id)
+		VALUES ($1,$2,$3,$4,$5,$6,NOW(),$7,$8,$9,$10,$11)
 		ON CONFLICT (id) DO NOTHING
-	`, e.ID, e.AgentID, e.Hostname, e.EventType, e.Timestamp, e.Payload, e.Severity, e.RuleID, e.AlertID, e.ChainID)
+	`, e.ID, e.AgentID, e.Hostname, e.EventType, e.Timestamp, e.Payload, e.Severity, e.RuleID, e.AlertID, e.ChainID, tid)
 	return err
 }
 
@@ -328,29 +333,25 @@ func (s *Store) DeleteOldAlerts(ctx context.Context, olderThan time.Time) (int64
 // ─── Alerts ───────────────────────────────────────────────────────────────────
 
 func (s *Store) InsertAlert(ctx context.Context, a *models.Alert) error {
-	var srcIP interface{}
-	if a.SrcIP != "" {
-		srcIP = a.SrcIP
-	}
 	sourceTypes := a.SourceTypes
 	if sourceTypes == nil {
 		sourceTypes = pq.StringArray{}
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO alerts
-		  (id, title, description, severity, status, rule_id, rule_name, mitre_ids, event_ids, agent_id, hostname, user_uid, source_types, src_ip, risk_score, first_seen, last_seen, hit_count)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW(),NOW(),1)
+		  (id, tenant_id, title, description, severity, status, rule_id, rule_name, mitre_ids, event_ids, agent_id, hostname, user_uid, source_types, src_ip, risk_score, chain_id, first_seen, last_seen, hit_count)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW(),NOW(),1)
 		ON CONFLICT (id) DO UPDATE SET
 			last_seen    = NOW(),
 			hit_count    = alerts.hit_count + 1,
 			event_ids    = alerts.event_ids || EXCLUDED.event_ids,
-			source_types = (SELECT array_agg(DISTINCT x) FROM unnest(alerts.source_types || EXCLUDED.source_types) x),
-			src_ip       = COALESCE(EXCLUDED.src_ip, alerts.src_ip),
+			source_types = COALESCE((SELECT array_agg(DISTINCT x) FROM unnest(alerts.source_types || EXCLUDED.source_types) x), '{}'),
+			src_ip       = CASE WHEN EXCLUDED.src_ip != '' THEN EXCLUDED.src_ip ELSE alerts.src_ip END,
 			risk_score   = GREATEST(alerts.risk_score, EXCLUDED.risk_score),
 			status       = CASE WHEN alerts.status='CLOSED' THEN 'OPEN' ELSE alerts.status END
-	`, a.ID, a.Title, a.Description, a.Severity, a.Status,
+	`, a.ID, a.TenantID, a.Title, a.Description, a.Severity, a.Status,
 		a.RuleID, a.RuleName, pq.Array(a.MitreIDs), pq.Array(a.EventIDs),
-		a.AgentID, a.Hostname, a.UserUID, pq.Array(sourceTypes), srcIP, a.RiskScore)
+		a.AgentID, a.Hostname, a.UserUID, pq.Array(sourceTypes), a.SrcIP, a.RiskScore, a.ChainID)
 	return err
 }
 
@@ -479,11 +480,17 @@ func (s *Store) GetAlertEvents(ctx context.Context, alertID, tenantID string) ([
 }
 
 func (s *Store) UpdateAlertStatus(ctx context.Context, id, tenantID, status, assignee, notes string) error {
-	_, err := s.db.ExecContext(ctx,
+	res, err := s.db.ExecContext(ctx,
 		`UPDATE alerts SET status=$3, assignee=$4, notes=$5
 		 WHERE id=$1 AND (tenant_id=$2 OR tenant_id='default' OR $2='default')`,
 		id, tenantID, status, assignee, notes)
-	return err
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (s *Store) UpdateAlertTriage(ctx context.Context, id, tenantID, verdict string, score int16, notes string) error {
@@ -556,14 +563,22 @@ func (s *Store) UpsertRule(ctx context.Context, r *models.Rule) error {
 			group_by          = EXCLUDED.group_by,
 			updated_at        = NOW()
 	`, r.ID, r.Name, r.Description, r.Enabled, r.Severity,
-		pq.Array(r.EventTypes), conds, pq.Array(r.MitreIDs), r.Author,
+		pq.Array(coalesceStringSlice(r.EventTypes)), conds, pq.Array(coalesceStringSlice(r.MitreIDs)), r.Author,
 		r.RuleType, r.ThresholdCount, r.ThresholdWindowS, r.GroupBy)
 	return err
 }
 
-func (s *Store) DeleteRule(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM rules WHERE id=$1`, id)
-	return err
+func (s *Store) DeleteRule(ctx context.Context, id, tenantID string) error {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM rules WHERE id=$1 AND (tenant_id=$2 OR tenant_id='default' OR $2='default')`,
+		id, tenantID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // ─── Suppression Rules ────────────────────────────────────────────────────────
@@ -1037,8 +1052,10 @@ func parseFilterPart(part string, paramIdx int) (string, []interface{}, int, err
 	}
 
 	// Standard comparison: column OP 'value'
-	// Try multi-char ops first, then single-char.
-	for _, op := range []string{"NOT ILIKE", "NOT LIKE", "ILIKE", "LIKE", "!=", "<>", "<=", ">=", "=", "<", ">"} {
+	// Multi-char symbol ops must be tried before single-char to avoid
+	// e.g. ">" matching inside "->>" in a payload JSONB path.
+	// Regex ops (~, !~, ~*, !~*) must come before ">" and "!=" to avoid false splits.
+	for _, op := range []string{"NOT ILIKE", "NOT LIKE", "ILIKE", "LIKE", "!~*", "!~", "~*", "~", "!=", "<>", "<=", ">=", "=", "<", ">"} {
 		opUpper := strings.ToUpper(op)
 		var idx int
 		if len(op) > 1 && (op[0] >= 'A' && op[0] <= 'Z' || op[0] >= 'a' && op[0] <= 'z') {
@@ -1050,11 +1067,23 @@ func parseFilterPart(part string, paramIdx int) (string, []interface{}, int, err
 				return buildComparison(col, op, val, paramIdx)
 			}
 		} else {
-			idx = strings.Index(part, op)
-			if idx > 0 {
+			// For symbol ops, require a space before the operator to avoid
+			// matching inside JSONB paths (e.g. ">" in "->>").
+			search := " " + op + " "
+			idx = strings.Index(part, search)
+			if idx >= 0 {
 				col := strings.TrimSpace(part[:idx])
-				val := strings.TrimSpace(part[idx+len(op):])
+				val := strings.TrimSpace(part[idx+len(search):])
 				return buildComparison(col, op, val, paramIdx)
+			}
+			// Fallback: no-space match for operators that can't appear in column names.
+			if op == "=" || op == "!=" || op == "<>" {
+				idx = strings.Index(part, op)
+				if idx > 0 {
+					col := strings.TrimSpace(part[:idx])
+					val := strings.TrimSpace(part[idx+len(op):])
+					return buildComparison(col, op, val, paramIdx)
+				}
 			}
 		}
 	}
@@ -1931,9 +1960,13 @@ func (s *Store) InsertIOC(ctx context.Context, ioc *models.IOC) error {
 	if tlp == "" {
 		tlp = "AMBER"
 	}
+	tid := ioc.TenantID
+	if tid == "" {
+		tid = "default"
+	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO iocs (id, type, value, source, severity, description, tags, enabled, expires_at, created_at, confidence, tlp)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+		INSERT INTO iocs (id, type, value, source, severity, description, tags, enabled, expires_at, created_at, confidence, tlp, tenant_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 		ON CONFLICT (type, value) DO UPDATE SET
 			source      = EXCLUDED.source,
 			severity    = EXCLUDED.severity,
@@ -1942,9 +1975,10 @@ func (s *Store) InsertIOC(ctx context.Context, ioc *models.IOC) error {
 			enabled     = EXCLUDED.enabled,
 			expires_at  = EXCLUDED.expires_at,
 			confidence  = EXCLUDED.confidence,
-			tlp         = EXCLUDED.tlp
+			tlp         = EXCLUDED.tlp,
+			tenant_id   = EXCLUDED.tenant_id
 	`, ioc.ID, ioc.Type, ioc.Value, ioc.Source, ioc.Severity, ioc.Description,
-		pq.Array(coalesceStringSlice(ioc.Tags)), ioc.Enabled, ioc.ExpiresAt, ioc.CreatedAt, conf, tlp)
+		pq.Array(coalesceStringSlice(ioc.Tags)), ioc.Enabled, ioc.ExpiresAt, ioc.CreatedAt, conf, tlp, tid)
 	return err
 }
 
@@ -2073,7 +2107,7 @@ func (s *Store) UpsertYARARule(ctx context.Context, r *models.YARARule) error {
 			author      = EXCLUDED.author,
 			updated_at  = NOW()`,
 		r.ID, r.Name, r.Description, r.RuleText, r.Enabled, r.Severity,
-		pq.Array(r.MitreIDs), pq.Array(r.Tags), r.Author)
+		pq.Array(coalesceStringSlice(r.MitreIDs)), pq.Array(coalesceStringSlice(r.Tags)), r.Author)
 	return err
 }
 
@@ -4546,10 +4580,16 @@ WHERE user_uid=$1 AND login_at > NOW() - INTERVAL '5 minutes'`, userUID).Scan(&d
 
 func (s *Store) CreateThreatActor(ctx context.Context, a *models.ThreatActor) error {
 	a.ID = "ta-" + uuid.New().String()
+	if a.Aliases == nil {
+		a.Aliases = pq.StringArray{}
+	}
+	if a.MitreGroups == nil {
+		a.MitreGroups = pq.StringArray{}
+	}
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO threat_actors(id,tenant_id,name,aliases,country,motivation,description,mitre_groups)
 VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
-		a.ID, a.TenantID, a.Name, a.Aliases, a.Country, a.Motivation, a.Description, a.MitreGroups)
+		a.ID, a.TenantID, a.Name, pq.Array(a.Aliases), a.Country, a.Motivation, a.Description, pq.Array(a.MitreGroups))
 	return err
 }
 
@@ -4599,7 +4639,8 @@ func (s *Store) CreateCampaign(ctx context.Context, c *models.Campaign) error {
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO campaigns(id,tenant_id,name,actor_id,start_date,end_date,targets,techniques,description)
 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-		c.ID, c.TenantID, c.Name, c.ActorID, c.StartDate, c.EndDate, c.Targets, c.Techniques, c.Description)
+		c.ID, c.TenantID, c.Name, c.ActorID, c.StartDate, c.EndDate,
+		pq.Array(coalesceStringSlice(c.Targets)), pq.Array(coalesceStringSlice(c.Techniques)), c.Description)
 	return err
 }
 
@@ -4702,7 +4743,7 @@ func (s *Store) CreateReplayJob(ctx context.Context, j *models.ReplayJob) error 
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO intel_replay_jobs(id, tenant_id, triggered_by, ioc_ids, lookback_days, status)
 VALUES($1,$2,$3,$4,$5,'queued')`,
-		j.ID, j.TenantID, j.TriggeredBy, j.IOCIDs, j.LookbackDays)
+		j.ID, j.TenantID, j.TriggeredBy, pq.Array(coalesceStringSlice(j.IOCIDs)), j.LookbackDays)
 	return err
 }
 
@@ -5259,14 +5300,12 @@ func (s *Store) ListTAXIIPollRuns(ctx context.Context, feedID, tenantID string, 
 func (s *Store) UpsertChain(ctx context.Context, c *models.Chain) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO chains (id, agent_id, tenant_id, hostname, root_pid, root_comm, root_cmdline, root_start_time)
-		VALUES ($1, $2,
-		        COALESCE((SELECT tenant_id FROM agents WHERE agent_id=$2 LIMIT 1), ''),
-		        $3, $4, $5, $6, $7)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (id) DO UPDATE SET
 			event_count = chains.event_count + 1,
 			last_seen   = NOW(),
 			is_active   = TRUE
-	`, c.ID, c.AgentID, c.Hostname, c.RootPID, c.RootComm, c.RootCmdline, c.RootStartTime)
+	`, c.ID, c.AgentID, c.TenantID, c.Hostname, c.RootPID, c.RootComm, c.RootCmdline, c.RootStartTime)
 	return err
 }
 
@@ -5358,8 +5397,8 @@ func (s *Store) GetChainEvents(ctx context.Context, chainID, tenantID string, li
 		SELECT e.id, e.agent_id, e.hostname, e.event_type, e.timestamp,
 		       e.payload, e.received_at, e.severity, e.rule_id, e.alert_id, e.chain_id
 		FROM events e
-		JOIN agents a ON a.agent_id = e.agent_id AND a.tenant_id = $2
 		WHERE e.chain_id = $1
+		  AND (e.tenant_id = $2 OR e.tenant_id = 'default' OR $2 = 'default')
 		ORDER BY e.timestamp ASC
 		LIMIT $3 OFFSET $4
 	`, chainID, tenantID, limit, offset)
