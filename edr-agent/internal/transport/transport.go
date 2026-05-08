@@ -49,6 +49,7 @@ type eventEnvelope struct {
 	Payload   []byte `json:"payload"`
 	OS        string `json:"os"`
 	AgentVer  string `json:"agent_ver"`
+	ChainID   string `json:"chain_id,omitempty"`
 }
 
 type streamResponse struct {
@@ -225,6 +226,7 @@ func (t *GRPCTransport) Send(event events.Event) {
 		Payload:   payload,
 		OS:        "linux",
 		AgentVer:  version.Short(),
+		ChainID:   event.GetChainID(),
 	})
 	if err != nil {
 		return

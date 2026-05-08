@@ -17,6 +17,8 @@ import (
 type Event interface {
 	EventType() string
 	EventID() string
+	GetChainID() string
+	SetChainID(string)
 }
 
 // Handler is a function that receives an event.
@@ -58,6 +60,8 @@ type DefaultBus struct {
 	mu          sync.RWMutex
 	subscribers map[string][]*subscriberEntry // eventType → []handlers
 
+	chainStamper func(Event) // optional; called before fan-out to stamp chain_id
+
 	published atomic.Uint64
 	dropped   atomic.Uint64
 }
@@ -79,6 +83,14 @@ func NewBus(agentID, hostname string) *DefaultBus {
 	return b
 }
 
+// SetChainStamper registers a function that is called on every published event
+// before fan-out, allowing the chain assigner to stamp chain_id onto events.
+func (b *DefaultBus) SetChainStamper(stamper func(Event)) {
+	b.mu.Lock()
+	b.chainStamper = stamper
+	b.mu.Unlock()
+}
+
 // Publish fans out the event to all matching subscribers.
 // Uses buffered channels; drops and counts if channel is full.
 func (b *DefaultBus) Publish(event Event) {
@@ -86,6 +98,11 @@ func (b *DefaultBus) Publish(event Event) {
 
 	b.mu.RLock()
 	defer b.mu.RUnlock()
+
+	// Stamp chain_id before fan-out (if stamper is wired).
+	if b.chainStamper != nil {
+		b.chainStamper(event)
+	}
 
 	evType := event.EventType()
 

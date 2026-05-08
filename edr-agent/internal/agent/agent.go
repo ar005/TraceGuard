@@ -14,7 +14,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 
+	"encoding/json"
+
 	"github.com/youredr/edr-agent/internal/buffer"
+	"github.com/youredr/edr-agent/internal/chainid"
 	"github.com/youredr/edr-agent/internal/containment"
 	"github.com/youredr/edr-agent/internal/config"
 	"github.com/youredr/edr-agent/internal/events"
@@ -97,6 +100,18 @@ func New(cfg *config.Config) (*Agent, error) {
 
 	// Event bus.
 	bus := events.NewBus(agentID, hostname)
+
+	// Chain stamper: assigns chain_id to every event before fan-out.
+	chainAssigner := chainid.New(agentID)
+	bus.SetChainStamper(func(ev events.Event) {
+		b, err := json.Marshal(ev)
+		if err != nil {
+			return
+		}
+		if id := chainAssigner.Assign(ev.EventType(), b); id != "" {
+			ev.SetChainID(id)
+		}
+	})
 
 	// Local buffer (SQLite — survives network outages).
 	buf, err := buffer.New(buffer.Config{
