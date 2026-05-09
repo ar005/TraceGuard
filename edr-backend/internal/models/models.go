@@ -397,15 +397,18 @@ type PlaybookAction struct {
 
 // PlaybookTriggerFilter specifies which alerts/events activate the playbook.
 type PlaybookTriggerFilter struct {
-	MinSeverity  int16    `json:"min_severity,omitempty"`
-	RuleIDs      []string `json:"rule_ids,omitempty"`
-	EventTypes   []string `json:"event_types,omitempty"`
-	SourceTypes  []string `json:"source_types,omitempty"`
+	MinSeverity int16    `json:"min_severity,omitempty"`
+	RuleIDs     []string `json:"rule_ids,omitempty"`
+	EventTypes  []string `json:"event_types,omitempty"`
+	SourceTypes []string `json:"source_types,omitempty"`
+	HostGroups  []string `json:"host_groups,omitempty"`
+	HostTags    []string `json:"host_tags,omitempty"`
 }
 
 // Playbook is a SOAR automation rule stored in the playbooks table.
 type Playbook struct {
 	ID            string          `db:"id"             json:"id"`
+	TenantID      string          `db:"tenant_id"      json:"tenant_id,omitempty"`
 	Name          string          `db:"name"           json:"name"`
 	Description   string          `db:"description"    json:"description"`
 	Enabled       bool            `db:"enabled"        json:"enabled"`
@@ -420,6 +423,22 @@ type Playbook struct {
 }
 
 // PlaybookRun is an execution record stored in playbook_runs.
+
+// AgentGroup is a named set of agents matched by tags and/or environment.
+// Membership is dynamic: an agent belongs to a group when its tags contain
+// all entries in TagFilter (if non-empty) and its Env matches EnvFilter (if non-empty).
+type AgentGroup struct {
+	ID          string    `db:"id"          json:"id"`
+	TenantID    string    `db:"tenant_id"   json:"tenant_id,omitempty"`
+	Name        string    `db:"name"        json:"name"`
+	Description string    `db:"description" json:"description"`
+	Color       string    `db:"color"       json:"color"`
+	TagFilter   []string  `db:"tag_filter"  json:"tag_filter"`
+	EnvFilter   string    `db:"env_filter"  json:"env_filter"`
+	CreatedAt   time.Time `db:"created_at"  json:"created_at"`
+	UpdatedAt   time.Time `db:"updated_at"  json:"updated_at"`
+}
+
 type PlaybookRun struct {
 	ID           string          `db:"id"            json:"id"`
 	PlaybookID   string          `db:"playbook_id"   json:"playbook_id"`

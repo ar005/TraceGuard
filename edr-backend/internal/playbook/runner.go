@@ -23,6 +23,8 @@ type RunnerStore interface {
 	UpdatePlaybookRun(ctx context.Context, id, status, errMsg string, actionsLog []byte) error
 	IncrPlaybookRunCount(ctx context.Context, id string) error
 	UpdateAlertStatus(ctx context.Context, id, tenantID, status, assignee, notes string) error
+	GetAgent(ctx context.Context, id string) (*models.Agent, error)
+	ListGroupsForAgent(ctx context.Context, agentID, tenantID string) ([]string, error)
 }
 
 // Runner dispatches playbooks in response to alerts and XDR events.
@@ -48,8 +50,19 @@ func (r *Runner) OnAlert(ctx context.Context, alert *models.Alert) {
 		r.log.Warn().Err(err).Msg("list playbooks failed")
 		return
 	}
+
+	// Resolve which groups the alert's agent belongs to (best-effort).
+	var agentGroupIDs []string
+	var agentTags []string
+	if alert.AgentID != "" {
+		agentGroupIDs, _ = r.store.ListGroupsForAgent(ctx, alert.AgentID, alert.TenantID)
+		if agent, err2 := r.store.GetAgent(ctx, alert.AgentID); err2 == nil {
+			agentTags = agent.Tags
+		}
+	}
+
 	for _, pb := range playbooks {
-		if matchesAlert(pb, alert) {
+		if matchesAlert(pb, alert, agentGroupIDs, agentTags) {
 			go r.execute(context.Background(), pb, "alert", alert.ID, &ActionContext{
 				Alert: alert,
 				Store: r.store,
@@ -132,7 +145,7 @@ func (r *Runner) finishRun(ctx context.Context, runID, status, errMsg string, re
 
 // ── trigger matching ──────────────────────────────────────────────────────────
 
-func matchesAlert(pb models.Playbook, alert *models.Alert) bool {
+func matchesAlert(pb models.Playbook, alert *models.Alert, agentGroupIDs []string, agentTags []string) bool {
 	var f models.PlaybookTriggerFilter
 	if err := json.Unmarshal(pb.TriggerFilter, &f); err != nil {
 		return true // no filter = match all
@@ -142,6 +155,31 @@ func matchesAlert(pb models.Playbook, alert *models.Alert) bool {
 	}
 	if len(f.RuleIDs) > 0 && !containsStr(f.RuleIDs, alert.RuleID) {
 		return false
+	}
+	// Host group filter — agent must belong to at least one listed group (any-of).
+	if len(f.HostGroups) > 0 {
+		matched := false
+		for _, gid := range f.HostGroups {
+			if containsStr(agentGroupIDs, gid) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	// Host tag filter — agent must carry all listed tags (all-of).
+	if len(f.HostTags) > 0 {
+		tagSet := make(map[string]struct{}, len(agentTags))
+		for _, t := range agentTags {
+			tagSet[t] = struct{}{}
+		}
+		for _, required := range f.HostTags {
+			if _, ok := tagSet[required]; !ok {
+				return false
+			}
+		}
 	}
 	return true
 }

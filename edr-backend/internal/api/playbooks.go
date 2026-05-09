@@ -16,7 +16,8 @@ import (
 // ── Playbooks ─────────────────────────────────────────────────────────────────
 
 func (s *Server) handleListPlaybooks(c *gin.Context) {
-	rows, err := s.store.ListPlaybooks(c.Request.Context())
+	tid := c.GetString("tenant_id")
+	rows, err := s.store.ListPlaybooks(c.Request.Context(), tid)
 	if err != nil {
 		s.jsonError(c, err)
 		return
@@ -52,6 +53,7 @@ func (s *Server) handleCreatePlaybook(c *gin.Context) {
 	if len(pb.Actions) == 0 {
 		pb.Actions = []byte("[]")
 	}
+	pb.TenantID = c.GetString("tenant_id")
 	if raw, ok := c.Get(string(ctxClaims)); ok {
 		if claims, ok := raw.(*users.Claims); ok {
 			pb.CreatedBy = claims.Subject
@@ -75,6 +77,7 @@ func (s *Server) handleUpdatePlaybook(c *gin.Context) {
 		return
 	}
 	pb.ID = c.Param("id")
+	pb.TenantID = c.GetString("tenant_id")
 	if err := s.store.UpdatePlaybook(c.Request.Context(), pb); err != nil {
 		s.jsonError(c, err)
 		return
@@ -83,7 +86,8 @@ func (s *Server) handleUpdatePlaybook(c *gin.Context) {
 }
 
 func (s *Server) handleDeletePlaybook(c *gin.Context) {
-	if err := s.store.DeletePlaybook(c.Request.Context(), c.Param("id")); err != nil {
+	tid := c.GetString("tenant_id")
+	if err := s.store.DeletePlaybook(c.Request.Context(), c.Param("id"), tid); err != nil {
 		s.jsonError(c, err)
 		return
 	}
@@ -122,15 +126,96 @@ func (s *Server) handleTestPlaybook(c *gin.Context) {
 		return
 	}
 	dummyAlert := &models.Alert{
-		ID:        "test-" + uuid.New().String(),
-		Title:     "Test execution from API",
-		RuleName:  "manual-test",
-		Hostname:  "test-host",
-		Severity:  2,
-		Status:    "OPEN",
+		ID:       "test-" + uuid.New().String(),
+		Title:    "Test execution from API",
+		RuleName: "manual-test",
+		Hostname: "test-host",
+		Severity: 2,
+		Status:   "OPEN",
+		TenantID: c.GetString("tenant_id"),
 	}
 	go s.playbookRunner.OnAlert(c.Request.Context(), dummyAlert)
 	c.JSON(http.StatusAccepted, gin.H{"message": "playbook test triggered", "playbook": pb.Name})
+}
+
+// ── Agent Groups ──────────────────────────────────────────────────────────────
+
+func (s *Server) handleListAgentGroups(c *gin.Context) {
+	tid := c.GetString("tenant_id")
+	groups, err := s.store.ListAgentGroups(c.Request.Context(), tid)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"groups": groups})
+}
+
+func (s *Server) handleGetAgentGroup(c *gin.Context) {
+	tid := c.GetString("tenant_id")
+	g, err := s.store.GetAgentGroup(c.Request.Context(), c.Param("id"), tid)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "group not found"})
+		return
+	}
+	c.JSON(http.StatusOK, g)
+}
+
+func (s *Server) handleCreateAgentGroup(c *gin.Context) {
+	var g models.AgentGroup
+	if err := c.ShouldBindJSON(&g); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if g.Name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name required"})
+		return
+	}
+	g.TenantID = c.GetString("tenant_id")
+	created, err := s.store.CreateAgentGroup(c.Request.Context(), &g)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, created)
+}
+
+func (s *Server) handleUpdateAgentGroup(c *gin.Context) {
+	tid := c.GetString("tenant_id")
+	existing, err := s.store.GetAgentGroup(c.Request.Context(), c.Param("id"), tid)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "group not found"})
+		return
+	}
+	if err := c.ShouldBindJSON(existing); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	existing.ID = c.Param("id")
+	existing.TenantID = tid
+	if err := s.store.UpdateAgentGroup(c.Request.Context(), existing); err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, existing)
+}
+
+func (s *Server) handleDeleteAgentGroup(c *gin.Context) {
+	tid := c.GetString("tenant_id")
+	if err := s.store.DeleteAgentGroup(c.Request.Context(), c.Param("id"), tid); err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (s *Server) handleListAgentGroupMembers(c *gin.Context) {
+	tid := c.GetString("tenant_id")
+	agents, err := s.store.ListAgentGroupMembers(c.Request.Context(), c.Param("id"), tid)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"agents": agents})
 }
 
 // ── Response Actions ──────────────────────────────────────────────────────────

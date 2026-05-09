@@ -2233,6 +2233,27 @@ ALTER TABLE iocs ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'defau
 CREATE INDEX IF NOT EXISTS iocs_tenant_idx ON iocs(tenant_id);
 `,
 	},
+	{
+		name: "agent_groups",
+		sql: `
+CREATE TABLE IF NOT EXISTS agent_groups (
+    id          TEXT        PRIMARY KEY,
+    tenant_id   TEXT        NOT NULL DEFAULT 'default',
+    name        TEXT        NOT NULL,
+    description TEXT        NOT NULL DEFAULT '',
+    color       TEXT        NOT NULL DEFAULT '#6366f1',
+    tag_filter  TEXT[]      NOT NULL DEFAULT '{}',
+    env_filter  TEXT        NOT NULL DEFAULT '',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS agent_groups_tenant_idx ON agent_groups(tenant_id);
+
+ALTER TABLE playbooks
+    ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
+CREATE INDEX IF NOT EXISTS playbooks_tenant_idx ON playbooks(tenant_id);
+`,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.

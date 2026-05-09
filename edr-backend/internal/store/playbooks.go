@@ -13,20 +13,21 @@ import (
 
 // ── Playbooks ─────────────────────────────────────────────────────────────────
 
-func (s *Store) ListPlaybooks(ctx context.Context) ([]models.Playbook, error) {
+const playbookCols = `id, tenant_id, name, description, enabled, trigger_type, trigger_filter, actions,
+		       run_count, last_run_at, created_at, updated_at, created_by`
+
+func (s *Store) ListPlaybooks(ctx context.Context, tenantID string) ([]models.Playbook, error) {
 	var rows []models.Playbook
 	err := s.rdb().SelectContext(ctx, &rows, `
-		SELECT id, name, description, enabled, trigger_type, trigger_filter, actions,
-		       run_count, last_run_at, created_at, updated_at, created_by
-		FROM playbooks ORDER BY created_at DESC`)
+		SELECT `+playbookCols+`
+		FROM playbooks WHERE tenant_id = $1 ORDER BY created_at DESC`, tenantID)
 	return rows, err
 }
 
 func (s *Store) GetPlaybook(ctx context.Context, id string) (*models.Playbook, error) {
 	var p models.Playbook
 	err := s.rdb().GetContext(ctx, &p, `
-		SELECT id, name, description, enabled, trigger_type, trigger_filter, actions,
-		       run_count, last_run_at, created_at, updated_at, created_by
+		SELECT `+playbookCols+`
 		FROM playbooks WHERE id = $1`, id)
 	if err != nil {
 		return nil, err
@@ -43,9 +44,9 @@ func (s *Store) CreatePlaybook(ctx context.Context, p *models.Playbook) error {
 	p.UpdatedAt = now
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO playbooks
-		  (id, name, description, enabled, trigger_type, trigger_filter, actions, created_by, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-		p.ID, p.Name, p.Description, p.Enabled, p.TriggerType,
+		  (id, tenant_id, name, description, enabled, trigger_type, trigger_filter, actions, created_by, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		p.ID, p.TenantID, p.Name, p.Description, p.Enabled, p.TriggerType,
 		p.TriggerFilter, p.Actions, p.CreatedBy, p.CreatedAt, p.UpdatedAt)
 	return err
 }
@@ -56,22 +57,21 @@ func (s *Store) UpdatePlaybook(ctx context.Context, p *models.Playbook) error {
 		UPDATE playbooks SET
 		  name = $2, description = $3, enabled = $4,
 		  trigger_filter = $5, actions = $6, updated_at = $7
-		WHERE id = $1`,
+		WHERE id = $1 AND tenant_id = $8`,
 		p.ID, p.Name, p.Description, p.Enabled,
-		p.TriggerFilter, p.Actions, p.UpdatedAt)
+		p.TriggerFilter, p.Actions, p.UpdatedAt, p.TenantID)
 	return err
 }
 
-func (s *Store) DeletePlaybook(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM playbooks WHERE id = $1`, id)
+func (s *Store) DeletePlaybook(ctx context.Context, id, tenantID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM playbooks WHERE id = $1 AND tenant_id = $2`, id, tenantID)
 	return err
 }
 
 func (s *Store) ListEnabledPlaybooks(ctx context.Context, triggerType string) ([]models.Playbook, error) {
 	var rows []models.Playbook
 	err := s.rdb().SelectContext(ctx, &rows, `
-		SELECT id, name, description, enabled, trigger_type, trigger_filter, actions,
-		       run_count, last_run_at, created_at, updated_at, created_by
+		SELECT `+playbookCols+`
 		FROM playbooks WHERE enabled = TRUE AND trigger_type = $1`, triggerType)
 	return rows, err
 }

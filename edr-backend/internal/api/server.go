@@ -485,6 +485,17 @@ func (s *Server) registerRoutes() {
 			pbw.POST("/:id/test", s.handleTestPlaybook)
 		}
 
+		// Agent Groups
+		v1.GET("/agent-groups",                  s.handleListAgentGroups)
+		v1.GET("/agent-groups/:id",              s.handleGetAgentGroup)
+		v1.GET("/agent-groups/:id/members",      s.handleListAgentGroupMembers)
+		agw := v1.Group("/agent-groups", s.adminOnly())
+		{
+			agw.POST("",       s.handleCreateAgentGroup)
+			agw.PUT("/:id",    s.handleUpdateAgentGroup)
+			agw.DELETE("/:id", s.handleDeleteAgentGroup)
+		}
+
 		// XDR Phase 4 — import endpoints (admin only)
 		importw := v1.Group("", s.adminOnly())
 		{
