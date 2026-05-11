@@ -25,6 +25,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/youredr/edr-backend/internal/apikeys"
+	"github.com/youredr/edr-backend/internal/enrichment"
 	"github.com/youredr/edr-backend/internal/compliance"
 	"github.com/youredr/edr-backend/internal/configver"
 	"github.com/youredr/edr-backend/internal/cvecache"
@@ -55,8 +56,10 @@ type Server struct {
 	iocSync  *iocfeed.Syncer
 	sse      *sse.Broker
 	xdrSink  XdrEventSink // optional; nil when NATS is disabled
-	playbookRunner PlaybookRunner // optional; nil when NATS is disabled
-	exportMgr      ExportManager  // optional; nil when not configured
+	playbookRunner   PlaybookRunner   // optional; nil when NATS is disabled
+	exportMgr        ExportManager    // optional; nil when not configured
+	disruptionEngine DisruptionEngine // optional; nil when not configured
+	enricher         *enrichment.Enricher // optional; nil when keys not configured
 	log      zerolog.Logger
 	router   *gin.Engine
 	http     *http.Server
@@ -204,6 +207,8 @@ func (s *Server) registerRoutes() {
 		v1.PATCH("/alerts/:id",        s.handleUpdateAlert)
 		v1.POST("/alerts/:id/explain", s.handleExplainAlert)
 		v1.POST("/alerts/:id/triage",  s.handleTriageAlert)
+		v1.POST("/alerts/:id/chat",    s.handleAlertChat)
+		v1.POST("/incidents/:id/chat", s.handleIncidentChat)
 
 		// Live Response (read)
 		v1.GET("/liveresponse/agents", s.handleLRAgents)
@@ -258,8 +263,10 @@ func (s *Server) registerRoutes() {
 		v1.POST("/hunt/generate", strictRateLimitMiddleware(s.rateLimit), s.handleGenerateHuntQuery)
 
 		// Settings (read)
-		v1.GET("/settings/retention", s.handleGetRetention)
-		v1.GET("/settings/llm",       s.handleGetLLMSettings)
+		v1.GET("/settings/retention",   s.handleGetRetention)
+		v1.GET("/settings/llm",         s.handleGetLLMSettings)
+		v1.GET("/settings/enrichment",  s.handleGetEnrichmentSettings)
+		v1.GET("/alerts/:id/enrichments", s.handleGetAlertEnrichments)
 
 		// Database size metrics
 		v1.GET("/metrics/db-size", s.handleDBSize)
@@ -338,9 +345,11 @@ func (s *Server) registerRoutes() {
 			w.PUT("/yara/rules/:id",    s.handleUpdateYARARule)
 			w.DELETE("/yara/rules/:id", s.handleDeleteYARARule)
 
-			w.POST("/settings/retention",  s.handleSetRetention)
-			w.POST("/settings/llm",        s.handleSetLLMSettings)
-			w.POST("/settings/llm/test",   s.handleTestLLM)
+			w.POST("/settings/retention",   s.handleSetRetention)
+			w.POST("/settings/llm",         s.handleSetLLMSettings)
+			w.POST("/settings/llm/test",    s.handleTestLLM)
+			w.POST("/settings/enrichment",  s.handleSetEnrichmentSettings)
+			w.POST("/alerts/:id/enrich",    s.handleEnrichAlert)
 
 			w.POST("/migrate/export", strictRateLimitMiddleware(s.rateLimit), s.handleMigrateExport)
 			w.POST("/migrate/import", strictRateLimitMiddleware(s.rateLimit), s.handleMigrateImport)
@@ -377,12 +386,17 @@ func (s *Server) registerRoutes() {
 		// Host risk
 		v1.GET("/agents/top-risk",             s.handleListTopRiskAgents)
 
-		// Alert enrichments
-		v1.GET("/alerts/:id/enrichments",      s.handleGetAlertEnrichments)
-
 		// Auto-case policies (reads open to analysts; writes admin-only)
 		v1.GET("/autocase/policies",                        s.handleListAutoCasePolicies)
 		v1.PUT("/autocase/policies/:id", s.adminOnly(),    s.handleUpsertAutoCasePolicy)
+
+		// Autonomous disruption
+		v1.GET("/disruption/policies",                           s.handleListDisruptionPolicies)
+		v1.POST("/disruption/policies",      s.adminOnly(),      s.handleCreateDisruptionPolicy)
+		v1.PUT("/disruption/policies/:id",   s.adminOnly(),      s.handleUpdateDisruptionPolicy)
+		v1.DELETE("/disruption/policies/:id",s.adminOnly(),      s.handleDeleteDisruptionPolicy)
+		v1.GET("/disruption/containments",                       s.handleListContainments)
+		v1.POST("/disruption/containments/:id/release", s.adminOnly(), s.handleReleaseContainment)
 
 		// Auto-remediation rules (reads open to analysts; writes admin-only)
 		v1.GET("/remediation/rules",                              s.handleListRemediationRules)
@@ -439,6 +453,7 @@ func (s *Server) registerRoutes() {
 		v1.GET("/xdr/lateral-graph",           s.handleLateralGraph)
 		v1.GET("/xdr/threat-score",            s.handleGetOrgThreatScore)
 		v1.GET("/xdr/threat-score/history",    s.handleGetEntityRiskHistory)
+		v1.GET("/xdr/posture",                 s.handleGetPostureScore)
 		v1.GET("/xdr/attack-surface",          s.handleGetOrgAttackSurface)
 		v1.GET("/xdr/anomalies",               s.handleListAnomalies)
 		v1.GET("/identity/:uid/anomalies",     s.handleGetEntityAnomalies)
@@ -2984,6 +2999,19 @@ type ExportManager interface {
 func (s *Server) SetPlaybookRunner(r PlaybookRunner) {
 	s.playbookRunner = r
 }
+
+// DisruptionEngine is the interface for the autonomous disruption subsystem.
+type DisruptionEngine interface {
+	OnAlert(ctx context.Context, alert *models.Alert)
+}
+
+// SetDisruptionEngine wires the disruption engine into the API server.
+func (s *Server) SetDisruptionEngine(e DisruptionEngine) {
+	s.disruptionEngine = e
+}
+
+// SetEnricher wires the TI enrichment engine into the API server.
+func (s *Server) SetEnricher(e *enrichment.Enricher) { s.enricher = e }
 
 // SetExportManager wires the export/SIEM manager into the API server.
 func (s *Server) SetExportManager(m ExportManager) {

@@ -148,6 +148,85 @@ func (c *Client) SummariseCase(ctx context.Context, cs *models.Case, alerts []mo
 	return p.Complete(ctx, system, sb.String())
 }
 
+// ChatMessage is a single turn in a multi-turn chat session.
+type ChatMessage struct {
+	Role    string `json:"role"`    // "user" or "assistant"
+	Content string `json:"content"`
+}
+
+// AlertChatSystem builds the system prompt for an alert investigation chat.
+// All alert field values are JSON-encoded to prevent prompt injection.
+func AlertChatSystem(alert *models.Alert, events []models.Event) string {
+	type evSum struct {
+		EventType string `json:"event_type"`
+		Summary   string `json:"summary"`
+		Time      string `json:"time"`
+	}
+	max := 8
+	if len(events) < max {
+		max = len(events)
+	}
+	sums := make([]evSum, max)
+	for i, ev := range events[:max] {
+		var p map[string]interface{}
+		_ = json.Unmarshal(ev.Payload, &p)
+		sums[i] = evSum{EventType: ev.EventType, Summary: SummarisePayload(ev.EventType, p), Time: ev.Timestamp.Format("15:04:05")}
+	}
+	data := map[string]interface{}{
+		"alert_id":   alert.ID,
+		"title":      alert.Title,
+		"severity":   models.SeverityLabel(alert.Severity),
+		"host":       alert.Hostname,
+		"rule":       alert.RuleName,
+		"mitre_ids":  alert.MitreIDs,
+		"hit_count":  alert.HitCount,
+		"first_seen": alert.FirstSeen.Format("2006-01-02 15:04:05 UTC"),
+		"events":     sums,
+	}
+	b, _ := json.Marshal(data)
+	return "You are an expert SOC analyst assistant. The analyst is investigating the following EDR alert.\n\n" +
+		"Alert context (JSON):\n" + string(b) + "\n\n" +
+		"Answer questions concisely and technically. Reference MITRE ATT&CK techniques, " +
+		"suggest investigation steps, and recommend response actions where relevant. " +
+		"No disclaimers or caveats."
+}
+
+// IncidentChatSystem builds the system prompt for an incident investigation chat.
+func IncidentChatSystem(inc *models.Incident, alerts []models.Alert) string {
+	type alertSum struct {
+		Title    string `json:"title"`
+		Severity string `json:"severity"`
+		Host     string `json:"host"`
+		Rule     string `json:"rule"`
+	}
+	max := 10
+	if len(alerts) < max {
+		max = len(alerts)
+	}
+	sums := make([]alertSum, max)
+	for i, a := range alerts[:max] {
+		sums[i] = alertSum{Title: a.Title, Severity: models.SeverityLabel(a.Severity), Host: a.Hostname, Rule: a.RuleName}
+	}
+	data := map[string]interface{}{
+		"incident_id": inc.ID,
+		"title":       inc.Title,
+		"severity":    models.SeverityLabel(inc.Severity),
+		"status":      inc.Status,
+		"hosts":       []string(inc.Hostnames),
+		"mitre_ids":   []string(inc.MitreIDs),
+		"alert_count": inc.AlertCount,
+		"first_seen":  inc.FirstSeen.Format("2006-01-02 15:04:05 UTC"),
+		"last_seen":   inc.LastSeen.Format("2006-01-02 15:04:05 UTC"),
+		"alerts":      sums,
+	}
+	b, _ := json.Marshal(data)
+	return "You are an expert SOC analyst assistant. The analyst is investigating the following security incident.\n\n" +
+		"Incident context (JSON):\n" + string(b) + "\n\n" +
+		"Answer questions concisely and technically. Reference MITRE ATT&CK techniques, " +
+		"suggest investigation steps, and recommend containment or response actions. " +
+		"No disclaimers or caveats."
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func buildTriagePrompt(alert *models.Alert, events []models.Event) string {

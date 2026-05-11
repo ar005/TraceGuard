@@ -45,3 +45,15 @@ func (s *Server) handleGetEntityRiskHistory(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"history": points, "entity_id": entityID, "entity_type": entityType})
 }
+
+// GET /api/v1/xdr/posture
+func (s *Server) handleGetPostureScore(c *gin.Context) {
+	tid := c.GetString("tenant_id")
+	result, err := s.store.GetPostureScore(c.Request.Context(), tid)
+	if err != nil {
+		s.log.Error().Err(err).Msg("get posture score")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}

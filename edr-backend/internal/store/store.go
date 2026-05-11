@@ -4075,6 +4075,184 @@ func (s *Store) GetOrgThreatScore(ctx context.Context, tenantID string, days int
 	}, nil
 }
 
+// PostureComponent is one scored dimension of the org security posture.
+type PostureComponent struct {
+	Name   string `json:"name"`
+	Score  int    `json:"score"`  // 0–100
+	Weight int    `json:"weight"` // percentage contribution to overall
+	Detail string `json:"detail"`
+}
+
+// PostureFinding is a specific issue dragging the posture score down.
+type PostureFinding struct {
+	Severity string `json:"severity"` // critical / high / medium
+	Title    string `json:"title"`
+	Detail   string `json:"detail"`
+}
+
+// PostureScore is the response for GET /xdr/posture.
+type PostureScore struct {
+	Overall    int                `json:"overall"`
+	Grade      string             `json:"grade"` // A / B / C / D / F
+	Components []PostureComponent `json:"components"`
+	Findings   []PostureFinding   `json:"findings"`
+	ComputedAt time.Time          `json:"computed_at"`
+}
+
+// GetPostureScore computes the org-wide security posture score from live data.
+//
+// Weighted components:
+//
+//	Host Risk         25 % — avg risk score across risky agents
+//	Vulnerability     25 % — penalised by critical CVE count
+//	Identity Risk     20 % — avg risk score across risky identities
+//	Agent Coverage    20 % — % of agents seen in the last 24 h
+//	Anomaly Load      10 % — penalised by active critical/high anomalies
+func (s *Store) GetPostureScore(ctx context.Context, tenantID string) (*PostureScore, error) {
+	// ── 1. Agent coverage ─────────────────────────────────────────────────────
+	var totalAgents, recentAgents int
+	_ = s.rdb().GetContext(ctx, &totalAgents, `SELECT COUNT(*) FROM agents WHERE tenant_id=$1`, tenantID)
+	_ = s.rdb().GetContext(ctx, &recentAgents,
+		`SELECT COUNT(*) FROM agents WHERE tenant_id=$1 AND last_seen > NOW()-INTERVAL '24 hours'`, tenantID)
+	coverageScore := 100
+	if totalAgents > 0 {
+		coverageScore = recentAgents * 100 / totalAgents
+	}
+
+	// ── 2. Host risk ──────────────────────────────────────────────────────────
+	var avgAgentRisk float64
+	_ = s.rdb().GetContext(ctx, &avgAgentRisk,
+		`SELECT COALESCE(AVG(risk_score),0) FROM agents WHERE tenant_id=$1 AND risk_score > 0`, tenantID)
+	var critAgents int
+	_ = s.rdb().GetContext(ctx, &critAgents,
+		`SELECT COUNT(*) FROM agents WHERE tenant_id=$1 AND risk_score >= 80`, tenantID)
+	hostRiskScore := max(0, 100-int(avgAgentRisk))
+
+	// ── 3. Identity risk ──────────────────────────────────────────────────────
+	var avgIdentityRisk float64
+	_ = s.rdb().GetContext(ctx, &avgIdentityRisk,
+		`SELECT COALESCE(AVG(risk_score),0) FROM identity_graph WHERE risk_score > 0`)
+	var critUsers int
+	_ = s.rdb().GetContext(ctx, &critUsers,
+		`SELECT COUNT(*) FROM identity_graph WHERE risk_score >= 70`)
+	identityRiskScore := max(0, 100-int(avgIdentityRisk))
+
+	// ── 4. Vulnerability posture ──────────────────────────────────────────────
+	var critVulns, highVulns int
+	_ = s.rdb().GetContext(ctx, &critVulns,
+		`SELECT COUNT(*) FROM vulnerabilities v
+		 JOIN agents a ON a.id=v.agent_id WHERE a.tenant_id=$1
+		   AND v.severity ILIKE 'critical'`, tenantID)
+	_ = s.rdb().GetContext(ctx, &highVulns,
+		`SELECT COUNT(*) FROM vulnerabilities v
+		 JOIN agents a ON a.id=v.agent_id WHERE a.tenant_id=$1
+		   AND v.severity ILIKE 'high'`, tenantID)
+	vulnScore := max(0, 100-critVulns*8-highVulns*2)
+	if vulnScore > 100 {
+		vulnScore = 100
+	}
+
+	// ── 5. Anomaly load ───────────────────────────────────────────────────────
+	var critAnomalies, highAnomalies int
+	_ = s.rdb().GetContext(ctx, &critAnomalies,
+		`SELECT COUNT(*) FROM anomaly_scores WHERE tenant_id=$1 AND is_active=true AND severity='critical'`, tenantID)
+	_ = s.rdb().GetContext(ctx, &highAnomalies,
+		`SELECT COUNT(*) FROM anomaly_scores WHERE tenant_id=$1 AND is_active=true AND severity='high'`, tenantID)
+	anomalyScore := max(0, 100-critAnomalies*15-highAnomalies*5)
+	if anomalyScore > 100 {
+		anomalyScore = 100
+	}
+
+	// ── Weighted overall ──────────────────────────────────────────────────────
+	overall := (hostRiskScore*25 + vulnScore*25 + identityRiskScore*20 + coverageScore*20 + anomalyScore*10) / 100
+
+	grade := "A"
+	switch {
+	case overall < 35:
+		grade = "F"
+	case overall < 50:
+		grade = "D"
+	case overall < 65:
+		grade = "C"
+	case overall < 80:
+		grade = "B"
+	}
+
+	// ── Key findings ──────────────────────────────────────────────────────────
+	var findings []PostureFinding
+	offlineAgents := totalAgents - recentAgents
+	if offlineAgents > 0 {
+		sev := "medium"
+		if offlineAgents > totalAgents/4 {
+			sev = "high"
+		}
+		findings = append(findings, PostureFinding{
+			Severity: sev,
+			Title:    fmt.Sprintf("%d agent%s offline (>24h)", offlineAgents, pluralS(offlineAgents)),
+			Detail:   "Gaps in sensor coverage reduce detection fidelity.",
+		})
+	}
+	if critAgents > 0 {
+		findings = append(findings, PostureFinding{
+			Severity: "critical",
+			Title:    fmt.Sprintf("%d host%s at critical risk", critAgents, pluralS(critAgents)),
+			Detail:   fmt.Sprintf("Risk score ≥ 80 — investigate and remediate immediately."),
+		})
+	}
+	if critVulns > 0 {
+		findings = append(findings, PostureFinding{
+			Severity: "critical",
+			Title:    fmt.Sprintf("%d critical CVE%s unpatched", critVulns, pluralS(critVulns)),
+			Detail:   "Apply vendor patches or isolate affected hosts.",
+		})
+	}
+	if critUsers > 0 {
+		findings = append(findings, PostureFinding{
+			Severity: "high",
+			Title:    fmt.Sprintf("%d high-risk user%s", critUsers, pluralS(critUsers)),
+			Detail:   "Review recent activity and enforce MFA.",
+		})
+	}
+	if critAnomalies > 0 {
+		findings = append(findings, PostureFinding{
+			Severity: "critical",
+			Title:    fmt.Sprintf("%d critical anomal%s active", critAnomalies, func(n int) string {
+				if n == 1 {
+					return "y"
+				}
+				return "ies"
+			}(critAnomalies)),
+			Detail: "Statistically significant deviations detected — triage immediately.",
+		})
+	}
+
+	return &PostureScore{
+		Overall: overall,
+		Grade:   grade,
+		Components: []PostureComponent{
+			{Name: "Host Risk", Score: hostRiskScore, Weight: 25,
+				Detail: fmt.Sprintf("avg risk score %.0f across risky agents", avgAgentRisk)},
+			{Name: "Vulnerability Posture", Score: vulnScore, Weight: 25,
+				Detail: fmt.Sprintf("%d critical, %d high CVEs unpatched", critVulns, highVulns)},
+			{Name: "Identity Risk", Score: identityRiskScore, Weight: 20,
+				Detail: fmt.Sprintf("avg risk score %.0f across risky identities", avgIdentityRisk)},
+			{Name: "Agent Coverage", Score: coverageScore, Weight: 20,
+				Detail: fmt.Sprintf("%d/%d agents active in last 24h", recentAgents, totalAgents)},
+			{Name: "Anomaly Load", Score: anomalyScore, Weight: 10,
+				Detail: fmt.Sprintf("%d critical, %d high anomalies active", critAnomalies, highAnomalies)},
+		},
+		Findings:   findings,
+		ComputedAt: time.Now(),
+	}, nil
+}
+
+func pluralS(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
 // GetEntityRiskHistory returns daily-averaged score history for one entity.
 func (s *Store) GetEntityRiskHistory(ctx context.Context, entityID, entityType string, days int) ([]RiskTrendPoint, error) {
 	if days <= 0 {

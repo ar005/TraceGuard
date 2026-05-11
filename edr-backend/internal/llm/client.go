@@ -254,6 +254,33 @@ func (c *Client) ProviderName() string {
 	return ""
 }
 
+// Chat sends a multi-turn conversation to the LLM.
+// History must contain at least one message; the last should be role="user".
+// The conversation history is serialised into a single user prompt so that
+// all four provider backends work without modification.
+func (c *Client) Chat(ctx context.Context, system string, history []ChatMessage) (string, error) {
+	c.mu.RLock()
+	p := c.provider
+	enabled := c.cfg.Enabled
+	c.mu.RUnlock()
+	if !enabled || p == nil {
+		return "", fmt.Errorf("LLM not enabled — configure a provider first")
+	}
+	var sb strings.Builder
+	for i, m := range history {
+		if i > 0 {
+			sb.WriteString("\n\n")
+		}
+		if m.Role == "assistant" {
+			sb.WriteString("Assistant: ")
+		} else {
+			sb.WriteString("User: ")
+		}
+		sb.WriteString(m.Content)
+	}
+	return p.Complete(ctx, system, sb.String())
+}
+
 // ModelName returns the configured model name.
 func (c *Client) ModelName() string {
 	c.mu.RLock()

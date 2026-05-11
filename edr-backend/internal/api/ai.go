@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/youredr/edr-backend/internal/llm"
 )
 
 // handleTriageAlert runs AI triage on a specific alert and persists the result.
@@ -69,6 +70,76 @@ func (s *Server) handleGenerateHuntQuery(c *gin.Context) {
 		"explanation": result.Explanation,
 		"model":       s.llm.ModelName(),
 		"provider":    s.llm.ProviderName(),
+	})
+}
+
+// handleAlertChat runs a multi-turn AI chat session grounded in alert context.
+func (s *Server) handleAlertChat(c *gin.Context) {
+	if s.llm == nil || !s.llm.Enabled() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI not enabled — configure a provider in Settings"})
+		return
+	}
+	var body struct {
+		Messages []llm.ChatMessage `json:"messages"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || len(body.Messages) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "messages required"})
+		return
+	}
+	ctx := c.Request.Context()
+	tid := c.GetString("tenant_id")
+	alert, err := s.store.GetAlert(ctx, c.Param("id"), tid)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	events, _ := s.store.GetAlertEvents(ctx, alert.ID, tid)
+	system := llm.AlertChatSystem(alert, events)
+	reply, err := s.llm.Chat(ctx, system, body.Messages)
+	if err != nil {
+		s.log.Warn().Err(err).Str("alert", alert.ID).Msg("LLM chat failed")
+		c.JSON(http.StatusBadGateway, gin.H{"error": "LLM request failed: " + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"reply":    reply,
+		"model":    s.llm.ModelName(),
+		"provider": s.llm.ProviderName(),
+	})
+}
+
+// handleIncidentChat runs a multi-turn AI chat session grounded in incident context.
+func (s *Server) handleIncidentChat(c *gin.Context) {
+	if s.llm == nil || !s.llm.Enabled() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI not enabled — configure a provider in Settings"})
+		return
+	}
+	var body struct {
+		Messages []llm.ChatMessage `json:"messages"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || len(body.Messages) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "messages required"})
+		return
+	}
+	ctx := c.Request.Context()
+	tid := c.GetString("tenant_id")
+	inc, err := s.store.GetIncident(ctx, c.Param("id"), tid)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	alerts, _ := s.store.GetIncidentAlerts(ctx, inc.ID)
+	system := llm.IncidentChatSystem(inc, alerts)
+	reply, err := s.llm.Chat(ctx, system, body.Messages)
+	if err != nil {
+		s.log.Warn().Err(err).Str("incident", inc.ID).Msg("LLM chat failed")
+		c.JSON(http.StatusBadGateway, gin.H{"error": "LLM request failed: " + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"reply":    reply,
+		"model":    s.llm.ModelName(),
+		"provider": s.llm.ProviderName(),
 	})
 }
 

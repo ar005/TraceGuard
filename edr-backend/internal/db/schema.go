@@ -2234,6 +2234,46 @@ CREATE INDEX IF NOT EXISTS iocs_tenant_idx ON iocs(tenant_id);
 `,
 	},
 	{
+		name: "disruption",
+		sql: `
+CREATE TABLE IF NOT EXISTS disruption_policies (
+    id                TEXT        PRIMARY KEY,
+    tenant_id         TEXT        NOT NULL DEFAULT 'default',
+    name              TEXT        NOT NULL,
+    description       TEXT        NOT NULL DEFAULT '',
+    enabled           BOOLEAN     NOT NULL DEFAULT true,
+    min_severity      SMALLINT    NOT NULL DEFAULT 4,
+    rule_ids          TEXT[]      NOT NULL DEFAULT '{}',
+    host_groups       TEXT[]      NOT NULL DEFAULT '{}',
+    action            TEXT        NOT NULL DEFAULT 'isolate',
+    auto_release_hours INT        NOT NULL DEFAULT 4,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS disruption_policies_tenant_idx ON disruption_policies(tenant_id);
+
+CREATE TABLE IF NOT EXISTS active_containments (
+    id           TEXT        PRIMARY KEY,
+    tenant_id    TEXT        NOT NULL DEFAULT 'default',
+    policy_id    TEXT        NOT NULL,
+    policy_name  TEXT        NOT NULL,
+    alert_id     TEXT        NOT NULL,
+    agent_id     TEXT        NOT NULL,
+    hostname     TEXT        NOT NULL,
+    action       TEXT        NOT NULL DEFAULT 'isolate',
+    status       TEXT        NOT NULL DEFAULT 'active',
+    contained_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    release_at   TIMESTAMPTZ,
+    released_at  TIMESTAMPTZ,
+    released_by  TEXT        NOT NULL DEFAULT 'system',
+    release_note TEXT        NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS containments_status_release_idx ON active_containments(status, release_at);
+CREATE INDEX IF NOT EXISTS containments_tenant_idx         ON active_containments(tenant_id);
+CREATE INDEX IF NOT EXISTS containments_agent_idx          ON active_containments(agent_id);
+`,
+	},
+	{
 		name: "agent_groups",
 		sql: `
 CREATE TABLE IF NOT EXISTS agent_groups (

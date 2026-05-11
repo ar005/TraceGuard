@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -47,10 +48,11 @@ type AbuseIPResult struct {
 }
 
 type Enricher struct {
-	vtKey     string
-	abuseKey  string
-	http      *http.Client
-	log       zerolog.Logger
+	mu       sync.RWMutex
+	vtKey    string
+	abuseKey string
+	http     *http.Client
+	log      zerolog.Logger
 }
 
 func New(vtAPIKey, abuseIPDBKey string, log zerolog.Logger) *Enricher {
@@ -62,21 +64,43 @@ func New(vtAPIKey, abuseIPDBKey string, log zerolog.Logger) *Enricher {
 	}
 }
 
+// Configure hot-swaps the API keys without restarting. Safe for concurrent use.
+func (e *Enricher) Configure(vtKey, abuseKey string) {
+	e.mu.Lock()
+	e.vtKey = vtKey
+	e.abuseKey = abuseKey
+	e.mu.Unlock()
+}
+
+// HasKeys returns true if at least one provider key is set.
+func (e *Enricher) HasKeys() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.vtKey != "" || e.abuseKey != ""
+}
+
+func (e *Enricher) keys() (vt, abuse string) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.vtKey, e.abuseKey
+}
+
 // EnrichIP runs VirusTotal + AbuseIPDB lookups for an IP address.
 func (e *Enricher) EnrichIP(ctx context.Context, ip string) (*TIResult, error) {
+	vtKey, abuseKey := e.keys()
 	result := &TIResult{EnrichedAt: time.Now()}
-
-	var vtErr, abuseErr error
-	if e.vtKey != "" {
-		result.VirusTotal, vtErr = e.vtLookupIP(ctx, ip)
-		if vtErr != nil {
-			e.log.Debug().Err(vtErr).Str("ip", ip).Msg("virustotal ip lookup failed")
+	if vtKey != "" {
+		var err error
+		result.VirusTotal, err = e.vtLookupIP(ctx, ip)
+		if err != nil {
+			e.log.Debug().Err(err).Str("ip", ip).Msg("virustotal ip lookup failed")
 		}
 	}
-	if e.abuseKey != "" {
-		result.AbuseIPDB, abuseErr = e.abuseIPLookup(ctx, ip)
-		if abuseErr != nil {
-			e.log.Debug().Err(abuseErr).Str("ip", ip).Msg("abuseipdb lookup failed")
+	if abuseKey != "" {
+		var err error
+		result.AbuseIPDB, err = e.abuseIPLookup(ctx, ip)
+		if err != nil {
+			e.log.Debug().Err(err).Str("ip", ip).Msg("abuseipdb lookup failed")
 		}
 	}
 	if result.VirusTotal == nil && result.AbuseIPDB == nil {
@@ -87,12 +111,28 @@ func (e *Enricher) EnrichIP(ctx context.Context, ip string) (*TIResult, error) {
 
 // EnrichHash runs a VirusTotal hash lookup.
 func (e *Enricher) EnrichHash(ctx context.Context, hash string) (*TIResult, error) {
-	if e.vtKey == "" {
+	vtKey, _ := e.keys()
+	if vtKey == "" {
 		return nil, nil
 	}
 	result := &TIResult{EnrichedAt: time.Now()}
 	var err error
 	result.VirusTotal, err = e.vtLookupHash(ctx, hash)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// EnrichDomain runs a VirusTotal domain lookup.
+func (e *Enricher) EnrichDomain(ctx context.Context, domain string) (*TIResult, error) {
+	vtKey, _ := e.keys()
+	if vtKey == "" {
+		return nil, nil
+	}
+	result := &TIResult{EnrichedAt: time.Now()}
+	var err error
+	result.VirusTotal, err = e.vtLookup(ctx, "domains", domain)
 	if err != nil {
 		return nil, err
 	}
@@ -110,12 +150,13 @@ func (e *Enricher) vtLookupHash(ctx context.Context, hash string) (*VTResult, er
 }
 
 func (e *Enricher) vtLookup(ctx context.Context, resource, id string) (*VTResult, error) {
+	vtKey, _ := e.keys()
 	url := fmt.Sprintf("https://www.virustotal.com/api/v3/%s/%s", resource, id)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("x-apikey", e.vtKey)
+	req.Header.Set("x-apikey", vtKey)
 
 	resp, err := e.http.Do(req)
 	if err != nil {
@@ -174,12 +215,13 @@ func (e *Enricher) vtLookup(ctx context.Context, resource, id string) (*VTResult
 // ── AbuseIPDB ─────────────────────────────────────────────────────────────────
 
 func (e *Enricher) abuseIPLookup(ctx context.Context, ip string) (*AbuseIPResult, error) {
+	_, abuseKey := e.keys()
 	url := fmt.Sprintf("https://api.abuseipdb.com/api/v2/check?ipAddress=%s&maxAgeInDays=90", ip)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Key", e.abuseKey)
+	req.Header.Set("Key", abuseKey)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := e.http.Do(req)
@@ -227,5 +269,25 @@ func MergeIntoEnrichments(existing json.RawMessage, ti *TIResult) (json.RawMessa
 		}
 	}
 	m["threat_intel"] = ti
+	return json.Marshal(m)
+}
+
+// ObservableEnrichment is a single enriched indicator (IP, hash, or domain).
+type ObservableEnrichment struct {
+	Indicator string    `json:"indicator"`
+	Type      string    `json:"type"` // ip | hash | domain
+	TIResult  *TIResult `json:"result,omitempty"`
+}
+
+// MergeObservableEnrichments stores a list of enriched observables under the
+// "vt_enrichments" key in the existing enrichments JSON blob.
+func MergeObservableEnrichments(existing json.RawMessage, results []ObservableEnrichment) (json.RawMessage, error) {
+	m := map[string]interface{}{}
+	if len(existing) > 0 && strings.TrimSpace(string(existing)) != "{}" {
+		if err := json.Unmarshal(existing, &m); err != nil {
+			m = map[string]interface{}{}
+		}
+	}
+	m["vt_enrichments"] = results
 	return json.Marshal(m)
 }

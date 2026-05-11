@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -39,6 +40,7 @@ import (
 	"github.com/youredr/edr-backend/internal/users"
 	"github.com/youredr/edr-backend/internal/autocase"
 	"github.com/youredr/edr-backend/internal/autoremediate"
+	"github.com/youredr/edr-backend/internal/disruption"
 	"github.com/youredr/edr-backend/internal/beaconing"
 	"github.com/youredr/edr-backend/internal/exfil"
 	"github.com/youredr/edr-backend/internal/hostbehavior"
@@ -186,6 +188,7 @@ func main() {
 		autoCaseMgr         *autocase.Manager
 		enricher            *enrichment.Enricher
 		autoRemediateEngine *autoremediate.Engine
+		disruptionEng       *disruption.Engine
 	)
 
 	// Incident correlation window — alerts on the same agent within this
@@ -228,6 +231,11 @@ func main() {
 			go autoRemediateEngine.Evaluate(context.Background(), alert)
 		}
 
+		// ── Autonomous disruption ─────────────────────────────────────
+		if disruptionEng != nil {
+			go disruptionEng.OnAlert(context.Background(), alert)
+		}
+
 		// ── IOC auto-check (J) ───────────────────────────────────────
 		go func(a *models.Alert) {
 			iocCtx, iocCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -240,28 +248,87 @@ func main() {
 			}
 		}(alert)
 
-		// ── Async TI enrichment (Feature A) ──────────────────────────
-		if enricher != nil {
+		// ── Async TI enrichment ───────────────────────────────────────
+		if enricher != nil && enricher.HasKeys() {
 			go func(a *models.Alert) {
-				enrichCtx, enrichCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				enrichCtx, enrichCancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer enrichCancel()
-				var ti *enrichment.TIResult
-				if a.SrcIP != "" {
-					ti, _ = enricher.EnrichIP(enrichCtx, a.SrcIP)
+
+				// Collect unique observables from alert + related events.
+				seenIPs := map[string]bool{}
+				seenHashes := map[string]bool{}
+				seenDomains := map[string]bool{}
+				var ips, hashes, domains []string
+
+				addIP := func(ip string) {
+					if ip != "" && !isPrivateIP(ip) && !seenIPs[ip] {
+						seenIPs[ip] = true
+						ips = append(ips, ip)
+					}
 				}
-				// Hash enrichment: derive from event IDs or rule metadata
-				if ti == nil {
-					for _, eid := range a.EventIDs {
-						if isFileHash(eid) {
-							ti, _ = enricher.EnrichHash(enrichCtx, eid)
-							if ti != nil {
-								break
+				addHash := func(h string) {
+					if isFileHash(h) && !seenHashes[h] {
+						seenHashes[h] = true
+						hashes = append(hashes, h)
+					}
+				}
+				addDomain := func(d string) {
+					if d != "" && !seenDomains[d] {
+						seenDomains[d] = true
+						domains = append(domains, d)
+					}
+				}
+
+				addIP(a.SrcIP)
+				// Load related events for hash/domain observables.
+				events, _ := st.GetAlertEvents(enrichCtx, a.ID, a.TenantID)
+				for _, ev := range events {
+					if ev.SrcIP != nil {
+						addIP(*ev.SrcIP)
+					}
+					if ev.DstIP != nil {
+						addIP(*ev.DstIP)
+					}
+					// Parse payload for hashes and domains.
+					if len(ev.Payload) > 0 {
+						var p map[string]interface{}
+						if json.Unmarshal(ev.Payload, &p) == nil {
+							for _, field := range []string{"exe_hash", "hash_after", "hash_before"} {
+								if v, ok := p[field]; ok {
+									if s, ok := v.(string); ok {
+										addHash(s)
+									}
+								}
+							}
+							for _, field := range []string{"dns_query", "resolved_domain", "query", "domain"} {
+								if v, ok := p[field]; ok {
+									if s, ok := v.(string); ok {
+										addDomain(s)
+									}
+								}
 							}
 						}
 					}
 				}
-				if ti != nil {
-					if merged, err := enrichment.MergeIntoEnrichments(a.Enrichments, ti); err == nil {
+
+				var results []enrichment.ObservableEnrichment
+				for _, ip := range ips {
+					if ti, err := enricher.EnrichIP(enrichCtx, ip); ti != nil && err == nil {
+						results = append(results, enrichment.ObservableEnrichment{Indicator: ip, Type: "ip", TIResult: ti})
+					}
+				}
+				for _, h := range hashes {
+					if ti, err := enricher.EnrichHash(enrichCtx, h); ti != nil && err == nil {
+						results = append(results, enrichment.ObservableEnrichment{Indicator: h, Type: "hash", TIResult: ti})
+					}
+				}
+				for _, d := range domains {
+					if ti, err := enricher.EnrichDomain(enrichCtx, d); ti != nil && err == nil {
+						results = append(results, enrichment.ObservableEnrichment{Indicator: d, Type: "domain", TIResult: ti})
+					}
+				}
+				if len(results) > 0 {
+					if merged, err := enrichment.MergeObservableEnrichments(a.Enrichments, results); err == nil {
 						_ = st.UpdateAlertEnrichments(enrichCtx, a.ID, a.TenantID, merged)
 					}
 				}
@@ -360,6 +427,11 @@ func main() {
 
 	// ── XDR Feature B: Auto-Remediation Engine ────────────────────────────────
 	autoRemediateEngine = autoremediate.New(st, logger)
+
+	// ── Autonomous Disruption Engine ──────────────────────────────────────────
+	disruptionEng = disruption.New(st, lrManager, logger)
+	disruptionEng.StartReleaseLoop(ctx)
+	logger.Info().Msg("autonomous disruption engine initialized")
 
 	// ── XDR Feature D: Host Behavioral Anomaly Detector ──────────────────────
 	hostBehaviorDetector := hostbehavior.New(st, fireAlert, logger)
@@ -552,11 +624,13 @@ func main() {
 	}
 	apiServer.SetPlaybookRunner(pbRunner)
 	apiServer.SetExportManager(exportMgr)
+	apiServer.SetDisruptionEngine(disruptionEng)
 
 	// IOC enrichment pipeline — background goroutine + API hook.
 	iocEnricher := enrichment.NewIOCPipeline(st, cfg.Enrichment.VirusTotalAPIKey, cfg.Enrichment.WhoisEnabled, logger)
 	go iocEnricher.Run(detectorCtx)
 	apiServer.SetIOCPipeline(iocEnricher)
+	apiServer.SetEnricher(enricher)
 
 	// Intel task generator — auto-creates YARA rules and saved hunts from intel data.
 	intelGenerator := inteltask.New(st, "default", logger)
@@ -732,6 +806,28 @@ func computeRiskScore(a *models.Alert) int16 {
 		score = 100
 	}
 	return score
+}
+
+// isPrivateIP returns true for RFC1918, loopback, and link-local addresses.
+func isPrivateIP(ip string) bool {
+	for _, prefix := range []string{
+		"10.", "192.168.", "127.", "169.254.", "::1", "fc", "fd",
+	} {
+		if strings.HasPrefix(ip, prefix) {
+			return true
+		}
+	}
+	// 172.16.0.0/12
+	if strings.HasPrefix(ip, "172.") {
+		var a, b int
+		if _, err := fmt.Sscanf(ip, "172.%d.", &b); err == nil {
+			_ = a
+			if b >= 16 && b <= 31 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isFileHash returns true if s looks like an MD5/SHA1/SHA256 hex string.

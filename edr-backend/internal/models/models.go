@@ -439,6 +439,40 @@ type AgentGroup struct {
 	UpdatedAt   time.Time `db:"updated_at"  json:"updated_at"`
 }
 
+// DisruptionPolicy defines when the system should autonomously contain a host.
+type DisruptionPolicy struct {
+	ID               string         `db:"id"                 json:"id"`
+	TenantID         string         `db:"tenant_id"          json:"tenant_id,omitempty"`
+	Name             string         `db:"name"               json:"name"`
+	Description      string         `db:"description"        json:"description"`
+	Enabled          bool           `db:"enabled"            json:"enabled"`
+	MinSeverity      int16          `db:"min_severity"       json:"min_severity"`
+	RuleIDs          pq.StringArray `db:"rule_ids"           json:"rule_ids"`
+	HostGroups       pq.StringArray `db:"host_groups"        json:"host_groups"`
+	Action           string         `db:"action"             json:"action"`           // isolate
+	AutoReleaseHours int            `db:"auto_release_hours" json:"auto_release_hours"` // 0 = never
+	CreatedAt        time.Time      `db:"created_at"         json:"created_at"`
+	UpdatedAt        time.Time      `db:"updated_at"         json:"updated_at"`
+}
+
+// ActiveContainment tracks an in-progress or completed autonomous containment action.
+type ActiveContainment struct {
+	ID          string     `db:"id"           json:"id"`
+	TenantID    string     `db:"tenant_id"    json:"tenant_id,omitempty"`
+	PolicyID    string     `db:"policy_id"    json:"policy_id"`
+	PolicyName  string     `db:"policy_name"  json:"policy_name"`
+	AlertID     string     `db:"alert_id"     json:"alert_id"`
+	AgentID     string     `db:"agent_id"     json:"agent_id"`
+	Hostname    string     `db:"hostname"     json:"hostname"`
+	Action      string     `db:"action"       json:"action"`
+	Status      string     `db:"status"       json:"status"` // active|released|failed
+	ContainedAt time.Time  `db:"contained_at" json:"contained_at"`
+	ReleaseAt   *time.Time `db:"release_at"   json:"release_at,omitempty"`
+	ReleasedAt  *time.Time `db:"released_at"  json:"released_at,omitempty"`
+	ReleasedBy  string     `db:"released_by"  json:"released_by"`
+	ReleaseNote string     `db:"release_note" json:"release_note"`
+}
+
 type PlaybookRun struct {
 	ID           string          `db:"id"            json:"id"`
 	PlaybookID   string          `db:"playbook_id"   json:"playbook_id"`
