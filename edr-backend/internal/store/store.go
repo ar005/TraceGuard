@@ -3203,7 +3203,13 @@ func (s *Store) GetIncidentAttackGraph(ctx context.Context, tenantID, incidentID
 	defer rows.Close()
 
 	graph := &AttackGraph{IncidentID: incidentID}
-	var prevID string
+	type nodeRec struct {
+		id       string
+		hostname string
+		agentID  string
+	}
+	var ordered []nodeRec
+
 	for rows.Next() {
 		var id, title, ruleID, agentID, hostname string
 		var mitreIDs pq.StringArray
@@ -3221,39 +3227,97 @@ func (s *Store) GetIncidentAttackGraph(ctx context.Context, tenantID, incidentID
 			AgentID: agentID, Hostname: hostname, Time: t, Summary: title,
 		}
 		graph.Nodes = append(graph.Nodes, node)
-		if prevID != "" {
-			graph.Edges = append(graph.Edges, AttackGraphEdge{Source: prevID, Target: id, Label: "followed by"})
-		}
-		prevID = id
+		ordered = append(ordered, nodeRec{id: id, hostname: hostname, agentID: agentID})
 	}
+
+	// Build edges: sequential with relationship label based on whether hosts change.
+	// Also add per-host sequential edges to capture chains within a single host.
+	edgeSeen := map[string]bool{}
+	addEdge := func(src, dst, label string) {
+		k := src + ">" + dst
+		if edgeSeen[k] {
+			return
+		}
+		edgeSeen[k] = true
+		graph.Edges = append(graph.Edges, AttackGraphEdge{Source: src, Target: dst, Label: label})
+	}
+
+	// Global chronological chain
+	for i := 1; i < len(ordered); i++ {
+		prev := ordered[i-1]
+		cur := ordered[i]
+		if prev.hostname != "" && cur.hostname != "" && prev.hostname != cur.hostname {
+			addEdge(prev.id, cur.id, "lateral movement")
+		} else {
+			addEdge(prev.id, cur.id, "followed by")
+		}
+	}
+
+	// Per-agent sequential chains (fills gaps when alerts are interleaved across hosts)
+	byAgent := map[string][]string{}
+	for _, n := range ordered {
+		byAgent[n.agentID] = append(byAgent[n.agentID], n.id)
+	}
+	for _, ids := range byAgent {
+		for i := 1; i < len(ids); i++ {
+			addEdge(ids[i-1], ids[i], "same host")
+		}
+	}
+
 	return graph, nil
 }
 
-// mitreToTactic maps the first MITRE ID prefix to a kill-chain tactic name.
+// mitreToTactic maps the first MITRE technique ID to a kill-chain tactic name.
 func mitreToTactic(ids pq.StringArray) string {
 	if len(ids) == 0 {
 		return "Unknown"
 	}
-	id := ids[0]
-	switch {
-	case id == "T1059" || id == "T1204" || id == "T1106":
+	// Use the prefix (T1XXX without sub-technique) for broader matching.
+	raw := ids[0]
+	base := raw
+	if dot := len(raw); dot > 6 {
+		// strip .NNN sub-technique suffix
+		for i, c := range raw {
+			if c == '.' {
+				base = raw[:i]
+				break
+			}
+		}
+	}
+	switch base {
+	// Initial Access
+	case "T1190", "T1133", "T1566", "T1189", "T1195", "T1091", "T1200":
+		return "Initial Access"
+	// Execution
+	case "T1059", "T1204", "T1106", "T1053", "T1569", "T1129", "T1203":
 		return "Execution"
-	case id == "T1003" || id == "T1078" || id == "T1110":
-		return "Credential Access"
-	case id == "T1021" || id == "T1550" || id == "T1076":
-		return "Lateral Movement"
-	case id == "T1048" || id == "T1041" || id == "T1071":
-		return "Exfiltration"
-	case id == "T1486" || id == "T1490":
-		return "Impact"
-	case id == "T1055" || id == "T1134":
-		return "Privilege Escalation"
-	case id == "T1053" || id == "T1543" || id == "T1547":
+	// Persistence
+	case "T1543", "T1547", "T1098", "T1136", "T1078", "T1505", "T1574":
 		return "Persistence"
-	case id == "T1046" || id == "T1018":
-		return "Discovery"
-	case id == "T1036" || id == "T1027":
+	// Privilege Escalation
+	case "T1055", "T1134", "T1548", "T1068", "T1484":
+		return "Privilege Escalation"
+	// Defense Evasion
+	case "T1036", "T1027", "T1562", "T1070", "T1218", "T1620", "T1497":
 		return "Defense Evasion"
+	// Credential Access
+	case "T1003", "T1110", "T1555", "T1552", "T1539", "T1528":
+		return "Credential Access"
+	// Discovery
+	case "T1046", "T1018", "T1087", "T1083", "T1057", "T1135", "T1040":
+		return "Discovery"
+	// Lateral Movement
+	case "T1021", "T1550", "T1076", "T1534", "T1563", "T1570":
+		return "Lateral Movement"
+	// Collection
+	case "T1005", "T1039", "T1025", "T1074", "T1056", "T1113", "T1560":
+		return "Collection"
+	// Exfiltration
+	case "T1048", "T1041", "T1071", "T1567", "T1029", "T1030":
+		return "Exfiltration"
+	// Impact
+	case "T1486", "T1490", "T1489", "T1561", "T1485", "T1499":
+		return "Impact"
 	default:
 		return "Other"
 	}
