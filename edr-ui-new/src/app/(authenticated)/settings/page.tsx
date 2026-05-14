@@ -9,6 +9,7 @@ import {
   Check,
   Loader2,
   FlaskConical,
+  ScanSearch,
 } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { useApi } from "@/hooks/use-api";
@@ -68,6 +69,13 @@ export default function SettingsPage() {
   const [llmTesting, setLlmTesting] = useState(false);
   const [llmTestMsg, setLlmTestMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
+  // Enrichment settings state
+  const [vtKey, setVtKey] = useState("");
+  const [abuseKey, setAbuseKey] = useState("");
+  const [enrichSaving, setEnrichSaving] = useState(false);
+  const [enrichMsg, setEnrichMsg] = useState<string | null>(null);
+  const [enrichStatus, setEnrichStatus] = useState<{ vt_key_set: boolean; abuse_key_set: boolean } | null>(null);
+
   // Load saved theme from localStorage
   useEffect(() => {
     const saved = localStorage.getItem("edr-theme-id");
@@ -102,6 +110,38 @@ export default function SettingsPage() {
       setLlm(llmData);
     }
   }, [llmData]);
+
+  // Load enrichment key status
+  const fetchEnrichStatus = useCallback(
+    (signal: AbortSignal) =>
+      api.get<{ vt_key_set: boolean; abuse_key_set: boolean }>("/api/v1/settings/enrichment", undefined, signal),
+    []
+  );
+  const { data: enrichStatusData } = useApi(fetchEnrichStatus);
+  useEffect(() => {
+    if (enrichStatusData) setEnrichStatus(enrichStatusData);
+  }, [enrichStatusData]);
+
+  async function saveEnrichment() {
+    setEnrichSaving(true);
+    setEnrichMsg(null);
+    try {
+      await api.post("/api/v1/settings/enrichment", {
+        virustotal_api_key: vtKey || undefined,
+        abuseipdb_api_key: abuseKey || undefined,
+      });
+      setEnrichMsg("API keys saved");
+      setVtKey("");
+      setAbuseKey("");
+      // Refresh status
+      const status = await api.get<{ vt_key_set: boolean; abuse_key_set: boolean }>("/api/v1/settings/enrichment");
+      setEnrichStatus(status);
+    } catch {
+      setEnrichMsg("Failed to save keys");
+    } finally {
+      setEnrichSaving(false);
+    }
+  }
 
   /* ---- Theme actions ---- */
   function applyTheme(t: ThemeDef) {
@@ -415,6 +455,90 @@ export default function SettingsPage() {
               </span>
             )}
           </div>
+        </div>
+      </section>
+
+      {/* ============================================================
+          Section 4: Threat Intel Enrichment
+          ============================================================ */}
+      <section className={cardClass} style={cardStyle}>
+        <div className="flex items-center gap-2 mb-4">
+          <ScanSearch size={16} style={{ color: "var(--primary)" }} />
+          <h2 className="font-heading text-sm font-semibold">Threat Intel Enrichment</h2>
+        </div>
+        <p className="text-xs mb-4" style={{ color: "var(--muted)" }}>
+          API keys for automatic enrichment of alerts with VirusTotal (IPs, file hashes, domains) and
+          AbuseIPDB (IPs). Keys are encrypted at rest. Leave a field blank to keep the existing key.
+        </p>
+
+        {/* Key status badges */}
+        {enrichStatus && (
+          <div className="flex gap-2 mb-4 flex-wrap">
+            <span
+              className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full"
+              style={{
+                background: enrichStatus.vt_key_set ? "rgb(34 197 94 / 0.15)" : "rgb(100 116 139 / 0.15)",
+                color: enrichStatus.vt_key_set ? "#22c55e" : "var(--muted)",
+              }}
+            >
+              {enrichStatus.vt_key_set ? <Check size={10} /> : null}
+              VirusTotal {enrichStatus.vt_key_set ? "configured" : "not set"}
+            </span>
+            <span
+              className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full"
+              style={{
+                background: enrichStatus.abuse_key_set ? "rgb(34 197 94 / 0.15)" : "rgb(100 116 139 / 0.15)",
+                color: enrichStatus.abuse_key_set ? "#22c55e" : "var(--muted)",
+              }}
+            >
+              {enrichStatus.abuse_key_set ? <Check size={10} /> : null}
+              AbuseIPDB {enrichStatus.abuse_key_set ? "configured" : "not set"}
+            </span>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+          <div>
+            <label className={labelClass} style={labelStyle}>VirusTotal API Key</label>
+            <input
+              type="password"
+              className={inputClass}
+              style={inputStyle}
+              placeholder={enrichStatus?.vt_key_set ? "••••••••  (already set)" : "Enter VT API key"}
+              value={vtKey}
+              onChange={(e) => setVtKey(e.target.value)}
+              autoComplete="new-password"
+            />
+          </div>
+          <div>
+            <label className={labelClass} style={labelStyle}>AbuseIPDB API Key</label>
+            <input
+              type="password"
+              className={inputClass}
+              style={inputStyle}
+              placeholder={enrichStatus?.abuse_key_set ? "••••••••  (already set)" : "Enter AbuseIPDB key"}
+              value={abuseKey}
+              onChange={(e) => setAbuseKey(e.target.value)}
+              autoComplete="new-password"
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <button
+            onClick={saveEnrichment}
+            disabled={enrichSaving || (!vtKey && !abuseKey)}
+            className={btnPrimaryClass + " disabled:opacity-50"}
+            style={btnPrimaryStyle}
+          >
+            {enrichSaving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+            Save Keys
+          </button>
+          {enrichMsg && (
+            <span className="text-xs" style={{ color: enrichMsg.startsWith("Failed") ? "var(--destructive)" : "var(--success)" }}>
+              {enrichMsg}
+            </span>
+          )}
         </div>
       </section>
     </div>

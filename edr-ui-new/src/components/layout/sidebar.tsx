@@ -50,6 +50,7 @@ import {
   Rss,
   RotateCcw,
   Zap,
+  Gauge,
 } from "lucide-react";
 
 interface NavItem {
@@ -123,6 +124,7 @@ const NAV_SECTIONS: NavSection[] = [
       { label: "Identity Events", href: "/identity-events", icon: Users },
       { label: "User Risk", href: "/user-risk", icon: UserCheck },
       { label: "Host Risk", href: "/host-risk", icon: TrendingUp },
+      { label: "Posture Score", href: "/posture", icon: Gauge },
       { label: "Threat Score", href: "/threat-score", icon: ShieldAlert },
       { label: "UEBA Timeline", href: "/ueba", icon: GitBranch },
       { label: "Lateral Graph", href: "/lateral-graph", icon: GitFork },
@@ -139,6 +141,7 @@ const NAV_SECTIONS: NavSection[] = [
       { label: "Live Response", href: "/live-response", icon: Terminal },
       { label: "Playbooks", href: "/playbooks", icon: PlaySquare },
       { label: "Playbook Runs", href: "/playbooks/runs", icon: Activity },
+      { label: "Auto-Disruption", href: "/auto-disruption", icon: Zap },
       { label: "Auto-Remediation", href: "/auto-remediation", icon: Siren },
       { label: "Compliance", href: "/compliance", icon: ClipboardCheck },
       { label: "Canary Tokens", href: "/canary", icon: Ghost },

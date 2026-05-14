@@ -59,6 +59,9 @@ export interface Alert {
   triage_notes?: string;
   triage_at?: string;
   risk_score?: number;
+  user_uid?: string;
+  src_ip?: string;
+  source_types?: string[];
 }
 
 export interface SequenceStep {

@@ -30,6 +30,10 @@ import {
   ShieldOff,
   Globe,
   AlertTriangle,
+  Sliders,
+  History,
+  RotateCcw,
+  ChevronDown as ChevronDownIcon,
 } from "lucide-react";
 import { ForensicTimeline } from "@/components/forensic-timeline";
 import { api } from "@/lib/api-client";
@@ -45,7 +49,7 @@ interface PackageInfo {
   architecture: string;
 }
 
-type TabId = "overview" | "events" | "packages" | "vulnerabilities" | "winevent-config" | "event-reference" | "tasks" | "forensic-timeline" | "attack-surface";
+type TabId = "overview" | "events" | "packages" | "vulnerabilities" | "winevent-config" | "fleet-config" | "event-reference" | "tasks" | "forensic-timeline" | "attack-surface";
 
 /* ── Tab Button ─────────────────────────────────────────────── */
 
@@ -689,6 +693,326 @@ const CHANNEL_PRESETS = [
 interface ChannelConfig {
   name: string;
   event_ids: number[];
+}
+
+
+/* ── Fleet Config Tab ───────────────────────────────────────── */
+
+interface FleetSnapshot {
+  id: string;
+  agent_id: string;
+  config: Record<string, unknown>;
+  pushed_by: string;
+  pushed_at: string;
+  note: string;
+}
+
+interface MonitorDef {
+  key: string;
+  label: string;
+  os: "linux" | "windows" | "both";
+  fields?: { key: string; label: string; type: "text" | "number" | "boolean"; placeholder?: string }[];
+}
+
+const MONITOR_DEFS: MonitorDef[] = [
+  { key: "process",  label: "Process",          os: "both",    fields: [{ key: "max_ancestry_depth", label: "Max ancestry depth", type: "number" }] },
+  { key: "network",  label: "Network",           os: "both",    fields: [{ key: "ignore_localhost", label: "Ignore localhost", type: "boolean" }] },
+  { key: "file",     label: "File",              os: "both",    fields: [{ key: "watch_paths", label: "Watch paths (comma-sep)", type: "text", placeholder: "/etc,/tmp,/home" }, { key: "hash_on_write", label: "Hash on write", type: "boolean" }] },
+  { key: "registry", label: "Registry",          os: "both",    fields: [{ key: "extra_paths", label: "Extra paths (comma-sep)", type: "text" }] },
+  { key: "dns",      label: "DNS",               os: "windows" },
+  { key: "auth",     label: "Auth / Login",      os: "both" },
+  { key: "command",  label: "Command",           os: "windows" },
+  { key: "browser",  label: "Browser",           os: "both",    fields: [{ key: "listen_addr", label: "Listen addr", type: "text", placeholder: "127.0.0.1:9999" }] },
+  { key: "kmod",     label: "Kernel Modules",    os: "linux",   fields: [{ key: "poll_interval_s", label: "Poll interval (s)", type: "number" }] },
+  { key: "driver",   label: "Driver Load",       os: "windows", fields: [{ key: "poll_interval_s", label: "Poll interval (s)", type: "number" }] },
+  { key: "usb",      label: "USB",               os: "both",    fields: [{ key: "poll_interval_s", label: "Poll interval (s)", type: "number" }] },
+  { key: "pipe",     label: "Named Pipes",       os: "both",    fields: [{ key: "poll_interval_s", label: "Poll interval (s)", type: "number" }] },
+  { key: "share",    label: "Network Shares",    os: "both",    fields: [{ key: "poll_interval_s", label: "Poll interval (s)", type: "number" }] },
+  { key: "memmon",   label: "Memory Injection",  os: "both",    fields: [{ key: "poll_interval_s", label: "Poll interval (s)", type: "number" }] },
+  { key: "cronmon",  label: "Cron Monitor",      os: "linux",   fields: [{ key: "watch_paths", label: "Watch paths (comma-sep)", type: "text" }] },
+  { key: "tlssni",   label: "TLS SNI",           os: "linux" },
+  { key: "schtask",  label: "Scheduled Tasks",   os: "windows", fields: [{ key: "poll_interval_s", label: "Poll interval (s)", type: "number" }] },
+  { key: "fim",      label: "File Integrity",    os: "windows", fields: [{ key: "watch_paths", label: "Watch paths (comma-sep)", type: "text" }, { key: "poll_interval_s", label: "Poll interval (s)", type: "number" }] },
+  { key: "yara",     label: "YARA Scanner",      os: "linux",   fields: [{ key: "worker_count", label: "Worker count", type: "number" }] },
+  { key: "vuln",     label: "Vulnerability Scan",os: "both" },
+];
+
+type MonitorCfg = { enabled: boolean } & Record<string, unknown>;
+type FleetCfg = Record<string, MonitorCfg>;
+
+function FleetConfigTab({ agentId, agentOs }: { agentId: string; agentOs: string }) {
+  const isWindows = agentOs.toLowerCase() === "windows";
+  const visibleMonitors = MONITOR_DEFS.filter(
+    (m) => m.os === "both" || (isWindows ? m.os === "windows" : m.os === "linux")
+  );
+
+  const [cfg, setCfg] = useState<FleetCfg>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState<string | null>(null);
+  const [history, setHistory] = useState<FleetSnapshot[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    setLoading(true);
+    api
+      .get<FleetCfg>(`/api/v1/agents/${agentId}/fleet-config`)
+      .then((r) => setCfg(r ?? {}))
+      .catch(() => setCfg({}))
+      .finally(() => setLoading(false));
+  }, [agentId]);
+
+  function getMonitorCfg(key: string): MonitorCfg {
+    return (cfg[key] as MonitorCfg) ?? { enabled: false };
+  }
+
+  function setEnabled(key: string, val: boolean) {
+    setCfg((prev) => ({ ...prev, [key]: { ...getMonitorCfg(key), enabled: val } }));
+  }
+
+  function setField(monKey: string, fieldKey: string, val: unknown) {
+    setCfg((prev) => ({ ...prev, [monKey]: { ...getMonitorCfg(monKey), [fieldKey]: val } }));
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    setSaveMsg(null);
+    try {
+      await api.put(`/api/v1/agents/${agentId}/fleet-config`, cfg);
+      setSaveMsg("Config pushed — agents will reload on next heartbeat");
+      setTimeout(() => setSaveMsg(null), 5000);
+    } catch (err) {
+      setSaveMsg(err instanceof Error ? err.message : "Push failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function loadHistory() {
+    setHistoryLoading(true);
+    try {
+      const snaps = await api.get<FleetSnapshot[]>(`/api/v1/agents/${agentId}/fleet-config/history`);
+      setHistory(snaps ?? []);
+    } catch {
+      setHistory([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  async function handleRollback(snapId: string) {
+    if (!confirm("Restore this config snapshot and push to agent?")) return;
+    try {
+      await api.post(`/api/v1/agents/${agentId}/fleet-config/rollback/${snapId}`, {});
+      setSaveMsg("Rolled back — agents will reload on next heartbeat");
+      setTimeout(() => setSaveMsg(null), 5000);
+      // Refresh current config
+      const fresh = await api.get<FleetCfg>(`/api/v1/agents/${agentId}/fleet-config`);
+      setCfg(fresh ?? {});
+    } catch (err) {
+      setSaveMsg(err instanceof Error ? err.message : "Rollback failed");
+    }
+  }
+
+  if (loading) return <Skeleton rows={6} />;
+
+  return (
+    <div className="space-y-6 p-1">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-semibold font-heading" style={{ color: "var(--foreground)" }}>
+            Fleet Monitor Config
+          </h3>
+          <p className="text-xs mt-0.5" style={{ color: "var(--muted)" }}>
+            Toggle monitors on/off and configure key parameters. Push to apply immediately.
+          </p>
+        </div>
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium"
+          style={{ background: "var(--accent)", color: "var(--accent-foreground)" }}
+        >
+          {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+          Push Config
+        </button>
+      </div>
+
+      {saveMsg && (
+        <p className="text-xs px-3 py-2 rounded" style={{ background: "var(--muted-bg)", color: saveMsg.includes("failed") || saveMsg.includes("Failed") ? "var(--danger)" : "var(--success)" }}>
+          {saveMsg}
+        </p>
+      )}
+
+      {/* Monitor matrix */}
+      <div className="rounded border overflow-hidden" style={{ borderColor: "var(--border)" }}>
+        <table className="w-full text-xs">
+          <thead>
+            <tr style={{ background: "var(--muted-bg)", borderBottom: "1px solid var(--border)" }}>
+              <th className="text-left px-3 py-2 font-medium w-8"></th>
+              <th className="text-left px-3 py-2 font-medium">Monitor</th>
+              <th className="text-left px-3 py-2 font-medium w-24">Enabled</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visibleMonitors.map((mon) => {
+              const monCfg = getMonitorCfg(mon.key);
+              const isExpanded = expanded[mon.key];
+              const hasFields = mon.fields && mon.fields.length > 0;
+              return (
+                <>
+                  <tr
+                    key={mon.key}
+                    style={{ borderBottom: isExpanded ? "none" : "1px solid var(--border)" }}
+                  >
+                    <td className="px-2 py-2 text-center">
+                      {hasFields && (
+                        <button
+                          onClick={() => setExpanded((p) => ({ ...p, [mon.key]: !p[mon.key] }))}
+                          className="opacity-50 hover:opacity-100"
+                          style={{ color: "var(--muted)" }}
+                        >
+                          <ChevronDownIcon size={12} className={cn("transition-transform", isExpanded && "rotate-180")} />
+                        </button>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 font-medium" style={{ color: "var(--foreground)" }}>
+                      {mon.label}
+                    </td>
+                    <td className="px-3 py-2">
+                      <button
+                        role="switch"
+                        aria-checked={!!monCfg.enabled}
+                        onClick={() => setEnabled(mon.key, !monCfg.enabled)}
+                        className={cn(
+                          "relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full transition-colors",
+                          monCfg.enabled ? "bg-blue-500" : "bg-gray-400"
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            "pointer-events-none inline-block h-3 w-3 rounded-full bg-white shadow transition-transform mt-0.5",
+                            monCfg.enabled ? "translate-x-3.5" : "translate-x-0.5"
+                          )}
+                        />
+                      </button>
+                    </td>
+                  </tr>
+                  {hasFields && isExpanded && (
+                    <tr key={`${mon.key}-fields`} style={{ borderBottom: "1px solid var(--border)", background: "var(--muted-bg)" }}>
+                      <td />
+                      <td colSpan={2} className="px-3 pb-3 pt-1">
+                        <div className="flex flex-wrap gap-4">
+                          {mon.fields!.map((f) => (
+                            <div key={f.key} className="flex flex-col gap-1 min-w-[160px]">
+                              <label className="text-xs" style={{ color: "var(--muted)" }}>{f.label}</label>
+                              {f.type === "boolean" ? (
+                                <button
+                                  role="switch"
+                                  aria-checked={!!monCfg[f.key]}
+                                  onClick={() => setField(mon.key, f.key, !monCfg[f.key])}
+                                  className={cn(
+                                    "self-start relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full transition-colors",
+                                    monCfg[f.key] ? "bg-blue-500" : "bg-gray-400"
+                                  )}
+                                >
+                                  <span className={cn("pointer-events-none inline-block h-3 w-3 rounded-full bg-white shadow transition-transform mt-0.5", monCfg[f.key] ? "translate-x-3.5" : "translate-x-0.5")} />
+                                </button>
+                              ) : f.type === "number" ? (
+                                <input
+                                  type="number"
+                                  value={monCfg[f.key] != null ? String(monCfg[f.key]) : ""}
+                                  onChange={(e) => setField(mon.key, f.key, parseInt(e.target.value, 10) || 0)}
+                                  placeholder={f.placeholder}
+                                  className="px-2 py-1 rounded border text-xs w-24"
+                                  style={{ background: "var(--input-bg)", borderColor: "var(--border)", color: "var(--foreground)" }}
+                                />
+                              ) : (
+                                <input
+                                  type="text"
+                                  value={Array.isArray(monCfg[f.key]) ? (monCfg[f.key] as string[]).join(",") : String(monCfg[f.key] ?? "")}
+                                  onChange={(e) => {
+                                    const v = e.target.value;
+                                    // For path fields, split on comma into array
+                                    const isArray = f.key.includes("paths");
+                                    setField(mon.key, f.key, isArray ? v.split(",").map((s) => s.trim()).filter(Boolean) : v);
+                                  }}
+                                  placeholder={f.placeholder}
+                                  className="px-2 py-1 rounded border text-xs w-48"
+                                  style={{ background: "var(--input-bg)", borderColor: "var(--border)", color: "var(--foreground)" }}
+                                />
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Config History */}
+      <div>
+        <button
+          className="flex items-center gap-1.5 text-xs font-medium"
+          style={{ color: "var(--muted)" }}
+          onClick={() => {
+            setShowHistory((v) => !v);
+            if (!showHistory && history.length === 0) loadHistory();
+          }}
+        >
+          <History size={12} />
+          Config History
+          <ChevronDownIcon size={12} className={cn("transition-transform", showHistory && "rotate-180")} />
+        </button>
+
+        {showHistory && (
+          <div className="mt-3 rounded border overflow-hidden" style={{ borderColor: "var(--border)" }}>
+            {historyLoading ? (
+              <Skeleton rows={3} />
+            ) : history.length === 0 ? (
+              <p className="text-xs p-3" style={{ color: "var(--muted)" }}>No previous configs.</p>
+            ) : (
+              <table className="w-full text-xs">
+                <thead>
+                  <tr style={{ background: "var(--muted-bg)", borderBottom: "1px solid var(--border)" }}>
+                    <th className="text-left px-3 py-2 font-medium">Pushed</th>
+                    <th className="text-left px-3 py-2 font-medium">By</th>
+                    <th className="px-3 py-2 w-24"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {history.map((snap) => (
+                    <tr key={snap.id} style={{ borderBottom: "1px solid var(--border)" }}>
+                      <td className="px-3 py-2" style={{ color: "var(--foreground)" }}>{timeAgo(snap.pushed_at)}</td>
+                      <td className="px-3 py-2" style={{ color: "var(--muted)" }}>{snap.pushed_by || "—"}</td>
+                      <td className="px-3 py-2 text-right">
+                        <button
+                          onClick={() => handleRollback(snap.id)}
+                          className="flex items-center gap-1 text-xs hover:underline"
+                          style={{ color: "var(--accent)" }}
+                        >
+                          <RotateCcw size={11} />
+                          Restore
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function WinEventConfigTab({ agentId }: { agentId: string }) {
@@ -1677,6 +2001,13 @@ export default function AgentDetailPage() {
           />
         )}
         <TabButton
+          id="fleet-config"
+          label="Fleet Config"
+          icon={<Sliders size={13} />}
+          active={activeTab === "fleet-config"}
+          onClick={setActiveTab}
+        />
+        <TabButton
           id="event-reference"
           label="Event Reference"
           icon={<BookOpen size={13} />}
@@ -1713,6 +2044,7 @@ export default function AgentDetailPage() {
         {activeTab === "packages" && <PackagesTab agentId={agentId} />}
         {activeTab === "vulnerabilities" && <VulnerabilitiesTab agentId={agentId} />}
         {activeTab === "winevent-config" && <WinEventConfigTab agentId={agentId} />}
+        {activeTab === "fleet-config" && <FleetConfigTab agentId={agentId} agentOs={agent.os ?? "linux"} />}
         {activeTab === "event-reference" && <EventReferenceTab agentId={agentId} agentOs={agent.os ?? ""} />}
         {activeTab === "tasks" && <TasksTab agentId={agentId} />}
         {activeTab === "forensic-timeline" && <ForensicTimeline agentId={agentId} />}

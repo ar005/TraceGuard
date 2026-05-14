@@ -12,6 +12,7 @@ import {
   severityBgClass,
   statusColor,
 } from "@/lib/utils";
+import { Bot, Send } from "lucide-react";
 import type { Alert, Event } from "@/types";
 
 /* ---------- Constants ---------- */
@@ -360,8 +361,9 @@ function AlertDetail({
   onStatusChange: (id: string, status: string) => void;
 }) {
   const [showStatusMenu, setShowStatusMenu] = useState(false);
-  const [explaining, setExplaining] = useState(false);
-  const [explanation, setExplanation] = useState<string | null>(null);
+  const [chatMessages, setChatMessages] = useState<{role: "user" | "assistant"; content: string}[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
   const [assignee, setAssignee] = useState(alert.assignee ?? "");
   const [assigning, setAssigning] = useState(false);
   const [notes, setNotes] = useState(alert.notes ?? "");
@@ -373,11 +375,31 @@ function AlertDetail({
   // Enrichments
   const [enrichments, setEnrichments] = useState<{
     ioc_matches?: Array<Record<string, unknown>>;
-    ti_data?: Record<string, unknown>;
-    intel_context?: IntelContext;
+    vt_enrichments?: Array<Record<string, unknown>>;
     threat_intel?: Record<string, unknown>;
+    intel_context?: IntelContext;
   } | null>(null);
   const [enrichmentsLoading, setEnrichmentsLoading] = useState(false);
+
+  // Identity context
+  interface IdentityCtx {
+    canonical_uid: string;
+    display_name?: string;
+    department?: string;
+    risk_score: number;
+    risk_factors?: string[];
+    is_privileged?: boolean;
+    last_login_at?: string;
+    last_login_ip?: string;
+  }
+  const [identityRecord, setIdentityRecord] = useState<IdentityCtx | null>(null);
+
+  useEffect(() => {
+    if (!alert.user_uid) { setIdentityRecord(null); return; }
+    api.get<IdentityCtx>(`/api/v1/identity/${encodeURIComponent(alert.user_uid)}`)
+      .then(r => setIdentityRecord(r ?? null))
+      .catch(() => setIdentityRecord(null));
+  }, [alert.user_uid]);
 
   useEffect(() => {
     let cancelled = false;
@@ -426,25 +448,23 @@ function AlertDetail({
   );
   const { data: relatedEvents, loading: eventsLoading } = useApi(fetchEvents);
 
-  async function handleExplain() {
-    setExplaining(true);
+  async function sendMessage(text: string) {
+    const msg = text.trim();
+    if (!msg || chatLoading) return;
+    setChatInput("");
+    const next = [...chatMessages, { role: "user" as const, content: msg }];
+    setChatMessages(next);
+    setChatLoading(true);
     try {
-      // Include process tree context if available
-      const body: Record<string, unknown> = {};
-      if (processTreeData.length > 0) {
-        body.process_tree = treeToText(processTreeData);
-      }
-      const result = await api.post<{ explanation: string }>(
-        `/api/v1/alerts/${alert.id}/explain`,
-        body
+      const res = await api.post<{ reply: string }>(
+        `/api/v1/alerts/${alert.id}/chat`,
+        { messages: next }
       );
-      setExplanation(result.explanation ?? "No explanation returned.");
+      setChatMessages([...next, { role: "assistant" as const, content: res.reply ?? "No response." }]);
     } catch (err) {
-      setExplanation(
-        err instanceof Error ? err.message : "Failed to get explanation."
-      );
+      setChatMessages([...next, { role: "assistant" as const, content: err instanceof Error ? err.message : "Request failed." }]);
     } finally {
-      setExplaining(false);
+      setChatLoading(false);
     }
   }
 
@@ -616,6 +636,71 @@ function AlertDetail({
           </div>
         )}
 
+        {/* Identity Context */}
+        {(alert.user_uid || identityRecord) && (
+          <div>
+            <div
+              className="text-[10px] font-semibold uppercase tracking-wider mb-2"
+              style={{ color: "var(--muted)" }}
+            >
+              User Risk
+            </div>
+            <div
+              className="rounded border p-3 space-y-2"
+              style={{ background: "var(--surface-1)", borderColor: "var(--border)" }}
+            >
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="font-mono text-[11px] font-semibold truncate" style={{ color: "var(--fg)" }}>
+                    {identityRecord?.display_name || alert.user_uid}
+                  </span>
+                  {identityRecord?.is_privileged && (
+                    <span className="shrink-0 text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-400 border border-purple-500/20">
+                      Privileged
+                    </span>
+                  )}
+                  {identityRecord?.department && (
+                    <span className="shrink-0 text-[9px]" style={{ color: "var(--muted)" }}>
+                      {identityRecord.department}
+                    </span>
+                  )}
+                </div>
+                {identityRecord && (
+                  <span className={cn(
+                    "shrink-0 text-[10px] font-bold font-mono px-1.5 py-0.5 rounded",
+                    identityRecord.risk_score >= 70 ? "bg-red-500/20 text-red-400" :
+                    identityRecord.risk_score >= 40 ? "bg-amber-500/20 text-amber-400" :
+                    identityRecord.risk_score >= 20 ? "bg-blue-500/20 text-blue-400" :
+                    "bg-neutral-500/20 text-neutral-400"
+                  )}>
+                    Risk {identityRecord.risk_score}/100
+                  </span>
+                )}
+              </div>
+              {identityRecord?.risk_factors && identityRecord.risk_factors.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {identityRecord.risk_factors.map((f) => (
+                    <span key={f} className="text-[9px] font-medium px-1.5 py-0.5 rounded bg-orange-500/10 text-orange-400 border border-orange-500/20">
+                      {f.replace(/_/g, " ")}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {identityRecord?.last_login_ip && (
+                <div className="text-[10px]" style={{ color: "var(--muted)" }}>
+                  Last login: <span className="font-mono" style={{ color: "var(--fg)" }}>{identityRecord.last_login_ip}</span>
+                  {identityRecord.last_login_at && (
+                    <> · {timeAgo(identityRecord.last_login_at)}</>
+                  )}
+                </div>
+              )}
+              {!identityRecord && alert.user_uid && (
+                <div className="text-[10px] font-mono" style={{ color: "var(--muted)" }}>{alert.user_uid}</div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Enrichments */}
         <div>
           <div
@@ -638,7 +723,7 @@ function AlertDetail({
               style={{ background: "var(--surface-1)", borderColor: "var(--border)" }}
             >
               {/* IOC matches */}
-              {enrichments.ioc_matches && enrichments.ioc_matches.length > 0 ? (
+              {enrichments.ioc_matches && enrichments.ioc_matches.length > 0 && (
                 <div>
                   <div className="text-[10px] font-semibold mb-1.5" style={{ color: "var(--muted)" }}>
                     IOC Matches ({enrichments.ioc_matches.length})
@@ -656,46 +741,99 @@ function AlertDetail({
                               {type}
                             </span>
                           )}
-                          <span className="font-mono text-[10px] text-white/80 break-all">{value}</span>
-                          {field && (
-                            <span className="text-[9px] shrink-0" style={{ color: "var(--muted)" }}>via {field}</span>
+                          <span className="font-mono text-[10px] break-all" style={{ color: "var(--fg)" }}>{value}</span>
+                          {field && <span className="text-[9px] shrink-0" style={{ color: "var(--muted)" }}>via {field}</span>}
+                          {source && <span className="text-[9px] shrink-0" style={{ color: "var(--muted)" }}>· {source}</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* VirusTotal enrichments — one card per observable */}
+              {enrichments.vt_enrichments && enrichments.vt_enrichments.length > 0 && (
+                <div>
+                  <div className="text-[10px] font-semibold mb-1.5" style={{ color: "var(--muted)" }}>
+                    VirusTotal Scan ({enrichments.vt_enrichments.length} observables)
+                  </div>
+                  <div className="space-y-1.5">
+                    {(enrichments.vt_enrichments as Array<{
+                      indicator: string;
+                      type: string;
+                      result?: {
+                        virustotal?: { malicious: number; suspicious: number; harmless: number; undetected: number; verdict: string; permalink: string };
+                        abuseipdb?: { abuse_confidence_score: number; country_code: string; isp: string; total_reports: number };
+                      };
+                    }>).map((obs, i) => {
+                      const vt = obs.result?.virustotal;
+                      const abuse = obs.result?.abuseipdb;
+                      const total = vt ? vt.malicious + vt.suspicious + vt.harmless + vt.undetected : 0;
+                      const verdictColor =
+                        vt?.verdict === "malicious" ? { bg: "bg-red-500/15", text: "text-red-400", border: "border-red-500/20" } :
+                        vt?.verdict === "suspicious" ? { bg: "bg-amber-500/15", text: "text-amber-400", border: "border-amber-500/20" } :
+                        vt?.verdict === "clean" ? { bg: "bg-green-500/15", text: "text-green-400", border: "border-green-500/20" } :
+                        { bg: "bg-slate-500/15", text: "text-slate-400", border: "border-slate-500/20" };
+                      return (
+                        <div key={i} className="rounded border px-2.5 py-2" style={{ borderColor: "var(--border)", background: "var(--surface-0)" }}>
+                          <div className="flex items-start justify-between gap-2 flex-wrap">
+                            <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+                              <span className="text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded border shrink-0"
+                                style={{ background: "var(--surface-2)", borderColor: "var(--border)", color: "var(--muted)" }}>
+                                {obs.type}
+                              </span>
+                              <span className="font-mono text-[10px] break-all" style={{ color: "var(--fg)" }}>{obs.indicator}</span>
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {vt && (
+                                <>
+                                  <span className={`text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded border ${verdictColor.bg} ${verdictColor.text} ${verdictColor.border}`}>
+                                    {vt.verdict}
+                                  </span>
+                                  <span className="text-[9px]" style={{ color: "var(--muted)" }}>
+                                    {vt.malicious}/{total} engines
+                                  </span>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                          {abuse && (
+                            <div className="mt-1 text-[9px] flex gap-2 flex-wrap" style={{ color: "var(--muted)" }}>
+                              <span>Abuse score: <span className={abuse.abuse_confidence_score > 50 ? "text-red-400" : "text-green-400"}>{abuse.abuse_confidence_score}%</span></span>
+                              {abuse.country_code && <span>· {abuse.country_code}</span>}
+                              {abuse.isp && <span>· {abuse.isp}</span>}
+                              {abuse.total_reports > 0 && <span>· {abuse.total_reports} reports</span>}
+                            </div>
                           )}
-                          {source && (
-                            <span className="text-[9px] shrink-0" style={{ color: "var(--muted)" }}>· {source}</span>
+                          {vt?.permalink && (
+                            <a href={vt.permalink} target="_blank" rel="noopener noreferrer"
+                              className="mt-1 block text-[9px] hover:underline" style={{ color: "var(--primary)" }}>
+                              View on VirusTotal ↗
+                            </a>
                           )}
                         </div>
                       );
                     })}
                   </div>
                 </div>
-              ) : null}
+              )}
 
-              {/* TI data */}
-              {enrichments.ti_data && Object.keys(enrichments.ti_data).length > 0 ? (
+              {/* Legacy threat_intel field (single TIResult) */}
+              {enrichments.threat_intel && !enrichments.vt_enrichments && (
                 <div>
-                  <div className="text-[10px] font-semibold mb-1.5" style={{ color: "var(--muted)" }}>
-                    Threat Intelligence
-                  </div>
-                  <div className="space-y-1">
-                    {Object.entries(enrichments.ti_data).map(([k, v]) => (
-                      <div key={k} className="flex justify-between gap-2 text-[10px]">
-                        <span className="capitalize shrink-0" style={{ color: "var(--muted)" }}>
-                          {k.replace(/_/g, " ")}
-                        </span>
-                        <span className="font-mono truncate text-right" style={{ color: "var(--fg)" }}>
-                          {typeof v === "object" ? JSON.stringify(v) : String(v)}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
+                  <div className="text-[10px] font-semibold mb-1.5" style={{ color: "var(--muted)" }}>Threat Intelligence</div>
+                  <pre className="text-[9px] whitespace-pre-wrap break-all" style={{ color: "var(--fg)" }}>
+                    {JSON.stringify(enrichments.threat_intel, null, 2)}
+                  </pre>
                 </div>
-              ) : null}
+              )}
 
               {/* Empty state */}
               {(!enrichments.ioc_matches || enrichments.ioc_matches.length === 0) &&
-                (!enrichments.ti_data || Object.keys(enrichments.ti_data).length === 0) && (
+                (!enrichments.vt_enrichments || enrichments.vt_enrichments.length === 0) &&
+                !enrichments.threat_intel && (
                   <p className="text-[10px]" style={{ color: "var(--muted)" }}>
-                    No threat intelligence matches for this alert.
+                    No threat intelligence data for this alert.
                   </p>
                 )}
             </div>
@@ -810,43 +948,85 @@ function AlertDetail({
           onTreeLoaded={(nodes) => setProcessTreeData(nodes)}
         />
 
-        {/* AI Overview */}
-        <div
-          className="rounded border p-3"
-          style={{ background: "var(--surface-1)", borderColor: "var(--border)" }}
-        >
-          <div className="flex items-center justify-between mb-2">
-            <div className="text-xs font-semibold" style={{ fontFamily: "var(--font-space-grotesk)", color: "var(--fg)" }}>
-              AI Overview
-            </div>
-            <button
-              onClick={handleExplain}
-              disabled={explaining}
-              className="flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-semibold transition-colors disabled:opacity-50"
-              style={{
-                background: "var(--primary)",
-                color: "var(--primary-fg, #fff)",
-              }}
-            >
-              {explaining && (
-                <svg className="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none">
+        {/* AI Assistant */}
+        <div className="rounded border overflow-hidden" style={{ borderColor: "var(--border)" }}>
+          {/* Header */}
+          <div className="flex items-center gap-2 px-3 py-2 border-b" style={{ background: "var(--surface-1)", borderColor: "var(--border)" }}>
+            <Bot size={13} style={{ color: "var(--primary)" }} />
+            <span className="text-xs font-semibold" style={{ fontFamily: "var(--font-space-grotesk)", color: "var(--fg)" }}>
+              AI Assistant
+            </span>
+            {chatLoading && (
+              <span className="ml-auto flex items-center gap-1 text-[10px]" style={{ color: "var(--muted)" }}>
+                <svg className="h-2.5 w-2.5 animate-spin" viewBox="0 0 24 24" fill="none">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                 </svg>
-              )}
-              {explaining ? "Analyzing..." : explanation ? "Re-analyze" : "Explain with AI"}
-            </button>
+                Thinking…
+              </span>
+            )}
           </div>
-          {!explanation && !explaining && (
-            <p className="text-[10px]" style={{ color: "var(--muted)" }}>
-              Click to get an AI-powered explanation of this alert{processTreeData.length > 0 ? " including process tree context" : ""}.
-            </p>
-          )}
-          {explanation && (
-            <div className="text-xs leading-relaxed whitespace-pre-wrap" style={{ color: "var(--fg)" }}>
-              {explanation}
+
+          {/* Message history */}
+          {chatMessages.length > 0 && (
+            <div className="max-h-72 overflow-y-auto p-3 space-y-2" style={{ background: "var(--surface-0)" }}>
+              {chatMessages.map((m, i) => (
+                <div key={i} className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}>
+                  <div
+                    className={cn(
+                      "rounded-lg px-3 py-2 text-xs max-w-[88%] leading-relaxed whitespace-pre-wrap",
+                      m.role === "user" ? "text-white" : "border"
+                    )}
+                    style={
+                      m.role === "user"
+                        ? { background: "var(--primary)" }
+                        : { background: "var(--surface-1)", borderColor: "var(--border)", color: "var(--fg)" }
+                    }
+                  >
+                    {m.content}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
+
+          {/* Quick-start prompts when no history yet */}
+          {chatMessages.length === 0 && (
+            <div className="p-3 space-y-1.5" style={{ background: "var(--surface-0)" }}>
+              <p className="text-[10px] mb-2" style={{ color: "var(--muted)" }}>Ask the AI about this alert:</p>
+              {["Explain what happened", "Is this a false positive?", "What should I investigate next?", "Suggest response actions"].map((q) => (
+                <button
+                  key={q}
+                  onClick={() => sendMessage(q)}
+                  className="block w-full text-left text-xs px-2.5 py-1.5 rounded border transition-colors hover:bg-[var(--surface-2)]"
+                  style={{ borderColor: "var(--border)", color: "var(--muted)" }}
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Input */}
+          <div className="flex gap-1.5 p-2 border-t" style={{ background: "var(--surface-1)", borderColor: "var(--border)" }}>
+            <input
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(chatInput); } }}
+              placeholder="Ask a question…"
+              disabled={chatLoading}
+              className="flex-1 rounded px-2.5 py-1.5 text-xs border bg-transparent focus:outline-none"
+              style={{ borderColor: "var(--border)", color: "var(--fg)" }}
+            />
+            <button
+              onClick={() => sendMessage(chatInput)}
+              disabled={chatLoading || !chatInput.trim()}
+              className="rounded px-2.5 py-1.5 text-xs font-semibold transition-colors disabled:opacity-40"
+              style={{ background: "var(--primary)", color: "var(--primary-fg, #fff)" }}
+            >
+              <Send size={12} />
+            </button>
+          </div>
         </div>
 
         {/* Related events */}
