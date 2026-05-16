@@ -725,6 +725,60 @@ func (s *Store) UpdateAgentWinEventConfig(ctx context.Context, id string, config
 	return err
 }
 
+func (s *Store) GetAgentFleetConfig(ctx context.Context, id string) (json.RawMessage, error) {
+	var cfg json.RawMessage
+	err := s.rdb().GetContext(ctx, &cfg,
+		`SELECT fleet_monitor_config FROM agents WHERE id=$1`, id)
+	return cfg, err
+}
+
+func (s *Store) UpdateAgentFleetConfig(ctx context.Context, id string, cfg json.RawMessage, pushedBy string) error {
+	tx, err := s.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Snapshot current config before replacing.
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO agent_fleet_config_history (agent_id, config, pushed_by)
+		SELECT $1, fleet_monitor_config, $2
+		FROM agents WHERE id=$1
+		  AND fleet_monitor_config != '{}'::jsonb
+	`, id, pushedBy); err != nil {
+		return err
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE agents SET fleet_monitor_config=$2 WHERE id=$1`,
+		id, cfg); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func (s *Store) ListAgentFleetConfigHistory(ctx context.Context, agentID string, limit int) ([]models.FleetConfigSnapshot, error) {
+	var rows []models.FleetConfigSnapshot
+	err := s.rdb().SelectContext(ctx, &rows, `
+		SELECT id, agent_id, config, pushed_by, pushed_at, note
+		FROM agent_fleet_config_history
+		WHERE agent_id=$1
+		ORDER BY pushed_at DESC
+		LIMIT $2
+	`, agentID, limit)
+	return rows, err
+}
+
+func (s *Store) GetAgentFleetConfigSnapshot(ctx context.Context, snapshotID string) (*models.FleetConfigSnapshot, error) {
+	var snap models.FleetConfigSnapshot
+	err := s.rdb().GetContext(ctx, &snap, `
+		SELECT id, agent_id, config, pushed_by, pushed_at, note
+		FROM agent_fleet_config_history WHERE id=$1
+	`, snapshotID)
+	return &snap, err
+}
+
 // GetAgentWinEventConfig returns the Windows Event Log configuration for an agent.
 func (s *Store) GetAgentWinEventConfig(ctx context.Context, id string) (json.RawMessage, error) {
 	var config json.RawMessage
@@ -5653,4 +5707,157 @@ func (s *Store) IncrChainAlertCount(ctx context.Context, chainID string) error {
 		`UPDATE chains SET alert_count = alert_count + 1, last_seen = NOW() WHERE id=$1`,
 		chainID)
 	return err
+}
+
+// GetSOCMetrics returns analyst-facing SOC performance KPIs and trend data.
+func (s *Store) GetSOCMetrics(ctx context.Context) (*models.SOCMetrics, error) {
+	m := &models.SOCMetrics{
+		AlertTrend:      []models.AlertTrendDay{},
+		TopRules:        []models.RuleFireCount{},
+		AnalystWorkload: []models.AnalystLoad{},
+		StatusFunnel:    map[string]int64{},
+	}
+
+	// MTTR: avg duration of closed/resolved alerts in last 30 days.
+	var mttr float64
+	_ = s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (last_seen - first_seen))/3600), 0)
+		FROM alerts
+		WHERE status IN ('CLOSED','RESOLVED')
+		  AND last_seen >= NOW() - INTERVAL '30 days'
+	`).Scan(&mttr)
+	m.MTTRHours = mttr
+
+	// Open alert age: avg age of currently OPEN alerts.
+	var openAge float64
+	_ = s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (NOW() - first_seen))/3600), 0)
+		FROM alerts WHERE status = 'OPEN'
+	`).Scan(&openAge)
+	m.OpenAlertAgeH = openAge
+
+	// Resolution rate and FP rate for last 7 days.
+	var total7d, closed7d, fp7d int64
+	_ = s.db.QueryRowContext(ctx, `
+		SELECT
+		  COUNT(*),
+		  COUNT(*) FILTER (WHERE status IN ('CLOSED','RESOLVED')),
+		  COUNT(*) FILTER (WHERE triage_verdict = 'false_positive')
+		FROM alerts
+		WHERE first_seen >= NOW() - INTERVAL '7 days'
+	`).Scan(&total7d, &closed7d, &fp7d)
+	m.TotalAlerts7d = total7d
+	if total7d > 0 {
+		m.ResolutionRate = float64(closed7d) / float64(total7d) * 100
+	}
+	if closed7d > 0 {
+		m.FPRate = float64(fp7d) / float64(closed7d) * 100
+	}
+
+	// Alert trend: last 7 days by day + severity bucket.
+	trendRows, err := s.db.QueryContext(ctx, `
+		SELECT
+		  TO_CHAR(first_seen AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
+		  severity,
+		  COUNT(*) AS cnt
+		FROM alerts
+		WHERE first_seen >= NOW() - INTERVAL '7 days'
+		GROUP BY day, severity
+		ORDER BY day
+	`)
+	if err == nil {
+		defer trendRows.Close()
+		dayMap := map[string]*models.AlertTrendDay{}
+		for trendRows.Next() {
+			var day string
+			var sev int16
+			var cnt int64
+			if err := trendRows.Scan(&day, &sev, &cnt); err != nil {
+				continue
+			}
+			if dayMap[day] == nil {
+				dayMap[day] = &models.AlertTrendDay{Date: day}
+			}
+			d := dayMap[day]
+			switch sev {
+			case 4:
+				d.Critical += cnt
+			case 3:
+				d.High += cnt
+			case 2:
+				d.Medium += cnt
+			case 1:
+				d.Low += cnt
+			default:
+				d.Info += cnt
+			}
+		}
+		// Build ordered slice (7 days).
+		for i := 6; i >= 0; i-- {
+			day := time.Now().UTC().AddDate(0, 0, -i).Format("2006-01-02")
+			if d, ok := dayMap[day]; ok {
+				m.AlertTrend = append(m.AlertTrend, *d)
+			} else {
+				m.AlertTrend = append(m.AlertTrend, models.AlertTrendDay{Date: day})
+			}
+		}
+	}
+
+	// Top 10 firing rules last 7 days.
+	ruleRows, err := s.db.QueryContext(ctx, `
+		SELECT rule_name, COUNT(*) AS cnt
+		FROM alerts
+		WHERE first_seen >= NOW() - INTERVAL '7 days' AND rule_name != ''
+		GROUP BY rule_name
+		ORDER BY cnt DESC
+		LIMIT 10
+	`)
+	if err == nil {
+		defer ruleRows.Close()
+		for ruleRows.Next() {
+			var r models.RuleFireCount
+			if err := ruleRows.Scan(&r.RuleName, &r.Count); err == nil {
+				m.TopRules = append(m.TopRules, r)
+			}
+		}
+	}
+
+	// Analyst workload: open count + total assigned last 7d.
+	wlRows, err := s.db.QueryContext(ctx, `
+		SELECT
+		  assignee,
+		  COUNT(*) FILTER (WHERE status = 'OPEN') AS open_count,
+		  COUNT(*) FILTER (WHERE first_seen >= NOW() - INTERVAL '7 days') AS total_7d
+		FROM alerts
+		WHERE assignee != ''
+		GROUP BY assignee
+		ORDER BY open_count DESC
+		LIMIT 20
+	`)
+	if err == nil {
+		defer wlRows.Close()
+		for wlRows.Next() {
+			var a models.AnalystLoad
+			if err := wlRows.Scan(&a.Assignee, &a.OpenCount, &a.Total7d); err == nil {
+				m.AnalystWorkload = append(m.AnalystWorkload, a)
+			}
+		}
+	}
+
+	// Status funnel.
+	funnelRows, err := s.db.QueryContext(ctx, `
+		SELECT status, COUNT(*) FROM alerts GROUP BY status
+	`)
+	if err == nil {
+		defer funnelRows.Close()
+		for funnelRows.Next() {
+			var status string
+			var cnt int64
+			if err := funnelRows.Scan(&status, &cnt); err == nil {
+				m.StatusFunnel[status] = cnt
+			}
+		}
+	}
+
+	return m, nil
 }

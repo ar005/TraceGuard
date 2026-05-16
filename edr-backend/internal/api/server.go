@@ -189,6 +189,8 @@ func (s *Server) registerRoutes() {
 		v1.GET("/agents",          s.handleListAgents)
 		v1.GET("/agents/:id",      s.handleGetAgent)
 		v1.GET("/agents/:id/winevent-config", s.handleGetAgentWinEventConfig)
+		v1.GET("/agents/:id/fleet-config",         s.handleGetAgentFleetConfig)
+		v1.GET("/agents/:id/fleet-config/history", s.handleListAgentFleetConfigHistory)
 
 		// Events
 		v1.GET("/events",         s.handleListEvents)
@@ -270,6 +272,7 @@ func (s *Server) registerRoutes() {
 
 		// Database size metrics
 		v1.GET("/metrics/db-size", s.handleDBSize)
+		v1.GET("/metrics/soc", s.handleSOCMetrics)
 
 		// Admin-only live-response & pending-command routes
 		v1.POST("/liveresponse/command",      s.adminOnly(), s.handleLRCommand)
@@ -284,7 +287,10 @@ func (s *Server) registerRoutes() {
 		w := v1.Group("", s.adminOnly())
 		{
 			w.PATCH("/agents/:id",    s.handleUpdateAgent)
-			w.PATCH("/agents/:id/winevent-config", s.handleUpdateAgentWinEventConfig)
+			w.PATCH("/agents/:id/winevent-config",               s.handleUpdateAgentWinEventConfig)
+			w.PUT("/agents/:id/fleet-config",                    s.handlePutAgentFleetConfig)
+			w.POST("/agents/:id/fleet-config/rollback/:sid",     s.handleRollbackAgentFleetConfig)
+			w.POST("/agent-groups/:id/fleet-config",             s.handlePushGroupFleetConfig)
 
 			w.POST("/events/inject", strictRateLimitMiddleware(s.rateLimit), s.handleInjectEvent)
 
@@ -1252,6 +1258,18 @@ func (s *Server) handleDBSize(c *gin.Context) {
 	})
 }
 
+
+// GET /api/v1/metrics/soc — SOC performance KPIs and trend data.
+func (s *Server) handleSOCMetrics(c *gin.Context) {
+	ctx := c.Request.Context()
+	m, err := s.store.GetSOCMetrics(ctx)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, m)
+}
+
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
 func (s *Server) handleDashboard(c *gin.Context) {
@@ -1414,6 +1432,104 @@ func (s *Server) handleUpdateAgentWinEventConfig(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// GET /api/v1/agents/:id/fleet-config
+func (s *Server) handleGetAgentFleetConfig(c *gin.Context) {
+	cfg, err := s.store.GetAgentFleetConfig(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	if len(cfg) == 0 {
+		cfg = json.RawMessage(`{}`)
+	}
+	c.Data(http.StatusOK, "application/json", cfg)
+}
+
+// PUT /api/v1/agents/:id/fleet-config — push monitor config to an agent (admin only)
+func (s *Server) handlePutAgentFleetConfig(c *gin.Context) {
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
+		return
+	}
+	if !json.Valid(body) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON"})
+		return
+	}
+	pushedBy := c.GetString("username")
+	if err := s.store.UpdateAgentFleetConfig(c.Request.Context(), c.Param("id"), body, pushedBy); err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	configver.Bump()
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// GET /api/v1/agents/:id/fleet-config/history
+func (s *Server) handleListAgentFleetConfigHistory(c *gin.Context) {
+	snaps, err := s.store.ListAgentFleetConfigHistory(c.Request.Context(), c.Param("id"), 20)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, snaps)
+}
+
+// POST /api/v1/agents/:id/fleet-config/rollback/:sid — restore a historical config snapshot (admin only)
+func (s *Server) handleRollbackAgentFleetConfig(c *gin.Context) {
+	snap, err := s.store.GetAgentFleetConfigSnapshot(c.Request.Context(), c.Param("sid"))
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	pushedBy := c.GetString("username")
+	if err := s.store.UpdateAgentFleetConfig(c.Request.Context(), c.Param("id"), snap.Config, pushedBy); err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	configver.Bump()
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// POST /api/v1/agent-groups/:id/fleet-config — push config to all members of a group (admin only)
+func (s *Server) handlePushGroupFleetConfig(c *gin.Context) {
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
+		return
+	}
+	if !json.Valid(body) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON"})
+		return
+	}
+
+	tid := c.GetString("tenant_id")
+	group, err := s.store.GetAgentGroup(c.Request.Context(), c.Param("id"), tid)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+	agents, err := s.store.ListAgents(c.Request.Context())
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+
+	pushedBy := c.GetString("username")
+	pushed := 0
+	for i := range agents {
+		if store.AgentBelongsToGroup(&agents[i], group) {
+			if err := s.store.UpdateAgentFleetConfig(c.Request.Context(), agents[i].ID, body, pushedBy); err != nil {
+				s.log.Warn().Str("agent_id", agents[i].ID).Err(err).Msg("fleet config push failed for agent")
+				continue
+			}
+			pushed++
+		}
+	}
+	configver.Bump()
+	c.JSON(http.StatusOK, gin.H{"pushed": pushed})
 }
 
 // ─── Events ───────────────────────────────────────────────────────────────────

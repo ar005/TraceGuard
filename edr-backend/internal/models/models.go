@@ -26,10 +26,21 @@ type Agent struct {
 	Tags           pq.StringArray  `db:"tags"             json:"tags"`
 	Env            string          `db:"env"              json:"env"`
 	Notes          string          `db:"notes"            json:"notes"`
-	WinEventConfig  json.RawMessage `db:"winevent_config"   json:"winevent_config,omitempty"`
-	RiskScore       int16           `db:"risk_score"        json:"risk_score"`
-	RiskFactors     json.RawMessage `db:"risk_factors"      json:"risk_factors,omitempty"`
-	RiskUpdatedAt   *time.Time      `db:"risk_updated_at"   json:"risk_updated_at,omitempty"`
+	WinEventConfig     json.RawMessage `db:"winevent_config"      json:"winevent_config,omitempty"`
+	FleetMonitorConfig json.RawMessage `db:"fleet_monitor_config" json:"fleet_monitor_config,omitempty"`
+	RiskScore          int16           `db:"risk_score"           json:"risk_score"`
+	RiskFactors        json.RawMessage `db:"risk_factors"         json:"risk_factors,omitempty"`
+	RiskUpdatedAt      *time.Time      `db:"risk_updated_at"      json:"risk_updated_at,omitempty"`
+}
+
+// FleetConfigSnapshot is one historical entry of a fleet monitor config push.
+type FleetConfigSnapshot struct {
+	ID       string          `db:"id"        json:"id"`
+	AgentID  string          `db:"agent_id"  json:"agent_id"`
+	Config   json.RawMessage `db:"config"    json:"config"`
+	PushedBy string          `db:"pushed_by" json:"pushed_by"`
+	PushedAt time.Time       `db:"pushed_at" json:"pushed_at"`
+	Note     string          `db:"note"      json:"note"`
 }
 
 // Event represents a stored security event.
@@ -943,4 +954,38 @@ type TAXIIPollRun struct {
 	IOCsImported   int        `db:"iocs_imported"   json:"iocs_imported"`
 	Status         string     `db:"status"          json:"status"`
 	Error          string     `db:"error"           json:"error"`
+}
+
+// ── SOC Metrics ──────────────────────────────────────────────────────────────
+
+type AlertTrendDay struct {
+	Date     string `json:"date"`
+	Critical int64  `json:"critical"`
+	High     int64  `json:"high"`
+	Medium   int64  `json:"medium"`
+	Low      int64  `json:"low"`
+	Info     int64  `json:"info"`
+}
+
+type RuleFireCount struct {
+	RuleName string `json:"rule_name"`
+	Count    int64  `json:"count"`
+}
+
+type AnalystLoad struct {
+	Assignee  string `json:"assignee"`
+	OpenCount int64  `json:"open_count"`
+	Total7d   int64  `json:"total_7d"`
+}
+
+type SOCMetrics struct {
+	MTTRHours      float64            `json:"mttr_hours"`
+	OpenAlertAgeH  float64            `json:"open_alert_age_hours"`
+	ResolutionRate float64            `json:"resolution_rate"`
+	FPRate         float64            `json:"fp_rate"`
+	TotalAlerts7d  int64              `json:"total_alerts_7d"`
+	AlertTrend     []AlertTrendDay    `json:"alert_trend"`
+	TopRules       []RuleFireCount    `json:"top_rules"`
+	AnalystWorkload []AnalystLoad     `json:"analyst_workload"`
+	StatusFunnel   map[string]int64   `json:"status_funnel"`
 }

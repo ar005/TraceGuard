@@ -2294,6 +2294,22 @@ ALTER TABLE playbooks
 CREATE INDEX IF NOT EXISTS playbooks_tenant_idx ON playbooks(tenant_id);
 `,
 	},
+	{
+		name: "fleet_monitor_config",
+		sql: `
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS fleet_monitor_config JSONB NOT NULL DEFAULT '{}';
+
+CREATE TABLE IF NOT EXISTS agent_fleet_config_history (
+    id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    agent_id    TEXT        NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    config      JSONB       NOT NULL,
+    pushed_by   TEXT        NOT NULL DEFAULT '',
+    pushed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    note        TEXT        NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_afch_agent_id ON agent_fleet_config_history(agent_id, pushed_at DESC);
+`,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.
