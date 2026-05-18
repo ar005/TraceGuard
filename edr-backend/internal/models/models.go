@@ -956,6 +956,25 @@ type TAXIIPollRun struct {
 	Error          string     `db:"error"           json:"error"`
 }
 
+// ── Rule Effectiveness ────────────────────────────────────────────────────────
+
+type RuleEffectivenessRow struct {
+	RuleID       string     `json:"rule_id"`
+	RuleName     string     `json:"rule_name"`
+	Severity     int16      `json:"severity"`
+	Enabled      bool       `json:"enabled"`
+	TotalFires   int64      `json:"total_fires"`
+	Fires7d      int64      `json:"fires_7d"`
+	ClosedCount  int64      `json:"closed_count"`
+	FPCount      int64      `json:"fp_count"`
+	AvgMTTRHours float64    `json:"avg_mttr_hours"`
+	LastFiredAt  *time.Time `json:"last_fired_at,omitempty"`
+	// Computed after scan
+	CloseRate float64 `json:"close_rate"` // % of total_fires that were closed/resolved
+	FPRate    float64 `json:"fp_rate"`    // % of closed that were false positives
+	Label     string  `json:"label"`      // effective | noisy | stale | silent | active
+}
+
 // ── SOC Metrics ──────────────────────────────────────────────────────────────
 
 type AlertTrendDay struct {

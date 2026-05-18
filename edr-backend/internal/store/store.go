@@ -5861,3 +5861,82 @@ func (s *Store) GetSOCMetrics(ctx context.Context) (*models.SOCMetrics, error) {
 
 	return m, nil
 }
+
+// GetRuleEffectiveness returns per-rule fire counts, close/FP rates, and MTTR.
+// It FULL OUTER JOINs the rules table with an alert aggregate so that:
+//   - rules that have never fired appear with zero counts (silent/blind-spot detection)
+//   - synthetic rules (e.g. ITDR) not in the rules table also appear
+func (s *Store) GetRuleEffectiveness(ctx context.Context) ([]models.RuleEffectivenessRow, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+		  COALESCE(r.id,      ag.rule_id)   AS rule_id,
+		  COALESCE(r.name,    ag.rule_name) AS rule_name,
+		  COALESCE(r.severity, 0)::smallint AS severity,
+		  COALESCE(r.enabled, true)         AS enabled,
+		  COALESCE(ag.total_fires,  0)      AS total_fires,
+		  COALESCE(ag.fires_7d,     0)      AS fires_7d,
+		  COALESCE(ag.closed_count, 0)      AS closed_count,
+		  COALESCE(ag.fp_count,     0)      AS fp_count,
+		  COALESCE(ag.avg_mttr_hours, 0)    AS avg_mttr_hours,
+		  ag.last_fired_at
+		FROM rules r
+		FULL OUTER JOIN (
+		  SELECT
+		    rule_id,
+		    MAX(rule_name) AS rule_name,
+		    COUNT(*)  AS total_fires,
+		    COUNT(*) FILTER (WHERE first_seen >= NOW() - INTERVAL '7 days') AS fires_7d,
+		    COUNT(*) FILTER (WHERE status IN ('CLOSED','RESOLVED'))         AS closed_count,
+		    COUNT(*) FILTER (WHERE triage_verdict = 'false_positive')       AS fp_count,
+		    COALESCE(
+		      AVG(EXTRACT(EPOCH FROM (last_seen - first_seen))/3600)
+		        FILTER (WHERE status IN ('CLOSED','RESOLVED')),
+		    0) AS avg_mttr_hours,
+		    MAX(first_seen) AS last_fired_at
+		  FROM alerts WHERE rule_id != ''
+		  GROUP BY rule_id
+		) ag ON r.id = ag.rule_id
+		ORDER BY COALESCE(ag.fires_7d, 0) DESC, COALESCE(ag.total_fires, 0) DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []models.RuleEffectivenessRow
+	for rows.Next() {
+		var r models.RuleEffectivenessRow
+		if err := rows.Scan(
+			&r.RuleID, &r.RuleName, &r.Severity, &r.Enabled,
+			&r.TotalFires, &r.Fires7d, &r.ClosedCount, &r.FPCount,
+			&r.AvgMTTRHours, &r.LastFiredAt,
+		); err != nil {
+			return nil, err
+		}
+		if r.TotalFires > 0 {
+			r.CloseRate = float64(r.ClosedCount) / float64(r.TotalFires) * 100
+		}
+		if r.ClosedCount > 0 {
+			r.FPRate = float64(r.FPCount) / float64(r.ClosedCount) * 100
+		}
+		r.Label = ruleEffectivenessLabel(r)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func ruleEffectivenessLabel(r models.RuleEffectivenessRow) string {
+	if r.TotalFires == 0 {
+		return "silent"
+	}
+	if r.Fires7d == 0 {
+		return "stale"
+	}
+	if r.CloseRate >= 60 && r.FPRate <= 20 {
+		return "effective"
+	}
+	if r.CloseRate < 30 || r.FPRate > 40 {
+		return "noisy"
+	}
+	return "active"
+}

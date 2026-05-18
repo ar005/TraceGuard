@@ -118,7 +118,7 @@ func (t *Tracker) handleLogin(ctx context.Context, uid string, ev *models.XdrEve
 	}
 
 	// New country detection
-	if ev.SrcIP != nil {
+	if ev.SrcIP != nil && t.geo != nil {
 		loc, err := t.geo.Lookup(*ev.SrcIP)
 		if err == nil && loc != nil && loc.Country != "" {
 			cc := loc.Country

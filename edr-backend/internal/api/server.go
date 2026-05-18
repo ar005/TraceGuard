@@ -273,6 +273,7 @@ func (s *Server) registerRoutes() {
 		// Database size metrics
 		v1.GET("/metrics/db-size", s.handleDBSize)
 		v1.GET("/metrics/soc", s.handleSOCMetrics)
+		v1.GET("/metrics/rules", s.handleRuleEffectiveness)
 
 		// Admin-only live-response & pending-command routes
 		v1.POST("/liveresponse/command",      s.adminOnly(), s.handleLRCommand)
@@ -1261,13 +1262,43 @@ func (s *Server) handleDBSize(c *gin.Context) {
 
 // GET /api/v1/metrics/soc — SOC performance KPIs and trend data.
 func (s *Server) handleSOCMetrics(c *gin.Context) {
-	ctx := c.Request.Context()
-	m, err := s.store.GetSOCMetrics(ctx)
+	handleSOCMetricsFrom(c, s.store)
+}
+
+// socMetricsQuerier is satisfied by *store.Store. Extracted for unit testing.
+type socMetricsQuerier interface {
+	GetSOCMetrics(ctx context.Context) (*models.SOCMetrics, error)
+}
+
+func handleSOCMetricsFrom(c *gin.Context, q socMetricsQuerier) {
+	m, err := q.GetSOCMetrics(c.Request.Context())
 	if err != nil {
-		s.jsonError(c, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, m)
+}
+
+
+// ruleEffectivenessQuerier is satisfied by *store.Store.
+type ruleEffectivenessQuerier interface {
+	GetRuleEffectiveness(ctx context.Context) ([]models.RuleEffectivenessRow, error)
+}
+
+func (s *Server) handleRuleEffectiveness(c *gin.Context) {
+	handleRuleEffectivenessFrom(c, s.store)
+}
+
+func handleRuleEffectivenessFrom(c *gin.Context, q ruleEffectivenessQuerier) {
+	rows, err := q.GetRuleEffectiveness(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if rows == nil {
+		rows = []models.RuleEffectivenessRow{}
+	}
+	c.JSON(http.StatusOK, gin.H{"rules": rows})
 }
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
