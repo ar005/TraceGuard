@@ -2310,6 +2310,73 @@ CREATE TABLE IF NOT EXISTS agent_fleet_config_history (
 CREATE INDEX IF NOT EXISTS idx_afch_agent_id ON agent_fleet_config_history(agent_id, pushed_at DESC);
 `,
 	},
+	{
+		name: "tip_integration",
+		sql: `
+CREATE TABLE IF NOT EXISTS tip_settings (
+    id           TEXT PRIMARY KEY DEFAULT 'singleton',
+    tenant_id    TEXT NOT NULL DEFAULT 'default',
+    misp_url     TEXT NOT NULL DEFAULT '',
+    misp_api_key TEXT NOT NULL DEFAULT '',
+    auto_pull    BOOLEAN NOT NULL DEFAULT FALSE,
+    pull_interval_hours INT NOT NULL DEFAULT 24,
+    auto_push_matches   BOOLEAN NOT NULL DEFAULT FALSE,
+    enabled      BOOLEAN NOT NULL DEFAULT FALSE,
+    last_pull_at TIMESTAMPTZ,
+    last_push_at TIMESTAMPTZ,
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS tip_sync_log (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id   TEXT NOT NULL DEFAULT 'default',
+    direction   TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    ioc_count   INT NOT NULL DEFAULT 0,
+    error_msg   TEXT NOT NULL DEFAULT '',
+    synced_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_tip_sync_log_tenant ON tip_sync_log(tenant_id, synced_at DESC);
+
+ALTER TABLE iocs ADD COLUMN IF NOT EXISTS tip_pushed_at TIMESTAMPTZ;
+`,
+	},
+	{
+		name: "deception_network",
+		sql: `
+CREATE TABLE IF NOT EXISTS honeypot_deployments (
+    id          TEXT PRIMARY KEY,
+    tenant_id   TEXT NOT NULL DEFAULT 'default',
+    agent_id    TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL DEFAULT '',
+    htype       TEXT NOT NULL,
+    port        INT NOT NULL DEFAULT 0,
+    status      TEXT NOT NULL DEFAULT 'pending',
+    canary_id   TEXT NOT NULL DEFAULT '',
+    triggered   INT NOT NULL DEFAULT 0,
+    last_trigger TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_honeypot_tenant  ON honeypot_deployments(tenant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_honeypot_agent   ON honeypot_deployments(agent_id);
+
+CREATE TABLE IF NOT EXISTS lure_files (
+    id          TEXT PRIMARY KEY,
+    tenant_id   TEXT NOT NULL DEFAULT 'default',
+    agent_id    TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL DEFAULT '',
+    deploy_path TEXT NOT NULL DEFAULT '',
+    lure_type   TEXT NOT NULL DEFAULT 'script',
+    canary_id   TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL DEFAULT 'pending',
+    triggered   INT NOT NULL DEFAULT 0,
+    last_trigger TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_lure_tenant ON lure_files(tenant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_lure_agent  ON lure_files(agent_id);
+`,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.

@@ -1008,3 +1008,59 @@ type SOCMetrics struct {
 	AnalystWorkload []AnalystLoad     `json:"analyst_workload"`
 	StatusFunnel   map[string]int64   `json:"status_funnel"`
 }
+
+// ── TIP Integration ──────────────────────────────────────────────────────────
+
+type TIPSettings struct {
+	ID                 string     `db:"id"                   json:"id"`
+	TenantID           string     `db:"tenant_id"            json:"tenant_id"`
+	MISPUrl            string     `db:"misp_url"             json:"misp_url"`
+	MISPApiKey         string     `db:"misp_api_key"         json:"misp_api_key,omitempty"`
+	AutoPull           bool       `db:"auto_pull"            json:"auto_pull"`
+	PullIntervalHours  int        `db:"pull_interval_hours"  json:"pull_interval_hours"`
+	AutoPushMatches    bool       `db:"auto_push_matches"    json:"auto_push_matches"`
+	Enabled            bool       `db:"enabled"              json:"enabled"`
+	LastPullAt         *time.Time `db:"last_pull_at"         json:"last_pull_at,omitempty"`
+	LastPushAt         *time.Time `db:"last_push_at"         json:"last_push_at,omitempty"`
+	UpdatedAt          time.Time  `db:"updated_at"           json:"updated_at"`
+}
+
+type TIPSyncLog struct {
+	ID        string    `db:"id"         json:"id"`
+	TenantID  string    `db:"tenant_id"  json:"tenant_id"`
+	Direction string    `db:"direction"  json:"direction"`
+	Status    string    `db:"status"     json:"status"`
+	IOCCount  int       `db:"ioc_count"  json:"ioc_count"`
+	ErrorMsg  string    `db:"error_msg"  json:"error_msg,omitempty"`
+	SyncedAt  time.Time `db:"synced_at"  json:"synced_at"`
+}
+
+// ── Deception Network ────────────────────────────────────────────────────────
+
+type HoneypotDeployment struct {
+	ID          string     `db:"id"           json:"id"`
+	TenantID    string     `db:"tenant_id"    json:"tenant_id"`
+	AgentID     string     `db:"agent_id"     json:"agent_id"`
+	Name        string     `db:"name"         json:"name"`
+	HType       string     `db:"htype"        json:"htype"`
+	Port        int        `db:"port"         json:"port"`
+	Status      string     `db:"status"       json:"status"`
+	CanaryID    string     `db:"canary_id"    json:"canary_id"`
+	Triggered   int        `db:"triggered"    json:"triggered"`
+	LastTrigger *time.Time `db:"last_trigger" json:"last_trigger,omitempty"`
+	CreatedAt   time.Time  `db:"created_at"   json:"created_at"`
+}
+
+type LureFile struct {
+	ID          string     `db:"id"           json:"id"`
+	TenantID    string     `db:"tenant_id"    json:"tenant_id"`
+	AgentID     string     `db:"agent_id"     json:"agent_id"`
+	Name        string     `db:"name"         json:"name"`
+	DeployPath  string     `db:"deploy_path"  json:"deploy_path"`
+	LureType    string     `db:"lure_type"    json:"lure_type"`
+	CanaryID    string     `db:"canary_id"    json:"canary_id"`
+	Status      string     `db:"status"       json:"status"`
+	Triggered   int        `db:"triggered"    json:"triggered"`
+	LastTrigger *time.Time `db:"last_trigger" json:"last_trigger,omitempty"`
+	CreatedAt   time.Time  `db:"created_at"   json:"created_at"`
+}

@@ -59,6 +59,7 @@ import (
 	"github.com/youredr/edr-backend/internal/inteltask"
 	"github.com/youredr/edr-backend/internal/surface"
 	"github.com/youredr/edr-backend/internal/taxii"
+	"github.com/youredr/edr-backend/internal/tip"
 	"github.com/youredr/edr-backend/internal/logintrack"
 	"github.com/youredr/edr-backend/internal/playbook"
 	"github.com/youredr/edr-backend/internal/ransomware"
@@ -647,6 +648,9 @@ func main() {
 	taxiiPoller := taxii.NewPoller(st, logger)
 	go taxiiPoller.Run(detectorCtx)
 	apiServer.SetTAXIIPoller(taxiiPoller)
+
+	tipManager := tip.New(st, logger)
+	apiServer.SetTIPManager(tipManager)
 
 	go func() {
 		if err := apiServer.Listen(cfg.Server.HTTPAddr); err != nil {

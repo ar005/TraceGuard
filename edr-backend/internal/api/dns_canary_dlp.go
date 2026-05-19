@@ -151,6 +151,9 @@ func (s *Server) handleCanaryTrigger(c *gin.Context) {
 	}
 
 	_ = s.store.RecordCanaryTrigger(c.Request.Context(), token)
+	// Also update honeypot/lure counters if this token belongs to one.
+	_ = s.store.RecordHoneypotTrigger(c.Request.Context(), token)
+	_ = s.store.RecordLureTrigger(c.Request.Context(), token)
 
 	alert := &models.Alert{
 		ID:          "alert-" + uuid.New().String(),

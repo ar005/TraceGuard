@@ -5940,3 +5940,188 @@ func ruleEffectivenessLabel(r models.RuleEffectivenessRow) string {
 	}
 	return "active"
 }
+
+// ── TIP Settings ─────────────────────────────────────────────────────────────
+
+func (s *Store) GetTIPSettings(ctx context.Context) (*models.TIPSettings, error) {
+	var cfg models.TIPSettings
+	err := s.db.GetContext(ctx, &cfg, `SELECT * FROM tip_settings WHERE id='singleton' LIMIT 1`)
+	if err != nil {
+		// Return safe defaults if not yet seeded.
+		return &models.TIPSettings{
+			ID:                "singleton",
+			TenantID:          "default",
+			PullIntervalHours: 24,
+		}, nil
+	}
+	return &cfg, nil
+}
+
+func (s *Store) UpsertTIPSettings(ctx context.Context, cfg *models.TIPSettings) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO tip_settings
+		  (id, tenant_id, misp_url, misp_api_key, auto_pull, pull_interval_hours,
+		   auto_push_matches, enabled, updated_at)
+		VALUES ('singleton', $1, $2, $3, $4, $5, $6, $7, NOW())
+		ON CONFLICT (id) DO UPDATE SET
+		  tenant_id           = EXCLUDED.tenant_id,
+		  misp_url            = EXCLUDED.misp_url,
+		  misp_api_key        = EXCLUDED.misp_api_key,
+		  auto_pull           = EXCLUDED.auto_pull,
+		  pull_interval_hours = EXCLUDED.pull_interval_hours,
+		  auto_push_matches   = EXCLUDED.auto_push_matches,
+		  enabled             = EXCLUDED.enabled,
+		  updated_at          = NOW()`,
+		cfg.TenantID, cfg.MISPUrl, cfg.MISPApiKey, cfg.AutoPull,
+		cfg.PullIntervalHours, cfg.AutoPushMatches, cfg.Enabled)
+	return err
+}
+
+func (s *Store) UpdateTIPLastPull(ctx context.Context, t time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE tip_settings SET last_pull_at=$1 WHERE id='singleton'`, t)
+	return err
+}
+
+func (s *Store) UpdateTIPLastPush(ctx context.Context, t time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE tip_settings SET last_push_at=$1 WHERE id='singleton'`, t)
+	return err
+}
+
+func (s *Store) RecordTIPSync(ctx context.Context, direction, status string, count int, errMsg string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO tip_sync_log (id, tenant_id, direction, status, ioc_count, error_msg)
+		SELECT gen_random_uuid(), tenant_id, $1, $2, $3, $4
+		FROM tip_settings WHERE id='singleton'`,
+		direction, status, count, errMsg)
+	return err
+}
+
+func (s *Store) ListTIPSyncLog(ctx context.Context, limit int) ([]models.TIPSyncLog, error) {
+	var rows []models.TIPSyncLog
+	err := s.db.SelectContext(ctx, &rows,
+		`SELECT * FROM tip_sync_log ORDER BY synced_at DESC LIMIT $1`, limit)
+	return rows, err
+}
+
+func (s *Store) ListActiveIOCs(ctx context.Context, tenantID string) ([]models.IOC, error) {
+	var out []models.IOC
+	err := s.db.SelectContext(ctx, &out,
+		`SELECT * FROM iocs WHERE tenant_id=$1 AND enabled=TRUE ORDER BY created_at DESC LIMIT 10000`,
+		tenantID)
+	return out, err
+}
+
+func (s *Store) UpsertIOCFromTIP(ctx context.Context, ioc *models.IOC) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO iocs (id, tenant_id, type, value, source, description, tags, enabled, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, NOW())
+		ON CONFLICT (value, type) DO UPDATE SET
+		  source      = EXCLUDED.source,
+		  description = EXCLUDED.description,
+		  tags        = EXCLUDED.tags,
+		  enabled     = TRUE`,
+		ioc.ID, ioc.TenantID, ioc.Type, ioc.Value, ioc.Source, ioc.Description, ioc.Tags)
+	return err
+}
+
+func (s *Store) GetIOCsForTIPPromotion(ctx context.Context, tenantID string) ([]models.IOC, error) {
+	var out []models.IOC
+	err := s.db.SelectContext(ctx, &out, `
+		SELECT * FROM iocs
+		WHERE tenant_id=$1 AND enabled=TRUE
+		  AND hit_count > 0 AND tip_pushed_at IS NULL
+		ORDER BY hit_count DESC LIMIT 500`,
+		tenantID)
+	return out, err
+}
+
+func (s *Store) MarkIOCsTIPPushed(ctx context.Context, ids []string) error {
+	query, args, err := sqlx.In(
+		`UPDATE iocs SET tip_pushed_at=NOW() WHERE id IN (?)`, ids)
+	if err != nil {
+		return err
+	}
+	query = s.db.Rebind(query)
+	_, err = s.db.ExecContext(ctx, query, args...)
+	return err
+}
+
+// ── Honeypot Deployments ──────────────────────────────────────────────────────
+
+func (s *Store) CreateHoneypot(ctx context.Context, h *models.HoneypotDeployment) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO honeypot_deployments
+		  (id, tenant_id, agent_id, name, htype, port, status, canary_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		h.ID, h.TenantID, h.AgentID, h.Name, h.HType, h.Port, h.Status, h.CanaryID)
+	return err
+}
+
+func (s *Store) ListHoneypots(ctx context.Context, tenantID string) ([]models.HoneypotDeployment, error) {
+	var out []models.HoneypotDeployment
+	err := s.db.SelectContext(ctx, &out,
+		`SELECT * FROM honeypot_deployments WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
+	return out, err
+}
+
+func (s *Store) GetHoneypot(ctx context.Context, id, tenantID string) (*models.HoneypotDeployment, error) {
+	var h models.HoneypotDeployment
+	err := s.db.GetContext(ctx, &h,
+		`SELECT * FROM honeypot_deployments WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	return &h, err
+}
+
+func (s *Store) DeleteHoneypot(ctx context.Context, id, tenantID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM honeypot_deployments WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	return err
+}
+
+func (s *Store) RecordHoneypotTrigger(ctx context.Context, canaryID string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE honeypot_deployments
+		SET triggered=triggered+1, last_trigger=NOW()
+		WHERE canary_id=$1`, canaryID)
+	return err
+}
+
+// ── Lure Files ────────────────────────────────────────────────────────────────
+
+func (s *Store) CreateLureFile(ctx context.Context, lf *models.LureFile) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO lure_files
+		  (id, tenant_id, agent_id, name, deploy_path, lure_type, canary_id, status)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		lf.ID, lf.TenantID, lf.AgentID, lf.Name, lf.DeployPath, lf.LureType, lf.CanaryID, lf.Status)
+	return err
+}
+
+func (s *Store) ListLureFiles(ctx context.Context, tenantID string) ([]models.LureFile, error) {
+	var out []models.LureFile
+	err := s.db.SelectContext(ctx, &out,
+		`SELECT * FROM lure_files WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
+	return out, err
+}
+
+func (s *Store) GetLureFile(ctx context.Context, id, tenantID string) (*models.LureFile, error) {
+	var lf models.LureFile
+	err := s.db.GetContext(ctx, &lf,
+		`SELECT * FROM lure_files WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	return &lf, err
+}
+
+func (s *Store) DeleteLureFile(ctx context.Context, id, tenantID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM lure_files WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	return err
+}
+
+func (s *Store) RecordLureTrigger(ctx context.Context, canaryID string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE lure_files
+		SET triggered=triggered+1, last_trigger=NOW()
+		WHERE canary_id=$1`, canaryID)
+	return err
+}

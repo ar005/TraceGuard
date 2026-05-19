@@ -71,7 +71,18 @@ type Server struct {
 	intelGen     IntelTaskGenerator // optional — nil if not configured
 	taxiiPoller  TAXIIPoller        // optional — nil if TAXII disabled
 	huntScheduler HuntSchedulerRunner // optional — nil if not configured
+	tipMgr        TIPManager          // optional — nil if not configured
 }
+
+// TIPManager manages bi-directional MISP sync.
+type TIPManager interface {
+	Pull(ctx context.Context) (int, error)
+	Push(ctx context.Context) (int, error)
+	PushMatches(ctx context.Context) (int, error)
+}
+
+// SetTIPManager wires the TIP manager after construction.
+func (s *Server) SetTIPManager(m TIPManager) { s.tipMgr = m }
 
 // IOCEnricher is the subset of enrichment.IOCPipeline used by the API.
 type IOCEnricher interface {
@@ -436,6 +447,22 @@ func (s *Server) registerRoutes() {
 		v1.GET("/canary/tokens",        s.handleListCanaryTokens)
 		v1.POST("/canary/tokens",       s.adminOnly(), s.handleCreateCanaryToken)
 		v1.DELETE("/canary/tokens/:id", s.adminOnly(), s.handleDeleteCanaryToken)
+
+		// TIP Integration (Plan2-A)
+		v1.GET("/tip/settings",  s.handleGetTIPSettings)
+		v1.PUT("/tip/settings",  s.adminOnly(), s.handlePutTIPSettings)
+		v1.POST("/tip/pull",     s.adminOnly(), s.handleTIPPull)
+		v1.POST("/tip/push",     s.adminOnly(), s.handleTIPPush)
+		v1.GET("/tip/status",    s.handleTIPStatus)
+
+		// Deception Network (Plan2-C)
+		v1.GET("/deception/honeypots",      s.handleListHoneypots)
+		v1.POST("/deception/honeypots",     s.adminOnly(), s.handleCreateHoneypot)
+		v1.DELETE("/deception/honeypots/:id", s.adminOnly(), s.handleDeleteHoneypot)
+		v1.GET("/deception/lures",          s.handleListLures)
+		v1.POST("/deception/lures",         s.adminOnly(), s.handleCreateLure)
+		v1.GET("/deception/lures/:id/download", s.handleDownloadLure)
+		v1.DELETE("/deception/lures/:id",   s.adminOnly(), s.handleDeleteLure)
 
 		// DLP / Exfil (Feature E)
 		v1.GET("/dlp/events", s.handleDLPEvents)
@@ -4100,4 +4127,272 @@ func (s *Server) handleGetEventChain(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, chain)
+}
+
+// ── TIP Integration ───────────────────────────────────────────────────────────
+
+// GET /api/v1/tip/settings
+func (s *Server) handleGetTIPSettings(c *gin.Context) {
+	cfg, err := s.store.GetTIPSettings(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	// Never expose the raw API key to non-admin callers.
+	role := c.GetString("role")
+	if role != "admin" {
+		cfg.MISPApiKey = ""
+	} else if cfg.MISPApiKey != "" {
+		cfg.MISPApiKey = "••••••••"
+	}
+	c.JSON(http.StatusOK, cfg)
+}
+
+// PUT /api/v1/tip/settings
+func (s *Server) handlePutTIPSettings(c *gin.Context) {
+	var body models.TIPSettings
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// Preserve existing key if caller sent the masked placeholder.
+	if body.MISPApiKey == "••••••••" || body.MISPApiKey == "" {
+		existing, _ := s.store.GetTIPSettings(c.Request.Context())
+		if existing != nil {
+			body.MISPApiKey = existing.MISPApiKey
+		}
+	}
+	body.TenantID = c.GetString("tenant_id")
+	if body.TenantID == "" {
+		body.TenantID = "default"
+	}
+	if err := s.store.UpsertTIPSettings(c.Request.Context(), &body); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "save failed"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// POST /api/v1/tip/pull
+func (s *Server) handleTIPPull(c *gin.Context) {
+	if s.tipMgr == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "TIP manager not configured"})
+		return
+	}
+	count, err := s.tipMgr.Pull(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"imported": count})
+}
+
+// POST /api/v1/tip/push
+func (s *Server) handleTIPPush(c *gin.Context) {
+	if s.tipMgr == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "TIP manager not configured"})
+		return
+	}
+	count, err := s.tipMgr.Push(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"pushed": count})
+}
+
+// GET /api/v1/tip/status
+func (s *Server) handleTIPStatus(c *gin.Context) {
+	cfg, err := s.store.GetTIPSettings(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	log, _ := s.store.ListTIPSyncLog(c.Request.Context(), 20)
+	c.JSON(http.StatusOK, gin.H{
+		"enabled":      cfg.Enabled,
+		"last_pull_at": cfg.LastPullAt,
+		"last_push_at": cfg.LastPushAt,
+		"sync_log":     log,
+	})
+}
+
+// ── Deception Network ─────────────────────────────────────────────────────────
+
+// GET /api/v1/deception/honeypots
+func (s *Server) handleListHoneypots(c *gin.Context) {
+	tid := c.GetString("tenant_id")
+	list, err := s.store.ListHoneypots(c.Request.Context(), tid)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"honeypots": list})
+}
+
+// POST /api/v1/deception/honeypots
+func (s *Server) handleCreateHoneypot(c *gin.Context) {
+	tid := c.GetString("tenant_id")
+	var body struct {
+		AgentID string `json:"agent_id" binding:"required"`
+		Name    string `json:"name"     binding:"required"`
+		HType   string `json:"htype"    binding:"required"` // http|ssh|smb
+		Port    int    `json:"port"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if body.HType != "http" && body.HType != "ssh" && body.HType != "smb" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "htype must be http, ssh, or smb"})
+		return
+	}
+
+	// Create a linked canary token that fires when the honeypot is triggered.
+	ct := &models.CanaryToken{
+		ID:          uuid.New().String(),
+		TenantID:    tid,
+		Name:        "honeypot:" + body.Name,
+		Type:        "honeypot",
+		Token:       uuid.New().String(),
+		DeployedTo:  body.AgentID,
+		Description: "Auto-created for honeypot " + body.Name,
+	}
+	if err := s.store.CreateCanaryToken(c.Request.Context(), ct); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "create canary token failed"})
+		return
+	}
+
+	hp := &models.HoneypotDeployment{
+		ID:       uuid.New().String(),
+		TenantID: tid,
+		AgentID:  body.AgentID,
+		Name:     body.Name,
+		HType:    body.HType,
+		Port:     body.Port,
+		Status:   "pending",
+		CanaryID: ct.Token,
+	}
+	if err := s.store.CreateHoneypot(c.Request.Context(), hp); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "create honeypot failed"})
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"honeypot": hp, "canary_token": ct.Token})
+}
+
+// DELETE /api/v1/deception/honeypots/:id
+func (s *Server) handleDeleteHoneypot(c *gin.Context) {
+	tid := c.GetString("tenant_id")
+	if err := s.store.DeleteHoneypot(c.Request.Context(), c.Param("id"), tid); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// GET /api/v1/deception/lures
+func (s *Server) handleListLures(c *gin.Context) {
+	tid := c.GetString("tenant_id")
+	list, err := s.store.ListLureFiles(c.Request.Context(), tid)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"lures": list})
+}
+
+// POST /api/v1/deception/lures
+func (s *Server) handleCreateLure(c *gin.Context) {
+	tid := c.GetString("tenant_id")
+	var body struct {
+		AgentID    string `json:"agent_id"    binding:"required"`
+		Name       string `json:"name"        binding:"required"`
+		DeployPath string `json:"deploy_path" binding:"required"`
+		LureType   string `json:"lure_type"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if body.LureType == "" {
+		body.LureType = "script"
+	}
+
+	ct := &models.CanaryToken{
+		ID:          uuid.New().String(),
+		TenantID:    tid,
+		Name:        "lure:" + body.Name,
+		Type:        "lure_file",
+		Token:       uuid.New().String(),
+		DeployedTo:  body.AgentID,
+		Description: "Auto-created for lure " + body.Name,
+	}
+	if err := s.store.CreateCanaryToken(c.Request.Context(), ct); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "create canary token failed"})
+		return
+	}
+
+	lf := &models.LureFile{
+		ID:         uuid.New().String(),
+		TenantID:   tid,
+		AgentID:    body.AgentID,
+		Name:       body.Name,
+		DeployPath: body.DeployPath,
+		LureType:   body.LureType,
+		CanaryID:   ct.Token,
+		Status:     "pending",
+	}
+	if err := s.store.CreateLureFile(c.Request.Context(), lf); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "create lure failed"})
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"lure": lf, "canary_token": ct.Token, "download_url": "/api/v1/deception/lures/" + lf.ID + "/download"})
+}
+
+// GET /api/v1/deception/lures/:id/download — serves the lure script payload
+func (s *Server) handleDownloadLure(c *gin.Context) {
+	tid := c.GetString("tenant_id")
+	lf, err := s.store.GetLureFile(c.Request.Context(), c.Param("id"), tid)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+
+	// Determine backend base URL from request.
+	scheme := "http"
+	if c.Request.TLS != nil {
+		scheme = "https"
+	}
+	backendURL := scheme + "://" + c.Request.Host
+	triggerURL := backendURL + "/api/canary/trigger/" + lf.CanaryID
+
+	var content, filename string
+	switch lf.LureType {
+	case "batch":
+		filename = lf.Name + ".bat"
+		content = "@echo off\r\ncurl -s -o nul \"" + triggerURL + "\"\r\n"
+	case "powershell":
+		filename = lf.Name + ".ps1"
+		content = "Invoke-WebRequest -Uri '" + triggerURL + "' -UseBasicParsing | Out-Null\r\n"
+	case "python":
+		filename = lf.Name + ".py"
+		content = "import urllib.request\nurllib.request.urlopen('" + triggerURL + "')\n"
+	default: // "script"
+		filename = lf.Name + ".sh"
+		content = "#!/bin/sh\ncurl -s \"" + triggerURL + "\" >/dev/null 2>&1\n"
+	}
+
+	c.Header("Content-Disposition", "attachment; filename=\""+filename+"\"")
+	c.Header("Content-Type", "text/plain; charset=utf-8")
+	c.String(http.StatusOK, "%s", content)
+}
+
+// DELETE /api/v1/deception/lures/:id
+func (s *Server) handleDeleteLure(c *gin.Context) {
+	tid := c.GetString("tenant_id")
+	if err := s.store.DeleteLureFile(c.Request.Context(), c.Param("id"), tid); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
