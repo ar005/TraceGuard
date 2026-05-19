@@ -325,6 +325,26 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
       <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 10.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z"/><path d="M13.5 8a5.5 5.5 0 01-.08.9l1.34 1.04-1 1.73-1.6-.64a5.5 5.5 0 01-1.56.9l-.24 1.7h-2l-.24-1.7a5.5 5.5 0 01-1.56-.9l-1.6.64-1-1.73L4.58 8.9A5.5 5.5 0 014.5 8a5.5 5.5 0 01.08-.9L3.24 6.06l1-1.73 1.6.64a5.5 5.5 0 011.56-.9L7.64 2.3h2l.24 1.7a5.5 5.5 0 011.56.9l1.6-.64 1 1.73L12.42 7.1c.05.3.08.6.08.9z" stroke="currentColor" stroke-width="1.1" fill="none"/></svg>
       Settings
     </div>
+    <div class="nav-tab" id="tb-host-risk" onclick="nav('host-risk')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+      Host Risk
+    </div>
+    <div class="nav-tab" id="tb-ueba" onclick="nav('ueba')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      UEBA
+    </div>
+    <div class="nav-tab" id="tb-auto-remediation" onclick="nav('auto-remediation')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+      Auto-Remediation
+    </div>
+    <div class="nav-tab" id="tb-ioc-feeds" onclick="nav('ioc-feeds')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1"/></svg>
+      IOC Feeds
+    </div>
+    <div class="nav-tab" id="tb-reports" onclick="nav('reports')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+      Reports
+    </div>
   </nav>
   <div class="topbar-right">
     <div style="display:flex;align-items:center;gap:5px;font-family:var(--mono);font-size:8.5px;letter-spacing:1px">
@@ -1177,6 +1197,103 @@ tbody tr:hover{background:rgba(0,200,240,.025)}
   <pre id="lr-output" style="margin-top:12px;background:var(--bg1);border:1px solid var(--line);border-radius:2px;padding:14px;font-family:var(--mono);font-size:10px;color:var(--text);max-height:500px;overflow:auto;white-space:pre-wrap;display:none"></pre>
 </section>
 
+<!-- ═══════════════════════════════════════════════════════════ HOST RISK PAGE -->
+<section class="page" id="pg-host-risk">
+<div class="ph"><div><h1><span class="sl">//</span>HOST RISK</h1><p>Endpoint behavioral risk scores</p></div><div class="ph-r"><button class="btn pri" onclick="loadHostRisk()">Refresh</button></div></div>
+<div class="stats" id="hr-stats">
+  <div class="stat s-cy"><div style="font-family:var(--mono);font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);margin-bottom:6px">Critical (≥75)</div><div style="font-size:28px;font-family:var(--mono);font-weight:600;color:var(--red)" id="hr-critical">—</div></div>
+  <div class="stat s-cy"><div style="font-family:var(--mono);font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);margin-bottom:6px">High (50–74)</div><div style="font-size:28px;font-family:var(--mono);font-weight:600;color:var(--orange)" id="hr-high">—</div></div>
+  <div class="stat s-cy"><div style="font-family:var(--mono);font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);margin-bottom:6px">Medium (25–49)</div><div style="font-size:28px;font-family:var(--mono);font-weight:600;color:var(--amber)" id="hr-medium">—</div></div>
+  <div class="stat s-cy"><div style="font-family:var(--mono);font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);margin-bottom:6px">Low (&lt;25)</div><div style="font-size:28px;font-family:var(--mono);font-weight:600;color:var(--green)" id="hr-low">—</div></div>
+</div>
+<table class="tbl"><thead><tr><th>#</th><th>Hostname</th><th>OS</th><th>Risk Score</th><th>Level</th><th>Factors</th><th>Updated</th></tr></thead><tbody id="hr-tbody"></tbody></table>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════ UEBA PAGE -->
+<section class="page" id="pg-ueba">
+<div class="ph"><div><h1><span class="sl">//</span>UEBA TIMELINE</h1><p>Unified user activity timeline</p></div></div>
+<div style="display:flex;gap:10px;margin-bottom:18px;align-items:center">
+  <input id="ueba-uid" placeholder="Enter user UID…" style="flex:1;font-family:var(--mono);font-size:11px;padding:7px 11px;background:var(--bg1);border:1px solid var(--line2);color:var(--text);border-radius:2px;outline:none" />
+  <select id="ueba-hours" style="font-family:var(--mono);font-size:9px;padding:7px 11px;background:var(--bg1);border:1px solid var(--line2);color:var(--text);border-radius:2px">
+    <option value="6">6h</option><option value="24" selected>24h</option><option value="48">48h</option><option value="168">7d</option>
+  </select>
+  <button class="btn pri" onclick="loadUeba()">Search</button>
+</div>
+<div id="ueba-timeline" style="font-family:var(--mono);font-size:10px;color:var(--muted)">Enter a user UID to view their timeline.</div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════ AUTO-REMEDIATION PAGE -->
+<section class="page" id="pg-auto-remediation">
+<div class="ph"><div><h1><span class="sl">//</span>AUTO-REMEDIATION</h1><p>Automatically respond to detections</p></div><div class="ph-r"><button class="btn pri" onclick="openNewRemediationRule()">+ New Rule</button></div></div>
+<table class="tbl"><thead><tr><th>Name</th><th>Trigger</th><th>Action</th><th>Min Severity</th><th>Status</th><th></th></tr></thead><tbody id="ar-tbody"></tbody></table>
+<div id="ar-modal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.7);align-items:center;justify-content:center">
+  <div style="background:var(--bg2);border:1px solid var(--line2);border-radius:4px;padding:24px;width:480px;max-width:95vw">
+    <div style="font-family:var(--mono);font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--cyan);margin-bottom:16px">New Remediation Rule</div>
+    <div style="display:grid;gap:10px">
+      <input id="ar-name" placeholder="Rule name" style="font-family:var(--mono);font-size:11px;padding:7px 11px;background:var(--bg1);border:1px solid var(--line2);color:var(--text);border-radius:2px;outline:none;width:100%" />
+      <select id="ar-trigger-type" style="font-family:var(--mono);font-size:9px;padding:7px 11px;background:var(--bg1);border:1px solid var(--line2);color:var(--text);border-radius:2px">
+        <option value="rule_id">Trigger: Rule ID</option><option value="mitre_id">Trigger: MITRE Technique</option><option value="severity">Trigger: Any (min severity)</option>
+      </select>
+      <input id="ar-trigger-value" placeholder="Trigger value (e.g. rule-ransomware or T1486)" style="font-family:var(--mono);font-size:11px;padding:7px 11px;background:var(--bg1);border:1px solid var(--line2);color:var(--text);border-radius:2px;outline:none;width:100%" />
+      <select id="ar-action" style="font-family:var(--mono);font-size:9px;padding:7px 11px;background:var(--bg1);border:1px solid var(--line2);color:var(--text);border-radius:2px">
+        <option value="isolate_host">Action: Isolate Host</option><option value="kill_process">Action: Kill Process</option><option value="block_user">Action: Block User</option><option value="run_playbook">Action: Run Playbook</option>
+      </select>
+      <select id="ar-min-sev" style="font-family:var(--mono);font-size:9px;padding:7px 11px;background:var(--bg1);border:1px solid var(--line2);color:var(--text);border-radius:2px">
+        <option value="1">Min Severity ≥ 1</option><option value="2">Min Severity ≥ 2</option><option value="3">Min Severity ≥ 3</option><option value="4" selected>Min Severity ≥ 4</option><option value="5">Min Severity ≥ 5</option>
+      </select>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:16px">
+      <button class="btn pri" onclick="saveRemediationRule()" style="flex:1">Save</button>
+      <button class="btn" onclick="document.getElementById('ar-modal').style.display='none'" style="flex:1">Cancel</button>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════ IOC FEEDS PAGE -->
+<section class="page" id="pg-ioc-feeds">
+<div class="ph"><div><h1><span class="sl">//</span>CUSTOM IOC FEEDS</h1><p>Custom threat intelligence feed management</p></div><div class="ph-r"><button class="btn pri" onclick="openNewFeedModal()">+ Add Feed</button></div></div>
+<table class="tbl"><thead><tr><th>Name</th><th>Type</th><th>Format</th><th>Entries</th><th>Last Sync</th><th>Status</th><th></th></tr></thead><tbody id="iocf-tbody"></tbody></table>
+<div id="iocf-modal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.7);align-items:center;justify-content:center">
+  <div style="background:var(--bg2);border:1px solid var(--line2);border-radius:4px;padding:24px;width:480px;max-width:95vw">
+    <div style="font-family:var(--mono);font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--cyan);margin-bottom:16px">Add Custom IOC Feed</div>
+    <div style="display:grid;gap:10px">
+      <input id="iocf-name" placeholder="Feed name" style="font-family:var(--mono);font-size:11px;padding:7px 11px;background:var(--bg1);border:1px solid var(--line2);color:var(--text);border-radius:2px;outline:none;width:100%" />
+      <input id="iocf-url" placeholder="Feed URL (https://…)" style="font-family:var(--mono);font-size:11px;padding:7px 11px;background:var(--bg1);border:1px solid var(--line2);color:var(--text);border-radius:2px;outline:none;width:100%" />
+      <select id="iocf-type" style="font-family:var(--mono);font-size:9px;padding:7px 11px;background:var(--bg1);border:1px solid var(--line2);color:var(--text);border-radius:2px">
+        <option value="ip">IP Addresses</option><option value="domain">Domains</option><option value="hash">File Hashes</option>
+      </select>
+      <select id="iocf-format" style="font-family:var(--mono);font-size:9px;padding:7px 11px;background:var(--bg1);border:1px solid var(--line2);color:var(--text);border-radius:2px">
+        <option value="txt">Plain text (one per line)</option><option value="csv">CSV</option><option value="stix">STIX 2.x</option>
+      </select>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:16px">
+      <button class="btn pri" onclick="saveCustomFeed()" style="flex:1">Save</button>
+      <button class="btn" onclick="document.getElementById('iocf-modal').style.display='none'" style="flex:1">Cancel</button>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════ REPORTS PAGE -->
+<section class="page" id="pg-reports">
+<div class="ph"><div><h1><span class="sl">//</span>REPORTS</h1><p>Generate and download CSV exports</p></div></div>
+<div style="background:var(--bg1);border:1px solid var(--line);border-radius:2px;padding:16px;margin-bottom:18px">
+  <div style="font-family:var(--mono);font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);margin-bottom:12px">Generate New Report</div>
+  <div style="display:flex;gap:10px;align-items:center">
+    <select id="rpt-type" style="font-family:var(--mono);font-size:9px;padding:7px 11px;background:var(--bg2);border:1px solid var(--line2);color:var(--text);border-radius:2px">
+      <option value="alerts">Alerts</option><option value="incidents">Incidents</option>
+    </select>
+    <input id="rpt-title" placeholder="Title (optional)" style="flex:1;font-family:var(--mono);font-size:11px;padding:7px 11px;background:var(--bg2);border:1px solid var(--line2);color:var(--text);border-radius:2px;outline:none" />
+    <select id="rpt-limit" style="font-family:var(--mono);font-size:9px;padding:7px 11px;background:var(--bg2);border:1px solid var(--line2);color:var(--text);border-radius:2px">
+      <option value="100">100 rows</option><option value="500">500 rows</option><option value="1000" selected>1,000 rows</option><option value="5000">5,000 rows</option>
+    </select>
+    <button class="btn pri" onclick="generateReport()">Generate</button>
+  </div>
+</div>
+<table class="tbl"><thead><tr><th>Title</th><th>Type</th><th>Status</th><th>Rows</th><th>Created</th><th></th></tr></thead><tbody id="rpt-tbody"></tbody></table>
+</section>
+
 </main>
 
 <!-- DRAWER -->
@@ -1351,6 +1468,11 @@ function nav(name){
   if(name==='hunt') {}
   if(name==='vuln') loadVulns();
   if(name==='liveresponse') loadLRAgents();
+  if(name==='host-risk') loadHostRisk();
+  if(name==='ueba') { /* manual search, no auto-load */ }
+  if(name==='auto-remediation') loadRemediationRules();
+  if(name==='ioc-feeds') loadCustomFeeds();
+  if(name==='reports') loadReports();
 }
 
 // ─── status ──────────────────────────────────────────
@@ -4160,6 +4282,230 @@ async function bulkImportIOCs(){
     $('ioc-bulk-status').textContent='Error: '+e.message;
     toast('Import failed: '+e.message,false);
   }
+}
+
+// ── Host Risk ──────────────────────────────────────────────────────────────
+async function loadHostRisk() {
+  const limit = 20;
+  try {
+    const agents = await api(`/api/agents/top-risk?limit=${limit}`);
+    const list = Array.isArray(agents) ? agents : (agents.agents || []);
+    const crit = list.filter(a => a.risk_score >= 75).length;
+    const high = list.filter(a => a.risk_score >= 50 && a.risk_score < 75).length;
+    const med  = list.filter(a => a.risk_score >= 25 && a.risk_score < 50).length;
+    const low  = list.filter(a => a.risk_score < 25).length;
+    $('hr-critical').textContent = crit;
+    $('hr-high').textContent     = high;
+    $('hr-medium').textContent   = med;
+    $('hr-low').textContent      = low;
+    const tbody = $('hr-tbody');
+    tbody.innerHTML = list.map((a, i) => {
+      const pct = Math.min(100, a.risk_score);
+      const col = pct >= 75 ? 'var(--red)' : pct >= 50 ? 'var(--orange)' : pct >= 25 ? 'var(--amber)' : 'var(--green)';
+      const lbl = pct >= 75 ? 'CRITICAL' : pct >= 50 ? 'HIGH' : pct >= 25 ? 'MEDIUM' : 'LOW';
+      const factors = (a.risk_factors || []).join(', ') || '—';
+      return `<tr>
+        <td style="color:var(--muted)">#${i+1}</td>
+        <td style="color:var(--cyan)">${esc(a.hostname||'—')}</td>
+        <td style="color:var(--dim)">${esc(a.os||'—')}</td>
+        <td><div style="display:flex;align-items:center;gap:8px;min-width:120px">
+          <div style="flex:1;height:3px;background:var(--line2);border-radius:2px">
+            <div style="width:${pct}%;height:100%;background:${col};border-radius:2px;transition:width .3s"></div>
+          </div>
+          <span style="font-family:var(--mono);font-size:10px;color:${col};min-width:20px;text-align:right">${a.risk_score}</span>
+        </div></td>
+        <td><span style="font-family:var(--mono);font-size:8.5px;letter-spacing:1px;color:${col}">${lbl}</span></td>
+        <td style="color:var(--dim);font-size:10px">${esc(factors)}</td>
+        <td style="color:var(--muted);font-family:var(--mono);font-size:9px">${a.risk_updated_at ? new Date(a.risk_updated_at).toLocaleString() : '—'}</td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:20px">No risk data available.</td></tr>';
+  } catch(e) { console.error('loadHostRisk:', e); }
+}
+
+// ── UEBA ───────────────────────────────────────────────────────────────────
+async function loadUeba() {
+  const uid   = $('ueba-uid').value.trim();
+  const hours = $('ueba-hours').value;
+  if (!uid) return;
+  const el = $('ueba-timeline');
+  el.textContent = 'Loading…';
+  try {
+    const data   = await api(`/api/identity/${encodeURIComponent(uid)}/timeline?hours=${hours}`);
+    const events = data.events || [];
+    if (!events.length) {
+      el.innerHTML = '<span style="color:var(--muted)">No events found for this user in the selected timeframe.</span>';
+      return;
+    }
+    const catColor = {login:'var(--cyan)',alert:'var(--red)',process:'var(--orange)',network:'var(--violet)',file:'var(--amber)'};
+    el.innerHTML = events.map(ev => {
+      const col = catColor[ev.category] || 'var(--dim)';
+      const sev = ev.severity > 0 ? ` <span style="color:${col};font-size:9px">SEV${ev.severity}</span>` : '';
+      return `<div style="display:flex;gap:12px;margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--line)">
+        <div style="display:flex;flex-direction:column;align-items:center;padding-top:2px">
+          <div style="width:8px;height:8px;border-radius:50%;background:${col};flex-shrink:0"></div>
+          <div style="width:1px;flex:1;background:var(--line);margin-top:3px"></div>
+        </div>
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
+            <span style="font-family:var(--mono);font-size:8px;letter-spacing:1px;text-transform:uppercase;color:${col}">${esc(ev.category)}</span>
+            ${sev}
+            ${ev.hostname ? `<span style="color:var(--muted);font-family:var(--mono);font-size:9px">${esc(ev.hostname)}</span>` : ''}
+          </div>
+          <div style="color:var(--text);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(ev.summary)}</div>
+          <div style="color:var(--muted);font-family:var(--mono);font-size:9px;margin-top:2px">${new Date(ev.time).toLocaleString()}</div>
+        </div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    el.textContent = 'Error loading timeline.';
+    console.error('loadUeba:', e);
+  }
+}
+
+// ── Auto-Remediation ───────────────────────────────────────────────────────
+async function loadRemediationRules() {
+  try {
+    const rules = await api('/api/remediation/rules');
+    const list  = Array.isArray(rules) ? rules : (rules.rules || []);
+    const actionLabels  = {isolate_host:'Isolate Host',kill_process:'Kill Process',block_user:'Block User',run_playbook:'Run Playbook'};
+    const triggerLabels = {rule_id:'Rule ID',mitre_id:'MITRE',severity:'Severity'};
+    const tbody = $('ar-tbody');
+    if (!tbody) return;
+    tbody.innerHTML = list.length ? list.map(r => `<tr>
+      <td style="color:var(--text)">${esc(r.name)}</td>
+      <td style="color:var(--dim);font-family:var(--mono);font-size:9px">${triggerLabels[r.trigger_type]||r.trigger_type}: <span style="color:var(--cyan)">${esc(r.trigger_value||'any')}</span></td>
+      <td style="color:var(--orange);font-family:var(--mono);font-size:9px">${actionLabels[r.action]||r.action}</td>
+      <td style="color:var(--dim)">≥ ${r.min_severity}</td>
+      <td><span style="font-family:var(--mono);font-size:8px;letter-spacing:1px;color:${r.enabled?'var(--green)':'var(--muted)'}">${r.enabled?'ACTIVE':'DISABLED'}</span></td>
+      <td><button class="btn dng" onclick="deleteRemediationRule('${esc(r.id)}')">Delete</button></td>
+    </tr>`).join('') : '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px">No rules. Create one to auto-respond to threats.</td></tr>';
+  } catch(e) { console.error('loadRemediationRules:', e); }
+}
+
+function openNewRemediationRule() {
+  $('ar-modal').style.display = 'flex';
+}
+
+async function saveRemediationRule() {
+  const id = 'rule-' + Math.random().toString(36).slice(2,10);
+  const payload = {
+    id,
+    name:          $('ar-name').value,
+    trigger_type:  $('ar-trigger-type').value,
+    trigger_value: $('ar-trigger-value').value,
+    action:        $('ar-action').value,
+    min_severity:  parseInt($('ar-min-sev').value),
+    playbook_id:   '',
+    enabled:       true
+  };
+  try {
+    await apiMethod(`/api/remediation/rules/${id}`, 'PUT', payload);
+    $('ar-modal').style.display = 'none';
+    toast('Rule saved');
+    loadRemediationRules();
+  } catch(e) { toast('Save failed: '+e.message, false); }
+}
+
+async function deleteRemediationRule(id) {
+  if (!confirm('Delete this rule?')) return;
+  try {
+    await apiMethod(`/api/remediation/rules/${id}`, 'DELETE');
+    toast('Rule deleted');
+    loadRemediationRules();
+  } catch(e) { toast('Delete failed: '+e.message, false); }
+}
+
+// ── IOC Feeds ─────────────────────────────────────────────────────────────
+async function loadCustomFeeds() {
+  try {
+    const feeds = await api('/api/ioc-feeds');
+    const list  = Array.isArray(feeds) ? feeds : (feeds.feeds || []);
+    const typeLabels = {ip:'IP',domain:'Domain',hash:'Hash'};
+    const tbody = $('iocf-tbody');
+    if (!tbody) return;
+    tbody.innerHTML = list.length ? list.map(f => `<tr>
+      <td><div style="color:var(--text)">${esc(f.name)}</div><div style="color:var(--muted);font-family:var(--mono);font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px">${esc(f.url)}</div></td>
+      <td style="color:var(--cyan);font-family:var(--mono);font-size:9px">${typeLabels[f.feed_type]||esc(f.feed_type)}</td>
+      <td style="color:var(--dim);font-family:var(--mono);font-size:9px">${esc(f.format)}</td>
+      <td style="color:var(--body);font-family:var(--mono)">${f.entry_count>0?f.entry_count.toLocaleString():'—'}</td>
+      <td style="color:var(--muted);font-family:var(--mono);font-size:9px">${f.last_synced_at?new Date(f.last_synced_at).toLocaleString():'Never'}</td>
+      <td><span style="font-family:var(--mono);font-size:8px;letter-spacing:1px;color:${f.enabled?'var(--green)':'var(--muted)'}">${f.enabled?'ACTIVE':'OFF'}</span></td>
+      <td style="display:flex;gap:6px">
+        <button class="btn" onclick="syncIocFeed('${esc(f.id)}')">Sync</button>
+        <button class="btn dng" onclick="deleteIocFeed('${esc(f.id)}')">Del</button>
+      </td>
+    </tr>`).join('') : '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:20px">No custom feeds yet.</td></tr>';
+  } catch(e) { console.error('loadCustomFeeds:', e); }
+}
+
+function openNewFeedModal() {
+  $('iocf-modal').style.display = 'flex';
+}
+
+async function saveCustomFeed() {
+  const id = 'feed-' + Math.random().toString(36).slice(2,10);
+  const payload = {
+    id,
+    name:      $('iocf-name').value,
+    url:       $('iocf-url').value,
+    feed_type: $('iocf-type').value,
+    format:    $('iocf-format').value,
+    enabled:   true
+  };
+  try {
+    await apiMethod(`/api/ioc-feeds/${id}`, 'PUT', payload);
+    $('iocf-modal').style.display = 'none';
+    toast('Feed added');
+    loadCustomFeeds();
+  } catch(e) { toast('Save failed: '+e.message, false); }
+}
+
+async function syncIocFeed(id) {
+  try {
+    await apiMethod(`/api/ioc-feeds/${id}/sync`, 'POST', {});
+    toast('Sync triggered');
+    loadCustomFeeds();
+  } catch(e) { toast('Sync failed: '+e.message, false); }
+}
+
+async function deleteIocFeed(id) {
+  if (!confirm('Delete this feed?')) return;
+  try {
+    await apiMethod(`/api/ioc-feeds/${id}`, 'DELETE');
+    toast('Feed deleted');
+    loadCustomFeeds();
+  } catch(e) { toast('Delete failed: '+e.message, false); }
+}
+
+// ── Reports ────────────────────────────────────────────────────────────────
+async function loadReports() {
+  try {
+    const reports = await api('/api/reports');
+    const list    = Array.isArray(reports) ? reports : (reports.reports || []);
+    const tbody   = $('rpt-tbody');
+    if (!tbody) return;
+    const backend = ($('TraceGuard-meta')||{}).dataset && $('TraceGuard-meta').dataset.backend || '';
+    const token   = ($('TraceGuard-meta')||{}).dataset && $('TraceGuard-meta').dataset.token   || '';
+    tbody.innerHTML = list.length ? list.map(r => `<tr>
+      <td style="color:var(--text)">${esc(r.title)}</td>
+      <td style="color:var(--dim);font-family:var(--mono);font-size:9px">${esc(r.type)}</td>
+      <td><span style="font-family:var(--mono);font-size:8px;letter-spacing:1px;color:${r.status==='READY'?'var(--green)':r.status==='FAILED'?'var(--red)':'var(--cyan)'}">${esc(r.status)}</span></td>
+      <td style="color:var(--body);font-family:var(--mono)">${r.row_count>0?r.row_count.toLocaleString():'—'}</td>
+      <td style="color:var(--muted);font-family:var(--mono);font-size:9px">${new Date(r.created_at).toLocaleString()}</td>
+      <td>${r.status==='READY'?`<a class="btn suc" href="/api/reports/${esc(r.id)}/download" download>Download CSV</a>`:''}</td>
+    </tr>`).join('') : '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px">No reports yet.</td></tr>';
+  } catch(e) { console.error('loadReports:', e); }
+}
+
+async function generateReport() {
+  const type  = $('rpt-type').value;
+  const title = $('rpt-title').value || `${type} report — ${new Date().toLocaleDateString()}`;
+  const limit = parseInt($('rpt-limit').value);
+  try {
+    await apiMethod('/api/reports', 'POST', {type, title, limit});
+    toast('Report generation started');
+    loadReports();
+  } catch(e) { toast('Generate failed: '+e.message, false); }
 }
 </script>
 </body>

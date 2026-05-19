@@ -68,6 +68,9 @@ def do_login():
         )
         if r.status_code == 200:
             data = r.json()
+            if data.get("mfa_required"):
+                # Legacy UI does not support the TOTP step — show a clear message.
+                return redirect(url_for("login_page", error="mfa_unsupported"))
             session.clear()
             session.permanent    = True
             session["logged_in"] = True
@@ -149,6 +152,7 @@ def proxy(path, method="GET", body=None, timeout=10):
 # ── diagnostic ────────────────────────────────────────────────────────────────
 
 @app.route("/api/diag")
+@login_required
 def diag():
     results = {}
     tok = session.get("token", "")
@@ -316,6 +320,37 @@ def hunt(): return proxy("/api/v1/hunt", "POST", request.get_json())
 @login_required
 def agent_packages(aid): return proxy(f"/api/v1/agents/{aid}/packages")
 
+# Scheduled tasks
+@app.route("/api/agents/<aid>/tasks", methods=["GET", "POST"])
+@login_required
+def agent_tasks(aid):
+    if request.method == "POST":
+        return proxy(f"/api/v1/agents/{aid}/tasks", method="POST", body=request.get_json(silent=True))
+    return proxy(f"/api/v1/agents/{aid}/tasks")
+
+@app.route("/api/agents/<aid>/tasks/history")
+@login_required
+def agent_task_history(aid): return proxy(f"/api/v1/agents/{aid}/tasks/history")
+
+@app.route("/api/agents/<aid>/tasks/<tid>", methods=["PUT", "DELETE"])
+@login_required
+def agent_task(aid, tid):
+    if request.method == "DELETE":
+        return proxy(f"/api/v1/agents/{aid}/tasks/{tid}", method="DELETE")
+    return proxy(f"/api/v1/agents/{aid}/tasks/{tid}", method="PUT", body=request.get_json(silent=True))
+
+@app.route("/api/agents/<aid>/tasks/<tid>/run", methods=["POST"])
+@login_required
+def agent_task_run(aid, tid): return proxy(f"/api/v1/agents/{aid}/tasks/{tid}/run", method="POST")
+
+@app.route("/api/tasks")
+@login_required
+def all_tasks(): return proxy("/api/v1/tasks")
+
+@app.route("/api/tasks/history")
+@login_required
+def all_task_history(): return proxy("/api/v1/tasks/history")
+
 @app.route("/api/agents/<aid>/vulnerabilities")
 @login_required
 def agent_vulns(aid): return proxy(f"/api/v1/agents/{aid}/vulnerabilities")
@@ -364,6 +399,132 @@ def ioc_sources(): return proxy("/api/v1/iocs/sources")
 @app.route("/api/iocs/source/<source>", methods=["DELETE"])
 @login_required
 def delete_iocs_by_source(source): return proxy(f"/api/v1/iocs/source/{source}", "DELETE")
+
+# \u2500\u2500 Auto-Remediation \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+@app.route("/api/remediation/rules", methods=["GET"])
+@login_required
+def list_remediation_rules(): return proxy("/api/v1/remediation/rules")
+
+@app.route("/api/remediation/rules/<rid>", methods=["PUT"])
+@login_required
+def upsert_remediation_rule(rid): return proxy(f"/api/v1/remediation/rules/{rid}", "PUT", request.get_json())
+
+@app.route("/api/remediation/rules/<rid>", methods=["DELETE"])
+@login_required
+def delete_remediation_rule(rid): return proxy(f"/api/v1/remediation/rules/{rid}", "DELETE")
+
+# \u2500\u2500 UEBA / Login Sessions \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+@app.route("/api/identity/<uid>/timeline")
+@login_required
+def ueba_timeline(uid): return proxy(f"/api/v1/identity/{uid}/timeline")
+
+@app.route("/api/identity/<uid>/sessions")
+@login_required
+def identity_sessions(uid): return proxy(f"/api/v1/identity/{uid}/sessions")
+
+# \u2500\u2500 Custom IOC Feeds \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+@app.route("/api/ioc-feeds", methods=["GET"])
+@login_required
+def list_custom_feeds(): return proxy("/api/v1/ioc-feeds")
+
+@app.route("/api/ioc-feeds/<fid>", methods=["PUT"])
+@login_required
+def upsert_custom_feed(fid): return proxy(f"/api/v1/ioc-feeds/{fid}", "PUT", request.get_json())
+
+@app.route("/api/ioc-feeds/<fid>", methods=["DELETE"])
+@login_required
+def delete_custom_feed(fid): return proxy(f"/api/v1/ioc-feeds/{fid}", "DELETE")
+
+@app.route("/api/ioc-feeds/<fid>/sync", methods=["POST"])
+@login_required
+def sync_custom_feed(fid): return proxy(f"/api/v1/ioc-feeds/{fid}/sync", "POST", {})
+
+# \u2500\u2500 Host Risk \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+@app.route("/api/agents/top-risk")
+@login_required
+def top_risk_agents(): return proxy("/api/v1/agents/top-risk")
+
+# \u2500\u2500 Reports \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+@app.route("/api/reports", methods=["GET"])
+@login_required
+def list_reports(): return proxy("/api/v1/reports")
+
+@app.route("/api/reports", methods=["POST"])
+@login_required
+def generate_report(): return proxy("/api/v1/reports", "POST", request.get_json())
+
+@app.route("/api/reports/<rid>/download")
+@login_required
+def download_report(rid): return proxy(f"/api/v1/reports/{rid}/download")
+
+# \u2500\u2500 Attack Graph \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+@app.route("/api/incidents/<iid>/attack-graph")
+@login_required
+def incident_attack_graph(iid): return proxy(f"/api/v1/incidents/{iid}/attack-graph")
+
+# \u2500\u2500 Alert Enrichments \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+@app.route("/api/alerts/<aid>/enrichments")
+@login_required
+def alert_enrichments(aid): return proxy(f"/api/v1/alerts/{aid}/enrichments")
+
+# ── Compliance Coverage ──────────────────────────────────────────────────────
+@app.route("/api/compliance/coverage")
+@login_required
+def compliance_coverage():
+    fw = request.args.get("framework", "nist-csf")
+    return proxy(f"/api/v1/compliance/coverage?framework={fw}")
+
+# ── Cloud / XDR Events ───────────────────────────────────────────────────────
+@app.route("/api/xdr/events")
+@login_required
+def xdr_events(): return proxy("/api/v1/xdr/events")
+
+# ── Playbook Runs ─────────────────────────────────────────────────────────────
+@app.route("/api/playbooks/runs")
+@login_required
+def playbook_runs(): return proxy("/api/v1/playbooks/runs")
+
+# ── Cases detail ──────────────────────────────────────────────────────────────
+@app.route("/api/cases", methods=["GET"])
+@login_required
+def list_cases(): return proxy("/api/v1/cases")
+
+@app.route("/api/cases", methods=["POST"])
+@login_required
+def create_case(): return proxy("/api/v1/cases", "POST", request.get_json())
+
+@app.route("/api/cases/<cid>", methods=["GET", "PUT"])
+@login_required
+def case_detail(cid):
+    if request.method == "PUT":
+        return proxy(f"/api/v1/cases/{cid}", "PUT", request.get_json())
+    return proxy(f"/api/v1/cases/{cid}")
+
+@app.route("/api/cases/<cid>/notes", methods=["GET", "POST"])
+@login_required
+def case_notes(cid):
+    if request.method == "POST":
+        return proxy(f"/api/v1/cases/{cid}/notes", "POST", request.get_json())
+    return proxy(f"/api/v1/cases/{cid}/notes")
+
+@app.route("/api/cases/<cid>/notes/<nid>", methods=["DELETE"])
+@login_required
+def delete_case_note(cid, nid): return proxy(f"/api/v1/cases/{cid}/notes/{nid}", "DELETE")
+
+@app.route("/api/cases/<cid>/alerts", methods=["GET", "POST"])
+@login_required
+def case_alerts(cid):
+    if request.method == "POST":
+        return proxy(f"/api/v1/cases/{cid}/alerts", "POST", request.get_json())
+    return proxy(f"/api/v1/cases/{cid}/alerts")
+
+@app.route("/api/cases/<cid>/alerts/<aid>", methods=["DELETE"])
+@login_required
+def unlink_case_alert(cid, aid): return proxy(f"/api/v1/cases/{cid}/alerts/{aid}", "DELETE")
+
+@app.route("/api/cases/<cid>/summarise", methods=["POST"])
+@login_required
+def summarise_case(cid): return proxy(f"/api/v1/cases/{cid}/summarise", "POST", {}, timeout=120)
 
 if __name__ == "__main__":
     port = int(os.environ.get("EDR_UI_PORT", 5000))
