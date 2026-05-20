@@ -31,6 +31,12 @@ import (
 	"github.com/youredr/edr-agent/pkg/types"
 )
 
+// Policy holds allow/block domain lists pushed from the backend.
+type Policy struct {
+	Allow []string // domains to suppress (low-noise, trusted)
+	Block []string // domains to flag at high severity
+}
+
 // Config for the browser monitor.
 type Config struct {
 	Enabled    bool
@@ -47,12 +53,22 @@ func DefaultConfig() Config {
 
 // Monitor receives browser events via HTTP.
 type Monitor struct {
-	cfg    Config
-	bus    events.Bus
-	log    zerolog.Logger
-	server *http.Server
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	cfg      Config
+	bus      events.Bus
+	log      zerolog.Logger
+	server   *http.Server
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+	policyMu sync.RWMutex
+	policy   Policy
+}
+
+// UpdatePolicy replaces the active allow/block policy at runtime (thread-safe).
+func (m *Monitor) UpdatePolicy(p Policy) {
+	m.policyMu.Lock()
+	m.policy = p
+	m.policyMu.Unlock()
+	m.log.Info().Int("allow", len(p.Allow)).Int("block", len(p.Block)).Msg("browser policy updated")
 }
 
 // New creates a browser monitor.
@@ -205,6 +221,24 @@ func (m *Monitor) publishEvent(ev incomingEvent) {
 	}
 
 	domain := parsedURL.Hostname()
+
+	// Apply domain policy.
+	m.policyMu.RLock()
+	pol := m.policy
+	m.policyMu.RUnlock()
+	for _, d := range pol.Allow {
+		if domainMatches(domain, d) {
+			// Allowed domain — suppress event entirely (trusted traffic).
+			return
+		}
+	}
+	policyBlocked := false
+	for _, d := range pol.Block {
+		if domainMatches(domain, d) {
+			policyBlocked = true
+			break
+		}
+	}
 	urlPath := parsedURL.Path
 	if parsedURL.RawQuery != "" {
 		urlPath += "?" + parsedURL.RawQuery
@@ -216,9 +250,11 @@ func (m *Monitor) publishEvent(ev incomingEvent) {
 		redirectURLs = append(redirectURLs, r.URL)
 	}
 
-	// Determine severity.
+	// Determine severity — blocked domains are always HIGH.
 	severity := types.SeverityInfo
-	if ev.StatusCode == 0 && ev.Error != "" {
+	if policyBlocked {
+		severity = types.SeverityHigh
+	} else if ev.StatusCode == 0 && ev.Error != "" {
 		severity = types.SeverityLow
 	}
 
@@ -248,6 +284,9 @@ func (m *Monitor) publishEvent(ev incomingEvent) {
 	// Build tags.
 	var tags []string
 	tags = append(tags, "browser")
+	if policyBlocked {
+		tags = append(tags, "policy-blocked")
+	}
 	if ev.Type != "" {
 		tags = append(tags, ev.Type)
 	}
@@ -301,4 +340,14 @@ func (m *Monitor) publishEvent(ev incomingEvent) {
 		Int("status", ev.StatusCode).
 		Str("method", ev.Method).
 		Msg("browser request")
+}
+
+// domainMatches checks if domain matches a policy pattern.
+// A leading "*." means wildcard subdomain match.
+func domainMatches(domain, pattern string) bool {
+	if strings.HasPrefix(pattern, "*.") {
+		suffix := pattern[1:] // e.g. ".example.com"
+		return strings.HasSuffix(domain, suffix) || domain == pattern[2:]
+	}
+	return domain == pattern
 }

@@ -2377,6 +2377,22 @@ CREATE INDEX IF NOT EXISTS idx_lure_tenant ON lure_files(tenant_id, created_at D
 CREATE INDEX IF NOT EXISTS idx_lure_agent  ON lure_files(agent_id);
 `,
 	},
+	{
+		name: "browser_policy",
+		sql: `
+CREATE TABLE IF NOT EXISTS browser_policy_entries (
+    id          TEXT PRIMARY KEY,
+    tenant_id   TEXT NOT NULL DEFAULT 'default',
+    domain      TEXT NOT NULL,
+    entry_type  TEXT NOT NULL CHECK (entry_type IN ('allow','block')),
+    description TEXT NOT NULL DEFAULT '',
+    created_by  TEXT NOT NULL DEFAULT '',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_bpe_tenant      ON browser_policy_entries(tenant_id, entry_type);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bpe_domain ON browser_policy_entries(tenant_id, domain, entry_type);
+`,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.

@@ -6125,3 +6125,46 @@ func (s *Store) RecordLureTrigger(ctx context.Context, canaryID string) error {
 		WHERE canary_id=$1`, canaryID)
 	return err
 }
+
+// ── Browser Policy ────────────────────────────────────────────────────────────
+
+func (s *Store) ListBrowserPolicy(ctx context.Context, tenantID string) ([]models.BrowserPolicyEntry, error) {
+	var out []models.BrowserPolicyEntry
+	err := s.db.SelectContext(ctx, &out,
+		`SELECT * FROM browser_policy_entries WHERE tenant_id=$1 ORDER BY entry_type, domain`, tenantID)
+	return out, err
+}
+
+func (s *Store) CreateBrowserPolicyEntry(ctx context.Context, e *models.BrowserPolicyEntry) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO browser_policy_entries (id, tenant_id, domain, entry_type, description, created_by)
+		VALUES ($1,$2,$3,$4,$5,$6)
+		ON CONFLICT (tenant_id, domain, entry_type) DO NOTHING`,
+		e.ID, e.TenantID, e.Domain, e.EntryType, e.Description, e.CreatedBy)
+	return err
+}
+
+func (s *Store) DeleteBrowserPolicyEntry(ctx context.Context, id, tenantID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM browser_policy_entries WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	return err
+}
+
+func (s *Store) GetCompiledBrowserPolicy(ctx context.Context, tenantID string) (*models.BrowserPolicyCompiled, error) {
+	entries, err := s.ListBrowserPolicy(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	out := &models.BrowserPolicyCompiled{
+		Allow: []string{},
+		Block: []string{},
+	}
+	for _, e := range entries {
+		if e.EntryType == "allow" {
+			out.Allow = append(out.Allow, e.Domain)
+		} else {
+			out.Block = append(out.Block, e.Domain)
+		}
+	}
+	return out, nil
+}

@@ -1051,6 +1051,23 @@ type HoneypotDeployment struct {
 	CreatedAt   time.Time  `db:"created_at"   json:"created_at"`
 }
 
+// ── Browser Policy ───────────────────────────────────────────────────────────
+
+type BrowserPolicyEntry struct {
+	ID          string    `db:"id"          json:"id"`
+	TenantID    string    `db:"tenant_id"   json:"tenant_id"`
+	Domain      string    `db:"domain"      json:"domain"`
+	EntryType   string    `db:"entry_type"  json:"entry_type"` // allow | block
+	Description string    `db:"description" json:"description"`
+	CreatedBy   string    `db:"created_by"  json:"created_by"`
+	CreatedAt   time.Time `db:"created_at"  json:"created_at"`
+}
+
+type BrowserPolicyCompiled struct {
+	Allow []string `json:"allow"`
+	Block []string `json:"block"`
+}
+
 type LureFile struct {
 	ID          string     `db:"id"           json:"id"`
 	TenantID    string     `db:"tenant_id"    json:"tenant_id"`

@@ -448,6 +448,12 @@ func (s *Server) registerRoutes() {
 		v1.POST("/canary/tokens",       s.adminOnly(), s.handleCreateCanaryToken)
 		v1.DELETE("/canary/tokens/:id", s.adminOnly(), s.handleDeleteCanaryToken)
 
+		// Browser Policy
+		v1.GET("/browser/policy",          s.handleListBrowserPolicy)
+		v1.POST("/browser/policy",         s.adminOnly(), s.handleCreateBrowserPolicyEntry)
+		v1.DELETE("/browser/policy/:id",   s.adminOnly(), s.handleDeleteBrowserPolicyEntry)
+		v1.GET("/browser/policy/compiled", s.handleGetCompiledBrowserPolicy)
+
 		// TIP Integration (Plan2-A)
 		v1.GET("/tip/settings",  s.handleGetTIPSettings)
 		v1.PUT("/tip/settings",  s.adminOnly(), s.handlePutTIPSettings)
@@ -4395,4 +4401,76 @@ func (s *Server) handleDeleteLure(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// ── Browser Policy ────────────────────────────────────────────────────────────
+
+// GET /api/v1/browser/policy
+func (s *Server) handleListBrowserPolicy(c *gin.Context) {
+	tid := c.GetString("tenant_id")
+	entries, err := s.store.ListBrowserPolicy(c.Request.Context(), tid)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"entries": entries})
+}
+
+// POST /api/v1/browser/policy
+func (s *Server) handleCreateBrowserPolicyEntry(c *gin.Context) {
+	tid := c.GetString("tenant_id")
+	var body struct {
+		Domain      string `json:"domain"      binding:"required"`
+		EntryType   string `json:"entry_type"  binding:"required"`
+		Description string `json:"description"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if body.EntryType != "allow" && body.EntryType != "block" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "entry_type must be 'allow' or 'block'"})
+		return
+	}
+	caller := c.GetString("email")
+	if caller == "" {
+		caller = c.GetString("sub")
+	}
+	entry := &models.BrowserPolicyEntry{
+		ID:          uuid.New().String(),
+		TenantID:    tid,
+		Domain:      body.Domain,
+		EntryType:   body.EntryType,
+		Description: body.Description,
+		CreatedBy:   caller,
+	}
+	if err := s.store.CreateBrowserPolicyEntry(c.Request.Context(), entry); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "create failed"})
+		return
+	}
+	c.JSON(http.StatusCreated, entry)
+}
+
+// DELETE /api/v1/browser/policy/:id
+func (s *Server) handleDeleteBrowserPolicyEntry(c *gin.Context) {
+	tid := c.GetString("tenant_id")
+	if err := s.store.DeleteBrowserPolicyEntry(c.Request.Context(), c.Param("id"), tid); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// GET /api/v1/browser/policy/compiled — used by agents to fetch the active policy
+func (s *Server) handleGetCompiledBrowserPolicy(c *gin.Context) {
+	tid := c.GetString("tenant_id")
+	if tid == "" {
+		tid = "default"
+	}
+	policy, err := s.store.GetCompiledBrowserPolicy(c.Request.Context(), tid)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+	c.JSON(http.StatusOK, policy)
 }

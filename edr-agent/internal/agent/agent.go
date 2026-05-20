@@ -162,6 +162,7 @@ func New(cfg *config.Config) (*Agent, error) {
 	// Must be registered after `a` is initialised so the closure captures a valid pointer.
 	trans.OnConfigChange(func(newVer string) {
 		go a.fetchAndApplyFleetConfig(newVer)
+		go a.fetchAndApplyBrowserPolicy()
 	})
 
 	// Wire monitors.
@@ -977,3 +978,59 @@ type agentLifecycleEvent struct {
 
 func (e *agentLifecycleEvent) EventType() string { return string(e.Type) }
 func (e *agentLifecycleEvent) EventID() string   { return e.ID }
+
+// fetchAndApplyBrowserPolicy fetches the compiled allow/block policy from the
+// backend and updates the browser monitor at runtime.
+func (a *Agent) fetchAndApplyBrowserPolicy() {
+	if a.browserMonitor == nil {
+		return
+	}
+	backendURL := a.cfg.Agent.RESTBackendURL
+	if backendURL == "" {
+		backendURL = a.cfg.Agent.BackendURL
+	}
+	if backendURL == "" {
+		return
+	}
+	ctx := a.runCtx
+	if ctx == nil {
+		return
+	}
+
+	url := strings.TrimRight(backendURL, "/") + "/api/v1/browser/policy/compiled"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		a.log.Warn().Err(err).Msg("browser policy fetch: build request failed")
+		return
+	}
+	if a.cfg.Agent.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+a.cfg.Agent.APIKey)
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		a.log.Warn().Err(err).Msg("browser policy fetch failed")
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		a.log.Warn().Int("status", resp.StatusCode).Msg("browser policy fetch: unexpected status")
+		return
+	}
+
+	var compiled struct {
+		Allow []string `json:"allow"`
+		Block []string `json:"block"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&compiled); err != nil {
+		a.log.Warn().Err(err).Msg("browser policy fetch: decode failed")
+		return
+	}
+
+	a.browserMonitor.UpdatePolicy(browser.Policy{
+		Allow: compiled.Allow,
+		Block: compiled.Block,
+	})
+}
