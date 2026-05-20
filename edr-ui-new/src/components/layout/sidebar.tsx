@@ -51,6 +51,7 @@ import {
   RotateCcw,
   Zap,
   Gauge,
+  Link2,
 } from "lucide-react";
 
 interface NavItem {
@@ -83,6 +84,7 @@ const NAV_SECTIONS: NavSection[] = [
       { label: "Chains", href: "/chains", icon: GitBranch },
       { label: "Commands", href: "/commands", icon: Terminal },
       { label: "Browser", href: "/browser", icon: Globe },
+      { label: "Browser Policy", href: "/browser/policy", icon: ShieldCheck },
       { label: "USB Devices", href: "/usb", icon: Usb },
       { label: "Email Threats", href: "/email-threats", icon: Mail },
       { label: "Hunt", href: "/hunt", icon: Crosshair },
@@ -100,6 +102,7 @@ const NAV_SECTIONS: NavSection[] = [
       { label: "Tasking", href: "/intel/tasks", icon: Zap },
       { label: "Hunt Schedules", href: "/intel/hunt-schedules", icon: CalendarClock },
       { label: "TAXII Feeds", href: "/intel/taxii", icon: Rss },
+      { label: "TIP Integration", href: "/tip", icon: Link2 },
     ],
   },
   {
@@ -145,6 +148,7 @@ const NAV_SECTIONS: NavSection[] = [
       { label: "Auto-Remediation", href: "/auto-remediation", icon: Siren },
       { label: "Compliance", href: "/compliance", icon: ClipboardCheck },
       { label: "Canary Tokens", href: "/canary", icon: Ghost },
+      { label: "Deception Network", href: "/deception", icon: Crosshair },
       { label: "Scheduled Tasks", href: "/scheduled-tasks", icon: CalendarClock },
       { label: "Auto-Case Policies", href: "/autocase", icon: FolderCog },
       { label: "Response Actions", href: "/response-actions", icon: ShieldCheck },
