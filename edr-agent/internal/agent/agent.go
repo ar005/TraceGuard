@@ -71,6 +71,7 @@ type Agent struct {
 	authMonitor       *auth.Monitor
 	vulnMonitor       *vuln.Monitor
 	browserMonitor    *browser.Monitor
+	historyPoller     *browser.HistoryPoller
 	kmodMonitor       *kmod.Monitor
 	usbMonitor        *usb.Monitor
 	pipeMonitor       *pipemon.Monitor
@@ -201,6 +202,18 @@ func New(cfg *config.Config) (*Agent, error) {
 		a.browserMonitor = browser.New(browser.Config{
 			Enabled:    true,
 			ListenAddr: listenAddr,
+		}, bus, log)
+	}
+
+	// Browser history poller (reads Chrome/Firefox SQLite history files).
+	if cfg.Monitors.BrowserHistory.Enabled {
+		pollInterval := cfg.Monitors.BrowserHistory.PollIntervalS
+		if pollInterval <= 0 {
+			pollInterval = 300
+		}
+		a.historyPoller = browser.NewHistoryPoller(browser.HistoryConfig{
+			Enabled:       true,
+			PollIntervalS: pollInterval,
 		}, bus, log)
 	}
 
@@ -406,6 +419,14 @@ func (a *Agent) Start(ctx context.Context) error {
 		}
 	}
 
+	if a.historyPoller != nil {
+		if err := a.historyPoller.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("browser history poller start failed")
+		} else {
+			a.log.Info().Msg("browser history poller running")
+		}
+	}
+
 	if a.kmodMonitor != nil {
 		if err := a.kmodMonitor.Start(ctx); err != nil {
 			a.log.Warn().Err(err).Msg("kmod monitor start failed")
@@ -545,6 +566,9 @@ func (a *Agent) shutdown() error {
 	}
 	if a.browserMonitor != nil {
 		a.browserMonitor.Stop()
+	}
+	if a.historyPoller != nil {
+		a.historyPoller.Stop()
 	}
 	if a.vulnMonitor != nil {
 		a.vulnMonitor.Stop()

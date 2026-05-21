@@ -44,7 +44,8 @@ type MonitorsConfig struct {
 	Network  NetworkMonitorConfig  `mapstructure:"network"`
 	File     FileMonitorConfig     `mapstructure:"file"`
 	Registry RegistryMonitorConfig `mapstructure:"registry"`
-	Browser  BrowserMonitorConfig  `mapstructure:"browser"`
+	Browser        BrowserMonitorConfig  `mapstructure:"browser"`
+	BrowserHistory BrowserHistoryConfig  `mapstructure:"browser_history"`
 	KMod     KModMonitorConfig     `mapstructure:"kmod"`
 	USB      USBMonitorConfig      `mapstructure:"usb"`
 	Pipe     PipeMonConfig         `mapstructure:"pipe"`
@@ -84,6 +85,11 @@ type RegistryMonitorConfig struct {
 type BrowserMonitorConfig struct {
 	Enabled    bool   `mapstructure:"enabled"`
 	ListenAddr string `mapstructure:"listen_addr"`
+}
+
+type BrowserHistoryConfig struct {
+	Enabled       bool `mapstructure:"enabled"`
+	PollIntervalS int  `mapstructure:"poll_interval_s"`
 }
 
 type KModMonitorConfig struct {
