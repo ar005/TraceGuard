@@ -2393,6 +2393,28 @@ CREATE INDEX IF NOT EXISTS idx_bpe_tenant      ON browser_policy_entries(tenant_
 CREATE UNIQUE INDEX IF NOT EXISTS idx_bpe_domain ON browser_policy_entries(tenant_id, domain, entry_type);
 `,
 	},
+	{
+		name: "forensics_jobs",
+		sql: `
+CREATE TABLE IF NOT EXISTS forensics_jobs (
+    id          TEXT PRIMARY KEY,
+    tenant_id   TEXT NOT NULL DEFAULT 'default',
+    agent_id    TEXT NOT NULL,
+    hostname    TEXT NOT NULL DEFAULT '',
+    job_type    TEXT NOT NULL CHECK (job_type IN ('artifacts','process_memory','file','full')),
+    status      TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','collecting','ready','failed')),
+    params      JSONB NOT NULL DEFAULT '{}',
+    bundle_path TEXT NOT NULL DEFAULT '',
+    bundle_size BIGINT NOT NULL DEFAULT 0,
+    error_msg   TEXT NOT NULL DEFAULT '',
+    created_by  TEXT NOT NULL DEFAULT '',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_fj_tenant   ON forensics_jobs(tenant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_fj_pending  ON forensics_jobs(agent_id, status) WHERE status = 'pending';
+`,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.

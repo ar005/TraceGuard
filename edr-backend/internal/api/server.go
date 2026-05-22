@@ -470,6 +470,16 @@ func (s *Server) registerRoutes() {
 		v1.GET("/deception/lures/:id/download", s.handleDownloadLure)
 		v1.DELETE("/deception/lures/:id",   s.adminOnly(), s.handleDeleteLure)
 
+		// Forensic Acquisition
+		v1.GET("/forensics/jobs",                s.handleListForensicsJobs)
+		v1.GET("/forensics/jobs/:id",            s.handleGetForensicsJob)
+		v1.GET("/forensics/jobs/:id/download",   s.handleForensicsDownload)
+		// Agent-facing (no JWT, just API key)
+		v1.GET("/agents/:id/forensics/pending",  s.handleForensicsPending)
+		v1.POST("/forensics/jobs/:id/bundle",    s.handleForensicsUploadBundle)
+		// Analyst-facing
+		v1.POST("/agents/:id/forensics/collect", s.handleCreateForensicsJob)
+
 		// DLP / Exfil (Feature E)
 		v1.GET("/dlp/events", s.handleDLPEvents)
 		v1.GET("/dlp/stats",  s.handleDLPStats)

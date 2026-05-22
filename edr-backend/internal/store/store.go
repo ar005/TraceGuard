@@ -6168,3 +6168,81 @@ func (s *Store) GetCompiledBrowserPolicy(ctx context.Context, tenantID string) (
 	}
 	return out, nil
 }
+
+// ─── Forensics jobs ──────────────────────────────────────────────────────────
+
+func (s *Store) CreateForensicsJob(ctx context.Context, j *models.ForensicsJob) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO forensics_jobs
+		 (id,tenant_id,agent_id,hostname,job_type,status,params,created_by)
+		 VALUES ($1,$2,$3,$4,$5,'pending',$6,$7)`,
+		j.ID, j.TenantID, j.AgentID, j.Hostname, j.JobType, j.Params, j.CreatedBy)
+	return err
+}
+
+func (s *Store) GetForensicsJob(ctx context.Context, id, tenantID string) (*models.ForensicsJob, error) {
+	var j models.ForensicsJob
+	err := s.db.GetContext(ctx, &j,
+		`SELECT * FROM forensics_jobs WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return &j, nil
+}
+
+// GetForensicsJobByID looks up a job without tenant check (used by agent upload endpoint).
+func (s *Store) GetForensicsJobByID(ctx context.Context, id string) (*models.ForensicsJob, error) {
+	var j models.ForensicsJob
+	err := s.db.GetContext(ctx, &j, `SELECT * FROM forensics_jobs WHERE id=$1`, id)
+	if err != nil {
+		return nil, err
+	}
+	return &j, nil
+}
+
+func (s *Store) ListForensicsJobs(ctx context.Context, tenantID string) ([]*models.ForensicsJob, error) {
+	var jobs []*models.ForensicsJob
+	err := s.db.SelectContext(ctx, &jobs,
+		`SELECT * FROM forensics_jobs WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 200`, tenantID)
+	return jobs, err
+}
+
+// GetPendingForensicsJobs returns pending jobs for a specific agent (agent-side poll).
+func (s *Store) GetPendingForensicsJobs(ctx context.Context, agentID string) ([]*models.ForensicsJob, error) {
+	var jobs []*models.ForensicsJob
+	err := s.db.SelectContext(ctx, &jobs,
+		`SELECT * FROM forensics_jobs WHERE agent_id=$1 AND status='pending' ORDER BY created_at ASC LIMIT 5`,
+		agentID)
+	return jobs, err
+}
+
+// ClaimForensicsJob transitions a job from pending → collecting atomically.
+// Returns sql.ErrNoRows if already claimed or not found.
+func (s *Store) ClaimForensicsJob(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE forensics_jobs SET status='collecting', updated_at=NOW()
+		 WHERE id=$1 AND status='pending'`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) UpdateForensicsJobDone(ctx context.Context, id, bundlePath string, bundleSize int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE forensics_jobs
+		 SET status='ready', bundle_path=$2, bundle_size=$3, updated_at=NOW()
+		 WHERE id=$1`, id, bundlePath, bundleSize)
+	return err
+}
+
+func (s *Store) UpdateForensicsJobFailed(ctx context.Context, id, errMsg string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE forensics_jobs SET status='failed', error_msg=$2, updated_at=NOW() WHERE id=$1`,
+		id, errMsg)
+	return err
+}

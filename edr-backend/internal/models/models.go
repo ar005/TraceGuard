@@ -1081,3 +1081,21 @@ type LureFile struct {
 	LastTrigger *time.Time `db:"last_trigger" json:"last_trigger,omitempty"`
 	CreatedAt   time.Time  `db:"created_at"   json:"created_at"`
 }
+
+// ─── Forensics ───────────────────────────────────────────────────────────────
+
+type ForensicsJob struct {
+	ID         string          `db:"id"          json:"id"`
+	TenantID   string          `db:"tenant_id"   json:"-"`
+	AgentID    string          `db:"agent_id"    json:"agent_id"`
+	Hostname   string          `db:"hostname"    json:"hostname"`
+	JobType    string          `db:"job_type"    json:"job_type"`
+	Status     string          `db:"status"      json:"status"`
+	Params     json.RawMessage `db:"params"      json:"params"`
+	BundlePath string          `db:"bundle_path" json:"-"`
+	BundleSize int64           `db:"bundle_size" json:"bundle_size"`
+	ErrorMsg   string          `db:"error_msg"   json:"error_msg,omitempty"`
+	CreatedBy  string          `db:"created_by"  json:"created_by"`
+	CreatedAt  time.Time       `db:"created_at"  json:"created_at"`
+	UpdatedAt  time.Time       `db:"updated_at"  json:"updated_at"`
+}

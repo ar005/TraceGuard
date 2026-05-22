@@ -6,6 +6,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -41,6 +42,7 @@ import (
 	"github.com/youredr/edr-agent/internal/monitor/registry"
 	"github.com/youredr/edr-agent/internal/monitor/vuln"
 	"github.com/youredr/edr-agent/internal/monitor/yarascan"
+	"github.com/youredr/edr-agent/internal/forensics"
 	"github.com/youredr/edr-agent/internal/selfprotect"
 	"github.com/youredr/edr-agent/internal/tasks"
 	"github.com/youredr/edr-agent/internal/transport"
@@ -351,6 +353,9 @@ func (a *Agent) Start(ctx context.Context) error {
 
 	// Start live response client (background goroutine).
 	go a.transport.StartLiveResponse(ctx)
+
+	// Forensics acquisition poll loop — checks for pending jobs every 60s.
+	go a.runForensicsPollLoop(ctx)
 
 	// Wire task executor — receives tasks via heartbeat and reports results back.
 	taskExec := tasks.New(a.transport, a.log)
@@ -1057,4 +1062,129 @@ func (a *Agent) fetchAndApplyBrowserPolicy() {
 		Allow: compiled.Allow,
 		Block: compiled.Block,
 	})
+}
+
+// ─── Forensics acquisition ───────────────────────────────────────────────────
+
+func (a *Agent) runForensicsPollLoop(ctx context.Context) {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			a.checkAndExecuteForensicsJobs(ctx)
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (a *Agent) forensicsBackendURL() string {
+	u := a.cfg.Agent.RESTBackendURL
+	if u == "" {
+		u = a.cfg.Agent.BackendURL
+	}
+	return u
+}
+
+func (a *Agent) checkAndExecuteForensicsJobs(ctx context.Context) {
+	backendURL := a.forensicsBackendURL()
+	if backendURL == "" {
+		return
+	}
+	pendingURL := strings.TrimRight(backendURL, "/") + "/api/v1/agents/" + a.agentID + "/forensics/pending"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pendingURL, nil)
+	if err != nil {
+		return
+	}
+	if a.cfg.Agent.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+a.cfg.Agent.APIKey)
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Jobs []struct {
+			ID      string          `json:"id"`
+			JobType string          `json:"job_type"`
+			Params  json.RawMessage `json:"params"`
+		} `json:"jobs"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return
+	}
+
+	for _, job := range result.Jobs {
+		if ctx.Err() != nil {
+			return
+		}
+		a.executeForensicsJob(ctx, backendURL, job.ID, job.JobType, job.Params)
+	}
+}
+
+func (a *Agent) executeForensicsJob(ctx context.Context, backendURL, jobID, jobType string, params json.RawMessage) {
+	base := strings.TrimRight(backendURL, "/")
+
+	// Use a generous timeout for full collection.
+	collectCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+
+	bundle, err := forensics.Collect(collectCtx, jobType, params)
+	if err != nil {
+		a.log.Error().Err(err).Str("job", jobID).Msg("forensics collection failed")
+		a.reportForensicsError(ctx, base, jobID, err.Error())
+		return
+	}
+
+	uploadURL := base + "/api/v1/forensics/jobs/" + jobID + "/bundle"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, bytes.NewReader(bundle))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/gzip")
+	if a.cfg.Agent.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+a.cfg.Agent.APIKey)
+	}
+
+	client := &http.Client{Timeout: 5 * time.Minute}
+	uploadResp, err := client.Do(req)
+	if err != nil {
+		a.log.Error().Err(err).Str("job", jobID).Msg("forensics bundle upload failed")
+		return
+	}
+	defer uploadResp.Body.Close()
+	io.Copy(io.Discard, uploadResp.Body)
+
+	a.log.Info().
+		Str("job", jobID).
+		Str("type", jobType).
+		Int("bytes", len(bundle)).
+		Msg("forensics bundle uploaded")
+}
+
+func (a *Agent) reportForensicsError(ctx context.Context, baseURL, jobID, errMsg string) {
+	// Mark job as failed by uploading empty body with error header.
+	url := strings.TrimRight(baseURL, "/") + "/api/v1/forensics/jobs/" + jobID + "/bundle"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(nil))
+	if err != nil {
+		return
+	}
+	req.Header.Set("X-Forensics-Error", errMsg)
+	if a.cfg.Agent.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+a.cfg.Agent.APIKey)
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
 }

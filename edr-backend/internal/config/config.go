@@ -29,10 +29,11 @@ type EnrichmentConfig struct {
 }
 
 type ServerConfig struct {
-	GRPCAddr string    `mapstructure:"grpc_addr"`
-	HTTPAddr string    `mapstructure:"http_addr"`
-	NodeID   string    `mapstructure:"node_id"`
-	TLS      TLSConfig `mapstructure:"tls"`
+	GRPCAddr     string    `mapstructure:"grpc_addr"`
+	HTTPAddr     string    `mapstructure:"http_addr"`
+	NodeID       string    `mapstructure:"node_id"`
+	TLS          TLSConfig `mapstructure:"tls"`
+	ForensicsDir string    `mapstructure:"forensics_dir"`
 }
 
 type TLSConfig struct {
