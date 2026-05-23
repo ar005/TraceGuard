@@ -86,7 +86,7 @@ function LiveJobRow({ jobId, tenantId }: { jobId: string; tenantId: string }) {
   useEffect(() => {
     const poll = async () => {
       try {
-        const data = await api.get(`/intel/replay/${jobId}`) as ReplayJob;
+        const data = await api.get(`/api/v1/intel/replay/${jobId}`) as ReplayJob;
         setJob(data);
         if (data.status === "done" || data.status === "failed") {
           if (intervalRef.current) clearInterval(intervalRef.current);
@@ -159,7 +159,7 @@ export default function ReplayPage() {
   const [launchedId, setLaunchedId] = useState<string | null>(null);
 
   const { data, loading, error, refetch } = useApi<JobsResponse>(
-    (signal) => api.get("/intel/replay?limit=50", {}, signal),
+    (signal) => api.get("/api/v1/intel/replay?limit=50", {}, signal),
   );
 
   const jobs = data?.jobs ?? [];
@@ -169,7 +169,7 @@ export default function ReplayPage() {
   async function launch() {
     setLaunching(true);
     try {
-      const job = await api.post("/intel/replay", { lookback_days: lookback }) as ReplayJob;
+      const job = await api.post("/api/v1/intel/replay", { lookback_days: lookback }) as ReplayJob;
       setLaunchedId(job.id);
       refetch();
     } finally {

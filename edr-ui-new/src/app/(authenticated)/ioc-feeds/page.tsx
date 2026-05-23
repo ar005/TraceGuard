@@ -63,7 +63,7 @@ function QualityBadge({ score }: { score: number }) {
 
 function SyncLogDrawer({ feedId }: { feedId: string }) {
   const { data, loading } = useApi<{ logs: SyncLogEntry[] }>(
-    (signal) => api.get(`/ioc-feeds/${feedId}/log`, {}, signal),
+    (signal) => api.get(`/api/v1/ioc-feeds/${feedId}/log`, {}, signal),
   );
   const logs = data?.logs ?? [];
 
@@ -133,7 +133,7 @@ function FeedForm({
     setTesting(true);
     setTestResult(null);
     try {
-      const r = await api.post(`/ioc-feeds/${form.id}/test`, {}) as { reachable: boolean; detail: string };
+      const r = await api.post(`/api/v1/ioc-feeds/${form.id}/test`, {}) as { reachable: boolean; detail: string };
       setTestResult(r);
     } catch { setTestResult({ reachable: false, detail: "Request failed" }); }
     finally { setTesting(false); }
@@ -230,7 +230,7 @@ function FeedRow({ feed, onRefresh }: { feed: IOCFeed; onRefresh: () => void }) 
     setSyncing(true);
     setSyncResult(null);
     try {
-      const r = await api.post(`/ioc-feeds/${feed.id}/sync`, {}) as { added: number };
+      const r = await api.post(`/api/v1/ioc-feeds/${feed.id}/sync`, {}) as { added: number };
       setSyncResult(r);
       onRefresh();
     } finally { setSyncing(false); }
@@ -238,12 +238,12 @@ function FeedRow({ feed, onRefresh }: { feed: IOCFeed; onRefresh: () => void }) 
 
   async function del() {
     if (!confirm(`Delete feed "${feed.name}"?`)) return;
-    await api.del(`/ioc-feeds/${feed.id}`);
+    await api.del(`/api/v1/ioc-feeds/${feed.id}`);
     onRefresh();
   }
 
   async function save(data: Partial<IOCFeed>) {
-    await api.put(`/ioc-feeds/${feed.id}`, { ...feed, ...data });
+    await api.put(`/api/v1/ioc-feeds/${feed.id}`, { ...feed, ...data });
     setEditing(false);
     onRefresh();
   }
@@ -321,7 +321,7 @@ function FeedRow({ feed, onRefresh }: { feed: IOCFeed; onRefresh: () => void }) 
 
 export default function IOCFeedsPage() {
   const { data, loading, refetch } = useApi<IOCFeed[]>(
-    (signal) => api.get("/ioc-feeds", {}, signal),
+    (signal) => api.get("/api/v1/ioc-feeds", {}, signal),
   );
   const [creating, setCreating] = useState(false);
 
@@ -329,7 +329,7 @@ export default function IOCFeedsPage() {
 
   async function create(form: Partial<IOCFeed>) {
     if (!form.id) return;
-    await api.put(`/ioc-feeds/${form.id}`, form);
+    await api.put(`/api/v1/ioc-feeds/${form.id}`, form);
     setCreating(false);
     refetch();
   }

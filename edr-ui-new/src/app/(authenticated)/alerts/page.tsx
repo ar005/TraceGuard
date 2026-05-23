@@ -250,12 +250,12 @@ function IntelContextCard({ enrichments }: { enrichments: { intel_context?: Inte
 
   useEffect(() => {
     if (ctx?.actor_id) {
-      api.get<{ name?: string; id: string }>(`/intel/actors/${ctx.actor_id}`)
+      api.get<{ name?: string; id: string }>(`/api/v1/intel/actors/${ctx.actor_id}`)
         .then((r) => setActorName(r.name ?? ctx.actor_id ?? null))
         .catch(() => setActorName(ctx.actor_id ?? null));
     }
     if (ctx?.campaign_id) {
-      api.get<{ name?: string; id: string }>(`/intel/campaigns/${ctx.campaign_id}`)
+      api.get<{ name?: string; id: string }>(`/api/v1/intel/campaigns/${ctx.campaign_id}`)
         .then((r) => setCampaignName(r.name ?? ctx.campaign_id ?? null))
         .catch(() => setCampaignName(ctx.campaign_id ?? null));
     }

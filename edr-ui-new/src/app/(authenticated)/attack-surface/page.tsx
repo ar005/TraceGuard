@@ -64,7 +64,7 @@ function cardBg(vulnCount: number, riskScore: number) {
 
 function AgentDetailPanel({ agentId, onClose }: { agentId: string; onClose: () => void }) {
   const { data, loading, error } = useApi<AgentSurfaceDetail>(
-    (signal) => api.get(`/agents/${agentId}/attack-surface`, {}, signal),
+    (signal) => api.get(`/api/v1/agents/${agentId}/attack-surface`, {}, signal),
   );
 
   return (
@@ -73,7 +73,7 @@ function AgentDetailPanel({ agentId, onClose }: { agentId: string; onClose: () =
         <h3 className="text-sm font-semibold text-white">Attack Surface Detail</h3>
         <div className="flex items-center gap-2">
           <Link
-            href={`/agents/${agentId}`}
+            href={`/api/v1/agents/${agentId}`}
             className="text-xs rounded-lg border border-white/10 px-2.5 py-1 text-white/50 hover:text-white transition-colors"
           >
             Open agent <ChevronRight size={11} className="inline" />
@@ -90,10 +90,10 @@ function AgentDetailPanel({ agentId, onClose }: { agentId: string; onClose: () =
       {data && (
         <>
           {/* Recommendations */}
-          {data.recommendations.length > 0 && (
+          {(data.recommendations ?? []).length > 0 && (
             <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 space-y-1.5">
               <p className="text-xs font-medium text-amber-400 uppercase tracking-wider mb-2">Fix First</p>
-              {data.recommendations.map((r, i) => (
+              {(data.recommendations ?? []).map((r, i) => (
                 <div key={i} className="flex items-start gap-2 text-xs text-amber-300/80">
                   <AlertTriangle size={11} className="mt-0.5 shrink-0 text-amber-500" />
                   {r}
@@ -106,9 +106,9 @@ function AgentDetailPanel({ agentId, onClose }: { agentId: string; onClose: () =
             {/* Open ports */}
             <div className="space-y-2">
               <p className="text-xs font-medium text-white/40 uppercase tracking-wider">
-                Open Ports ({data.open_ports.length})
+                Open Ports ({(data.open_ports ?? []).length})
               </p>
-              {data.open_ports.length === 0 ? (
+              {(data.open_ports ?? []).length === 0 ? (
                 <p className="text-white/20 text-xs">No recent NET_ACCEPT events.</p>
               ) : (
                 <div className="rounded-lg border border-white/8 overflow-hidden">
@@ -122,7 +122,7 @@ function AgentDetailPanel({ agentId, onClose }: { agentId: string; onClose: () =
                       </tr>
                     </thead>
                     <tbody>
-                      {data.open_ports.map((p) => (
+                      {(data.open_ports ?? []).map((p) => (
                         <tr key={p.port} className="border-b border-white/5 hover:bg-white/[0.02]">
                           <td className="px-3 py-1.5 font-mono text-white/80">{p.port}</td>
                           <td className="px-3 py-1.5 text-white/50">{p.protocol}</td>
@@ -147,9 +147,9 @@ function AgentDetailPanel({ agentId, onClose }: { agentId: string; onClose: () =
             {/* Exposed vulns */}
             <div className="space-y-2">
               <p className="text-xs font-medium text-white/40 uppercase tracking-wider">
-                Exposed Vulnerabilities ({data.exposed_vulns.length})
+                Exposed Vulnerabilities ({(data.exposed_vulns ?? []).length})
               </p>
-              {data.exposed_vulns.length === 0 ? (
+              {(data.exposed_vulns ?? []).length === 0 ? (
                 <p className="text-white/20 text-xs">No vulnerabilities linked to open ports.</p>
               ) : (
                 <div className="rounded-lg border border-white/8 overflow-hidden">
@@ -163,7 +163,7 @@ function AgentDetailPanel({ agentId, onClose }: { agentId: string; onClose: () =
                       </tr>
                     </thead>
                     <tbody>
-                      {data.exposed_vulns.map((v, i) => (
+                      {(data.exposed_vulns ?? []).map((v, i) => (
                         <tr key={i} className="border-b border-white/5 hover:bg-white/[0.02]">
                           <td className="px-3 py-1.5 font-mono text-white/70 text-[10px]">{v.cve_id}</td>
                           <td className="px-3 py-1.5">
@@ -192,7 +192,7 @@ export default function AttackSurfacePage() {
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
 
   const { data, loading, error, refetch } = useApi<OrgSurfaceResponse>(
-    (signal) => api.get(`/xdr/attack-surface?internet_only=${internetOnly}`, {}, signal),
+    (signal) => api.get(`/api/v1/xdr/attack-surface?internet_only=${internetOnly}`, {}, signal),
   );
 
   const agents = data?.agents ?? [];

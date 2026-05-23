@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { useApi } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
@@ -58,15 +58,12 @@ export default function DnsPage() {
   }
 
   /* Stats */
-  const { data: statsData, loading: statsLoading } = useApi(
-    useCallback((signal: AbortSignal) =>
-      api.get<DnsStats>("/api/v1/dns/stats", { hours: 24 }, signal),
-      []
-    )
+  const { data: statsData, loading: statsLoading } = useApi((signal: AbortSignal) =>
+    api.get<DnsStats>("/api/v1/dns/stats", { hours: 24 }, signal)
   );
 
   /* Events */
-  const fetchEvents = useCallback(
+  const { data: eventsData, loading: eventsLoading, error: eventsError } = useApi(
     (signal: AbortSignal) =>
       api.get<{ events: Event[]; total: number }>("/api/v1/dns/events", {
         limit,
@@ -74,19 +71,15 @@ export default function DnsPage() {
         agent_id: appliedAgentId || undefined,
         domain: appliedDomain || undefined,
       }, signal),
-    [limit, appliedAgentId, appliedDomain]
+    { deps: [limit, appliedAgentId, appliedDomain] }
   );
-  const { data: eventsData, loading: eventsLoading, error: eventsError } = useApi(fetchEvents);
 
   /* DNS Tunnel Alerts */
-  const { data: tunnelData, loading: tunnelLoading } = useApi(
-    useCallback((signal: AbortSignal) =>
-      api.get<{ alerts: Alert[] }>("/api/v1/alerts", {
-        rule_id_prefix: "rule-dns-tunnel",
-        limit: 20,
-      }, signal),
-      []
-    )
+  const { data: tunnelData, loading: tunnelLoading } = useApi((signal: AbortSignal) =>
+    api.get<{ alerts: Alert[] }>("/api/v1/alerts", {
+      rule_id_prefix: "rule-dns-tunnel",
+      limit: 20,
+    }, signal)
   );
 
   const events = eventsData?.events ?? [];

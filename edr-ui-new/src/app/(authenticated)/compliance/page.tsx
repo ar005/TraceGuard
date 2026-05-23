@@ -78,7 +78,7 @@ export default function CompliancePage() {
   const [filterCategory, setFilterCategory] = useState("");
 
   const { data, loading, error } = useApi<ComplianceReport>(
-    (signal) => api.get(`/compliance/coverage`, { framework }, signal),
+    (signal) => api.get(`/api/v1/compliance/coverage`, { framework }, signal),
   );
 
   const controls = data?.controls ?? [];

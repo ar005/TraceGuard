@@ -99,7 +99,7 @@ function PollRunRow({ run }: { run: PollRun }) {
 
 function FeedRunHistory({ feedId }: { feedId: string }) {
   const { data: runs } = useApi<PollRun[]>(
-    (sig) => api.get<PollRun[]>(`/intel/taxii-feeds/${feedId}/runs`, {}, sig)
+    (sig) => api.get<PollRun[]>(`/api/v1/intel/taxii-feeds/${feedId}/runs`, {}, sig)
   );
   if (!runs || runs.length === 0) {
     return <p className="text-xs text-[hsl(var(--muted-foreground))] italic">No polls yet.</p>;
@@ -283,7 +283,7 @@ function CreateModal({ onClose, onCreate }: { onClose: () => void; onCreate: () 
     }
     setSaving(true);
     try {
-      await api.post("/intel/taxii-feeds", form);
+      await api.post("/api/v1/intel/taxii-feeds", form);
       onCreate();
       onClose();
     } catch (e: unknown) {
@@ -298,13 +298,13 @@ function CreateModal({ onClose, onCreate }: { onClose: () => void; onCreate: () 
     setDiscovering(true);
     setCollections(null);
     try {
-      const tmpFeed = await api.post<TAXIIFeed>("/intel/taxii-feeds", {
+      const tmpFeed = await api.post<TAXIIFeed>("/api/v1/intel/taxii-feeds", {
         ...form,
         name: form.name || "__discover_tmp__",
         enabled: false,
       });
-      const cols = await api.get<TAXIICollection[]>(`/intel/taxii-feeds/${tmpFeed.id}/collections`);
-      await api.del(`/intel/taxii-feeds/${tmpFeed.id}`);
+      const cols = await api.get<TAXIICollection[]>(`/api/v1/intel/taxii-feeds/${tmpFeed.id}/collections`);
+      await api.del(`/api/v1/intel/taxii-feeds/${tmpFeed.id}`);
       setCollections(cols);
     } catch {
       setError("Could not reach TAXII server. Check URL and credentials.");
@@ -409,24 +409,24 @@ export default function TAXIIFeedsPage() {
 
   const { data: feeds, loading } = useApi<TAXIIFeed[]>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    (sig) => api.get<TAXIIFeed[]>("/intel/taxii-feeds", { _t: tick }, sig)
+    (sig) => api.get<TAXIIFeed[]>("/api/v1/intel/taxii-feeds", { _t: tick }, sig)
   );
 
   const [showCreate, setShowCreate] = useState(false);
 
   const handlePoll = async (id: string) => {
-    await api.post(`/intel/taxii-feeds/${id}/poll`, {});
+    await api.post(`/api/v1/intel/taxii-feeds/${id}/poll`, {});
     setTimeout(refresh, 2000);
   };
 
   const handleToggle = async (id: string, enabled: boolean) => {
-    await api.put(`/intel/taxii-feeds/${id}`, { enabled });
+    await api.put(`/api/v1/intel/taxii-feeds/${id}`, { enabled });
     refresh();
   };
 
   const handleDelete = async (id: string) => {
     if (!confirm("Delete this TAXII feed?")) return;
-    await api.del(`/intel/taxii-feeds/${id}`);
+    await api.del(`/api/v1/intel/taxii-feeds/${id}`);
     refresh();
   };
 

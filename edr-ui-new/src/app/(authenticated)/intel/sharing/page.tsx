@@ -78,14 +78,14 @@ function GroupCard({ group, onRefresh }: { group: SharingGroup; onRefresh: () =>
   const [editing, setEditing] = useState(false);
 
   const { data: runsData, refetch: refetchRuns } = useApi<{ runs: SharingRun[] }>(
-    (signal) => api.get(`/intel/sharing-groups/${group.id}/runs`, { limit: "10" }, signal),
+    (signal) => api.get(`/api/v1/intel/sharing-groups/${group.id}/runs`, { limit: "10" }, signal),
   );
 
   async function push() {
     setPushing(true);
     setPushResult(null);
     try {
-      const res = await api.post<{ exported: number }>(`/intel/sharing-groups/${group.id}/push`);
+      const res = await api.post<{ exported: number }>(`/api/v1/intel/sharing-groups/${group.id}/push`);
       setPushResult(res);
       refetchRuns();
     } finally {
@@ -95,7 +95,7 @@ function GroupCard({ group, onRefresh }: { group: SharingGroup; onRefresh: () =>
 
   async function del() {
     if (!confirm(`Delete sharing group "${group.name}"?`)) return;
-    await api.del(`/intel/sharing-groups/${group.id}`);
+    await api.del(`/api/v1/intel/sharing-groups/${group.id}`);
     onRefresh();
   }
 
@@ -106,7 +106,7 @@ function GroupCard({ group, onRefresh }: { group: SharingGroup; onRefresh: () =>
       <GroupForm
         initial={group}
         onSave={async (body) => {
-          await api.put(`/intel/sharing-groups/${group.id}`, body);
+          await api.put(`/api/v1/intel/sharing-groups/${group.id}`, body);
           setEditing(false);
           onRefresh();
         }}
@@ -358,13 +358,13 @@ export default function SharingPage() {
   const [showForm, setShowForm] = useState(false);
 
   const { data, loading, error, refetch } = useApi<{ groups: SharingGroup[] }>(
-    (signal) => api.get("/intel/sharing-groups", {}, signal),
+    (signal) => api.get("/api/v1/intel/sharing-groups", {}, signal),
   );
 
   const groups = data?.groups ?? [];
 
   async function create(body: object) {
-    await api.post("/intel/sharing-groups", body);
+    await api.post("/api/v1/intel/sharing-groups", body);
     setShowForm(false);
     refetch();
   }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useState } from "react";
 import { useApi } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
 import { cn, formatDate } from "@/lib/utils";
@@ -30,17 +30,13 @@ export default function BrowserHistoryPage() {
   const [selectedAgent, setSelectedAgent] = useState("");
   const [search, setSearch] = useState("");
 
-  const fetchAgents = useCallback(
-    (s: AbortSignal) =>
-      api
-        .get<{ agents?: Agent[] } | Agent[]>("/api/v1/agents", undefined, s)
-        .then((r) => (Array.isArray(r) ? r : (r as { agents?: Agent[] }).agents ?? [])),
-    []
+  const { data: agents } = useApi((s) =>
+    api.get<{ agents?: Agent[] } | Agent[]>("/api/v1/agents", undefined, s)
+      .then((r) => (Array.isArray(r) ? r : (r as { agents?: Agent[] }).agents ?? []))
   );
-  const { data: agents } = useApi(fetchAgents);
 
-  const fetchEvents = useCallback(
-    (s: AbortSignal) =>
+  const { data: rawEvents, loading, refetch } = useApi(
+    (s) =>
       api
         .get<{ events?: Event[] } | Event[]>(
           "/api/v1/events",
@@ -48,9 +44,8 @@ export default function BrowserHistoryPage() {
           s
         )
         .then((r) => (Array.isArray(r) ? r : (r as { events?: Event[] }).events ?? [])),
-    [selectedAgent]
+    { deps: [selectedAgent] }
   );
-  const { data: rawEvents, loading, refetch } = useApi(fetchEvents);
 
   const events = (rawEvents ?? []) as Event[];
 

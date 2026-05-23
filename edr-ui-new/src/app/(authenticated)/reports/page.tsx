@@ -55,7 +55,7 @@ export default function ReportsPage() {
   });
 
   const { data: reports, loading, refetch } = useApi<Report[]>(
-    () => api.get("/reports"),
+    () => api.get("/api/v1/reports"),
   );
 
   const rows = reports ?? [];
@@ -68,7 +68,7 @@ export default function ReportsPage() {
       const title =
         form.title.trim() ||
         `${TYPE_LABELS[form.type]} Report — ${new Date().toLocaleDateString()}`;
-      await api.post("/reports", {
+      await api.post("/api/v1/reports", {
         type: form.type,
         title,
         limit: form.limit,

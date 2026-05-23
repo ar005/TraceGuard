@@ -100,7 +100,7 @@ export default function AnomaliesPage() {
   const [entityFilter, setEntityFilter] = useState<"all" | "agent" | "user">("all");
 
   const { data, loading, error, refetch } = useApi<AnomaliesResponse>(
-    (signal) => api.get(`/xdr/anomalies?active_only=${activeOnly}&limit=100`, {}, signal),
+    (signal) => api.get(`/api/v1/xdr/anomalies?active_only=${activeOnly}&limit=100`, {}, signal),
   );
 
   const anomalies = (data?.anomalies ?? []).filter(

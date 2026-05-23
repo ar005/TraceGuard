@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useState } from "react";
 import { useApi } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
 import { cn, timeAgo } from "@/lib/utils";
@@ -179,11 +179,8 @@ export default function CanaryPage() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  const { data, loading, error, refetch } = useApi(
-    useCallback((signal: AbortSignal) =>
-      api.get<{ tokens: CanaryToken[] }>("/api/v1/canary/tokens", undefined, signal),
-      []
-    )
+  const { data, loading, error, refetch } = useApi((signal: AbortSignal) =>
+    api.get<{ tokens: CanaryToken[] }>("/api/v1/canary/tokens", undefined, signal)
   );
 
   const tokens = data?.tokens ?? [];

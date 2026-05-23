@@ -72,7 +72,7 @@ export default function UEBAPage() {
   const { data, loading, error, refetch } = useApi<TimelineResponse | null>(
     () =>
       submittedUid
-        ? api.get(`/identity/${encodeURIComponent(submittedUid)}/timeline?hours=${hours}`)
+        ? api.get(`/api/v1/identity/${encodeURIComponent(submittedUid)}/timeline?hours=${hours}`)
         : Promise.resolve(null),
   );
 

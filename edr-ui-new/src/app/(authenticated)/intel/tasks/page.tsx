@@ -131,11 +131,11 @@ export default function IntelTasksPage() {
   const [tab, setTab] = useState<"tasks" | "hunts">("tasks");
 
   const { data: tasksData, loading: tLoading, refetch: refetchTasks } = useApi<{ tasks: IntelTask[] }>(
-    (signal) => api.get("/intel/tasks", { limit: "100" }, signal),
+    (signal) => api.get("/api/v1/intel/tasks", { limit: "100" }, signal),
   );
 
   const { data: huntsData, loading: hLoading, refetch: refetchHunts } = useApi<{ hunts: SavedHunt[] }>(
-    (signal) => api.get("/intel/saved-hunts", {}, signal),
+    (signal) => api.get("/api/v1/intel/saved-hunts", {}, signal),
   );
 
   const tasks = tasksData?.tasks ?? [];
@@ -146,7 +146,7 @@ export default function IntelTasksPage() {
   const pending = tasks.filter((t) => t.status === "pending").length;
 
   async function deleteHunt(id: string) {
-    await api.del(`/intel/saved-hunts/${id}`);
+    await api.del(`/api/v1/intel/saved-hunts/${id}`);
     refetchHunts();
   }
 

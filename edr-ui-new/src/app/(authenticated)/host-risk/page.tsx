@@ -81,7 +81,7 @@ export default function HostRiskPage() {
   const [limit, setLimit] = useState(20);
 
   const { data: agents, loading, refetch } = useApi<Agent[]>(
-    () => api.get(`/agents/top-risk?limit=${limit}`),
+    () => api.get(`/api/v1/agents/top-risk?limit=${limit}`),
   );
 
   useEffect(() => {
@@ -211,7 +211,7 @@ export default function HostRiskPage() {
                 </td>
                 <td className="px-4 py-3">
                   <a
-                    href={`/agents/${agent.id}`}
+                    href={`/api/v1/agents/${agent.id}`}
                     className="text-white font-medium hover:text-blue-400 transition-colors"
                   >
                     {agent.hostname}

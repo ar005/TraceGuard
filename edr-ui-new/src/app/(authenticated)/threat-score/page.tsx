@@ -131,7 +131,7 @@ function FactorBar({ label, count, max }: { label: string; count: number; max: n
 // Sparkline for entity rows
 function Sparkline({ entityId, entityType }: { entityId: string; entityType: string }) {
   const { data } = useApi<{ history: TrendPoint[] }>(
-    (signal) => api.get(`/xdr/threat-score/history?entity_id=${entityId}&entity_type=${entityType}&days=7`, {}, signal),
+    (signal) => api.get(`/api/v1/xdr/threat-score/history?entity_id=${entityId}&entity_type=${entityType}&days=7`, {}, signal),
   );
   const pts = data?.history ?? [];
   if (pts.length < 2) return <span className="text-white/20 text-xs">—</span>;
@@ -155,7 +155,7 @@ export default function ThreatScorePage() {
   const [days, setDays] = useState(30);
 
   const { data, loading, error, refetch } = useApi<OrgThreatScore>(
-    (signal) => api.get(`/xdr/threat-score?days=${days}`, {}, signal),
+    (signal) => api.get(`/api/v1/xdr/threat-score?days=${days}`, {}, signal),
   );
 
   const delta = data?.score_delta_24h ?? 0;
@@ -272,7 +272,7 @@ export default function ThreatScorePage() {
               <div className="px-4 py-3 border-b border-white/8">
                 <p className="text-xs font-medium text-white/40 uppercase tracking-wider">Top Risk Agents</p>
               </div>
-              {data.top_agents.length === 0 ? (
+              {(data.top_agents ?? []).length === 0 ? (
                 <p className="p-4 text-sm text-white/20">No agents with elevated risk.</p>
               ) : (
                 <table className="w-full text-xs">
@@ -284,7 +284,7 @@ export default function ThreatScorePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {data.top_agents.map((a) => (
+                    {(data.top_agents ?? []).map((a) => (
                       <tr key={a.id} className="border-b border-white/5 hover:bg-white/[0.02]">
                         <td className="px-4 py-2">
                           <Link href={`/agents/${a.id}`} className="text-white/70 hover:text-white transition-colors">
@@ -312,7 +312,7 @@ export default function ThreatScorePage() {
               <div className="px-4 py-3 border-b border-white/8">
                 <p className="text-xs font-medium text-white/40 uppercase tracking-wider">Top Risk Users</p>
               </div>
-              {data.top_users.length === 0 ? (
+              {(data.top_users ?? []).length === 0 ? (
                 <p className="p-4 text-sm text-white/20">No users with elevated risk.</p>
               ) : (
                 <table className="w-full text-xs">
@@ -324,7 +324,7 @@ export default function ThreatScorePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {data.top_users.map((u) => (
+                    {(data.top_users ?? []).map((u) => (
                       <tr key={u.canonical_uid} className="border-b border-white/5 hover:bg-white/[0.02]">
                         <td className="px-4 py-2">
                           <div className="flex items-center gap-1.5">

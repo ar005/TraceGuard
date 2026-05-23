@@ -119,15 +119,16 @@ export default function LateralGraphPage() {
   const H = 560;
 
   const { data, loading, error, refetch } = useApi<LateralGraph>(
-    (signal) => api.get(`/xdr/lateral-graph?hours=${hours}&min_connections=${minConn}`, {}, signal),
+    (signal) => api.get(`/api/v1/xdr/lateral-graph?hours=${hours}&min_connections=${minConn}`, {}, signal),
   );
 
   useEffect(() => {
     if (!data) return;
-    const nodes: SimNode[] = data.nodes.map((n, i) => ({
+    const rawNodes = data.nodes ?? [];
+    const nodes: SimNode[] = rawNodes.map((n, i) => ({
       ...n,
-      x: W / 2 + Math.cos((i / data.nodes.length) * Math.PI * 2) * 200,
-      y: H / 2 + Math.sin((i / data.nodes.length) * Math.PI * 2) * 160,
+      x: W / 2 + Math.cos((i / rawNodes.length) * Math.PI * 2) * 200,
+      y: H / 2 + Math.sin((i / rawNodes.length) * Math.PI * 2) * 160,
       vx: 0,
       vy: 0,
     }));
@@ -192,7 +193,7 @@ export default function LateralGraphPage() {
         </div>
         {data && (
           <span className="text-xs text-white/30">
-            {data.nodes.length} nodes · {data.edges.length} edges
+            {(data.nodes ?? []).length} nodes · {(data.edges ?? []).length} edges
           </span>
         )}
       </div>

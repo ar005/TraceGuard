@@ -132,7 +132,7 @@ function CampaignRow({
     setExpanded(true);
     setLoadingIocs(true);
     try {
-      const data = await api.get(`/intel/campaigns/${campaign.id}`);
+      const data = await api.get(`/api/v1/intel/campaigns/${campaign.id}`);
       setIocs((data as { iocs: { id: string; type: string; value: string }[] }).iocs ?? []);
     } finally {
       setLoadingIocs(false);
@@ -140,14 +140,14 @@ function CampaignRow({
   }
 
   async function handleUpdate(body: Record<string, unknown>) {
-    await api.put(`/intel/campaigns/${campaign.id}`, body);
+    await api.put(`/api/v1/intel/campaigns/${campaign.id}`, body);
     setEditing(false);
     onUpdated();
   }
 
   async function handleDelete() {
     if (!confirm("Delete this campaign?")) return;
-    await api.del(`/intel/campaigns/${campaign.id}`);
+    await api.del(`/api/v1/intel/campaigns/${campaign.id}`);
     onDeleted();
   }
 
@@ -247,17 +247,17 @@ export default function CampaignsPage() {
   const [creating, setCreating] = useState(false);
 
   const { data, loading, error, refetch } = useApi<{ campaigns: Campaign[]; total: number }>(
-    (signal) => api.get("/intel/campaigns", {}, signal),
+    (signal) => api.get("/api/v1/intel/campaigns", {}, signal),
   );
   const { data: actorData } = useApi<{ actors: Actor[] }>(
-    (signal) => api.get("/intel/actors", {}, signal),
+    (signal) => api.get("/api/v1/intel/actors", {}, signal),
   );
 
   const campaigns = data?.campaigns ?? [];
   const actors = actorData?.actors ?? [];
 
   async function handleCreate(body: Record<string, unknown>) {
-    await api.post("/intel/campaigns", body);
+    await api.post("/api/v1/intel/campaigns", body);
     setCreating(false);
     refetch();
   }

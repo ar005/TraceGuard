@@ -334,11 +334,11 @@ function DBSizeSection() {
               style={{ color: "var(--muted)" }}
             >
               {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-              By Agent ({data.by_agent.length})
+              By Agent ({(data.by_agent ?? []).length})
             </button>
             {expanded && (
               <div className="rounded border divide-y" style={{ borderColor: "var(--border)", background: "var(--surface-0)" }}>
-                {data.by_agent.map((ag) => (
+                {(data.by_agent ?? []).map((ag) => (
                   <div key={ag.agent_id} className="flex items-center gap-3 px-3 py-2.5 text-xs" style={{ borderColor: "var(--border)" }}>
                     <Server size={12} style={{ color: "var(--muted)" }} className="shrink-0" />
                     <span className="font-medium truncate min-w-0" style={{ color: "var(--fg)" }}>{ag.hostname}</span>
@@ -649,14 +649,14 @@ function SOCTab() {
           </div>
 
           {/* Top firing rules */}
-          {data.top_rules.length > 0 && (
+          {(data.top_rules ?? []).length > 0 && (
             <div className="rounded border p-4" style={{ borderColor: "var(--border)", background: "var(--surface-0)" }}>
               <div className="text-sm font-semibold mb-3" style={{ fontFamily: "var(--font-space-grotesk)", color: "var(--fg)" }}>
                 Top Firing Rules — Last 7 Days
               </div>
-              <ResponsiveContainer width="100%" height={Math.max(120, data.top_rules.length * 28)}>
+              <ResponsiveContainer width="100%" height={Math.max(120, (data.top_rules ?? []).length * 28)}>
                 <BarChart
-                  data={data.top_rules.map((r) => ({ name: r.rule_name, count: r.count }))}
+                  data={(data.top_rules ?? []).map((r) => ({ name: r.rule_name, count: r.count }))}
                   layout="vertical"
                   margin={{ top: 0, right: 8, left: 0, bottom: 0 }}
                 >
@@ -671,7 +671,7 @@ function SOCTab() {
           )}
 
           {/* Analyst workload + no-data state */}
-          {data.analyst_workload.length > 0 ? (
+          {(data.analyst_workload ?? []).length > 0 ? (
             <div className="rounded border" style={{ borderColor: "var(--border)", background: "var(--surface-0)" }}>
               <div className="px-4 pt-4 pb-2">
                 <div className="text-sm font-semibold flex items-center gap-2" style={{ fontFamily: "var(--font-space-grotesk)", color: "var(--fg)" }}>
@@ -680,7 +680,7 @@ function SOCTab() {
                 </div>
               </div>
               <div className="divide-y" style={{ borderColor: "var(--border)" }}>
-                {data.analyst_workload.map((a) => (
+                {(data.analyst_workload ?? []).map((a) => (
                   <div key={a.assignee} className="flex items-center gap-4 px-4 py-2.5 text-xs">
                     <span className="font-medium truncate min-w-0 flex-1" style={{ color: "var(--fg)" }}>{a.assignee}</span>
                     <div className="flex items-center gap-1.5">
@@ -1015,7 +1015,7 @@ export default function MetricsPage() {
 
   useEffect(() => {
     if (!autoRefresh || tab !== "system") return;
-    const interval = setInterval(fetchMetrics, 10000);
+    const interval = setInterval(fetchMetrics, 30000);
     return () => clearInterval(interval);
   }, [autoRefresh, fetchMetrics, tab]);
 

@@ -1747,7 +1747,7 @@ function asSevColor(s: string) {
 
 function AgentAttackSurfaceTab({ agentId }: { agentId: string }) {
   const { data, loading, error, refetch } = useApi<AgentSurfaceData>(
-    (signal) => api.get(`/agents/${agentId}/attack-surface`, {}, signal),
+    (signal) => api.get(`/api/v1/agents/${agentId}/attack-surface`, {}, signal),
   );
 
   if (loading) return <div className="py-12 text-center text-white/30 text-sm">Loading…</div>;
@@ -1768,10 +1768,10 @@ function AgentAttackSurfaceTab({ agentId }: { agentId: string }) {
       </div>
 
       {/* Recommendations */}
-      {data.recommendations.length > 0 && (
+      {(data.recommendations ?? []).length > 0 && (
         <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 space-y-1.5">
           <p className="text-xs font-medium text-amber-400 uppercase tracking-wider mb-1">Fix First</p>
-          {data.recommendations.map((r, i) => (
+          {(data.recommendations ?? []).map((r, i) => (
             <div key={i} className="flex items-start gap-2 text-xs text-amber-300/80">
               <AlertTriangle size={11} className="mt-0.5 shrink-0 text-amber-500" />
               {r}

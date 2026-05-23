@@ -70,7 +70,7 @@ function RunHistoryRow({ run }: { run: ScheduleRun }) {
 
 function ScheduleRunHistory({ scheduleId }: { scheduleId: string }) {
   const { data: runs } = useApi<ScheduleRun[]>(
-    (sig) => api.get<ScheduleRun[]>(`/intel/hunt-schedules/${scheduleId}/runs`, {}, sig)
+    (sig) => api.get<ScheduleRun[]>(`/api/v1/intel/hunt-schedules/${scheduleId}/runs`, {}, sig)
   );
   if (!runs || runs.length === 0) {
     return <p className="text-xs text-[hsl(var(--muted-foreground))] italic">No runs yet.</p>;
@@ -181,7 +181,7 @@ function CreateModal({
     }
     setSaving(true);
     try {
-      await api.post("/intel/hunt-schedules", form);
+      await api.post("/api/v1/intel/hunt-schedules", form);
       onCreate();
       onClose();
     } catch (e: unknown) {
@@ -277,22 +277,22 @@ export default function HuntSchedulesPage() {
 
   const { data: schedules, loading } = useApi<HuntSchedule[]>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    (sig) => api.get<HuntSchedule[]>("/intel/hunt-schedules", { _t: tick }, sig)
+    (sig) => api.get<HuntSchedule[]>("/api/v1/intel/hunt-schedules", { _t: tick }, sig)
   );
   const { data: hunts } = useApi<SavedHunt[]>(
-    (sig) => api.get<SavedHunt[]>("/intel/saved-hunts", {}, sig)
+    (sig) => api.get<SavedHunt[]>("/api/v1/intel/saved-hunts", {}, sig)
   );
 
   const [showCreate, setShowCreate] = useState(false);
 
   const handleToggle = async (id: string, enabled: boolean) => {
-    await api.put(`/intel/hunt-schedules/${id}`, { enabled });
+    await api.put(`/api/v1/intel/hunt-schedules/${id}`, { enabled });
     refresh();
   };
 
   const handleDelete = async (id: string) => {
     if (!confirm("Delete this schedule?")) return;
-    await api.del(`/intel/hunt-schedules/${id}`);
+    await api.del(`/api/v1/intel/hunt-schedules/${id}`);
     refresh();
   };
 

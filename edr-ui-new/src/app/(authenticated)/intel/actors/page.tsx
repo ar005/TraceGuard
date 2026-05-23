@@ -124,18 +124,18 @@ function ActorForm({
 function ActorDetail({ actorId, onClose, onDeleted }: { actorId: string; onClose: () => void; onDeleted: () => void }) {
   const [editing, setEditing] = useState(false);
   const { data, loading, error, refetch } = useApi<{ actor: ActorDetail; iocs: ActorDetail["iocs"]; campaigns: ActorDetail["campaigns"] }>(
-    (signal) => api.get(`/intel/actors/${actorId}`, {}, signal),
+    (signal) => api.get(`/api/v1/intel/actors/${actorId}`, {}, signal),
   );
 
   async function handleUpdate(body: Record<string, unknown>) {
-    await api.put(`/intel/actors/${actorId}`, body);
+    await api.put(`/api/v1/intel/actors/${actorId}`, body);
     setEditing(false);
     refetch();
   }
 
   async function handleDelete() {
     if (!confirm("Delete this actor? IOC attributions will be cleared.")) return;
-    await api.del(`/intel/actors/${actorId}`);
+    await api.del(`/api/v1/intel/actors/${actorId}`);
     onDeleted();
   }
 
@@ -202,10 +202,10 @@ function ActorDetail({ actorId, onClose, onDeleted }: { actorId: string; onClose
             <p className="text-xs text-white/50 leading-relaxed border-l-2 border-white/10 pl-3">{data.actor.description}</p>
           )}
 
-          {data.campaigns.length > 0 && (
+          {(data.campaigns ?? []).length > 0 && (
             <div className="space-y-1">
               <p className="text-[10px] font-medium text-white/30 uppercase tracking-wider">Campaigns</p>
-              {data.campaigns.map((c) => (
+              {(data.campaigns ?? []).map((c) => (
                 <div key={c.id} className="flex items-center justify-between text-xs rounded-lg border border-white/8 bg-white/[0.02] px-3 py-1.5">
                   <span className="text-white/70">{c.name}</span>
                   {c.start_date && <span className="text-white/30">{c.start_date?.slice(0, 7)}</span>}
@@ -214,9 +214,9 @@ function ActorDetail({ actorId, onClose, onDeleted }: { actorId: string; onClose
             </div>
           )}
 
-          {data.iocs.length > 0 && (
+          {(data.iocs ?? []).length > 0 && (
             <div className="space-y-1">
-              <p className="text-[10px] font-medium text-white/30 uppercase tracking-wider">Recent IOCs ({data.iocs.length})</p>
+              <p className="text-[10px] font-medium text-white/30 uppercase tracking-wider">Recent IOCs ({(data.iocs ?? []).length})</p>
               <div className="rounded-lg border border-white/8 overflow-hidden">
                 <table className="w-full text-xs">
                   <tbody>
@@ -251,7 +251,7 @@ export default function ActorsPage() {
   const [search, setSearch] = useState("");
 
   const { data, loading, error, refetch } = useApi<ActorsResponse>(
-    (signal) => api.get("/intel/actors", {}, signal),
+    (signal) => api.get("/api/v1/intel/actors", {}, signal),
   );
 
   const actors = (data?.actors ?? []).filter(
@@ -260,7 +260,7 @@ export default function ActorsPage() {
   );
 
   async function handleCreate(body: Record<string, unknown>) {
-    await api.post("/intel/actors", body);
+    await api.post("/api/v1/intel/actors", body);
     setCreating(false);
     refetch();
   }

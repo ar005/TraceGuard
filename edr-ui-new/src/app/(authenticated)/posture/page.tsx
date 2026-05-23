@@ -130,7 +130,7 @@ export default function PosturePage() {
               <p className="text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-3">
                 Score breakdown
               </p>
-              {data.components.map((c) => (
+              {(data.components ?? []).map((c) => (
                 <div key={c.name} className="space-y-0.5">
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-neutral-300">{c.name}</span>
@@ -151,13 +151,13 @@ export default function PosturePage() {
           </div>
 
           {/* Findings */}
-          {data.findings.length > 0 ? (
+          {(data.findings ?? []).length > 0 ? (
             <div className="space-y-3">
               <h2 className="text-xs font-semibold uppercase tracking-wider text-neutral-400">
-                Key findings ({data.findings.length})
+                Key findings ({(data.findings ?? []).length})
               </h2>
               <div className="space-y-2">
-                {data.findings.map((f, i) => (
+                {(data.findings ?? []).map((f, i) => (
                   <div
                     key={i}
                     className={`flex gap-3 p-3 rounded-lg border ${

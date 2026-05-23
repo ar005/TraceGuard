@@ -295,7 +295,7 @@ function SharingList({ groups }: { groups: SharingGroup[] }) {
 /* ── Page ────────────────────────────────────────────────────────────────────── */
 export default function IntelDashboardPage() {
   const { data, loading, error, refetch } = useApi<DashboardData>(
-    (signal) => api.get("/intel/dashboard", {}, signal),
+    (signal) => api.get("/api/v1/intel/dashboard", {}, signal),
   );
 
   const s = data?.stats;
@@ -361,11 +361,11 @@ export default function IntelDashboardPage() {
           {/* Feed health + Replay */}
           <div className="grid grid-cols-[1fr_320px] gap-5">
             <div>
-              <SectionHeader title="Feed Health" href="/ioc-feeds" />
+              <SectionHeader title="Feed Health" href="/api/v1/ioc-feeds" />
               <FeedHealthTable feeds={data?.feeds ?? []} />
             </div>
             <div>
-              <SectionHeader title="Recent Replay Jobs" href="/intel/replay" />
+              <SectionHeader title="Recent Replay Jobs" href="/api/v1/intel/replay" />
               <ReplayList jobs={data?.recent_replay ?? []} />
             </div>
           </div>
@@ -373,11 +373,11 @@ export default function IntelDashboardPage() {
           {/* Tasks + Sharing */}
           <div className="grid grid-cols-[1fr_300px] gap-5">
             <div>
-              <SectionHeader title="Recent Tasks" href="/intel/tasks" />
+              <SectionHeader title="Recent Tasks" href="/api/v1/intel/tasks" />
               <TaskList tasks={data?.recent_tasks ?? []} />
             </div>
             <div>
-              <SectionHeader title="Sharing Groups" href="/intel/sharing" />
+              <SectionHeader title="Sharing Groups" href="/api/v1/intel/sharing" />
               <SharingList groups={data?.sharing_groups ?? []} />
             </div>
           </div>
@@ -385,11 +385,11 @@ export default function IntelDashboardPage() {
           {/* Quick nav links */}
           <div className="grid grid-cols-5 gap-2">
             {[
-              { label: "Actors",    href: "/intel/actors",    icon: <Users size={14} /> },
-              { label: "Campaigns", href: "/intel/campaigns", icon: <Flag size={14} /> },
-              { label: "Replay",    href: "/intel/replay",    icon: <RotateCcw size={14} /> },
-              { label: "Sharing",   href: "/intel/sharing",   icon: <Share2 size={14} /> },
-              { label: "Tasking",   href: "/intel/tasks",     icon: <Zap size={14} /> },
+              { label: "Actors",    href: "/api/v1/intel/actors",    icon: <Users size={14} /> },
+              { label: "Campaigns", href: "/api/v1/intel/campaigns", icon: <Flag size={14} /> },
+              { label: "Replay",    href: "/api/v1/intel/replay",    icon: <RotateCcw size={14} /> },
+              { label: "Sharing",   href: "/api/v1/intel/sharing",   icon: <Share2 size={14} /> },
+              { label: "Tasking",   href: "/api/v1/intel/tasks",     icon: <Zap size={14} /> },
             ].map((item) => (
               <a
                 key={item.href}

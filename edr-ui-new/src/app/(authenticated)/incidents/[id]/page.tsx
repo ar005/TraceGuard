@@ -415,7 +415,7 @@ export default function IncidentAttackGraphPage() {
   const [activeTab, setActiveTab] = useState<"graph" | "timeline" | "ai">("graph");
 
   const { data: graph, loading, error } = useApi<AttackGraph>(
-    (signal) => api.get(`/incidents/${id}/attack-graph`, {}, signal),
+    (signal) => api.get(`/api/v1/incidents/${id}/attack-graph`, {}, signal),
   );
 
   const nodes = graph?.nodes ?? [];

@@ -82,7 +82,7 @@ interface SelectedTechnique {
 }
 
 export default function MitreHeatmapPage() {
-  const { data: rules, loading } = useApi<Rule[]>((signal) => api.get("/rules", undefined, signal));
+  const { data: rules, loading } = useApi<Rule[]>((signal) => api.get("/api/v1/rules", undefined, signal));
 
   const [selected, setSelected] = useState<SelectedTechnique | null>(null);
 

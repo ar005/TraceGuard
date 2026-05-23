@@ -55,7 +55,7 @@ function splitIds(str: string): string[] {
 
 export default function AutoCasePoliciesPage() {
   const { data: policies, loading, refetch } = useApi<AutoCasePolicy[]>(
-    () => api.get("/autocase/policies"),
+    () => api.get("/api/v1/autocase/policies"),
   );
 
   const [editing, setEditing] = useState<EditingPolicy | null>(null);
@@ -75,7 +75,7 @@ export default function AutoCasePoliciesPage() {
       // Remove our local helper keys
       delete (payload as Record<string, unknown>)._rule_ids_str;
       delete (payload as Record<string, unknown>)._mitre_ids_str;
-      await api.put(`/autocase/policies/${editing.id}`, payload);
+      await api.put(`/api/v1/autocase/policies/${editing.id}`, payload);
       setEditing(null);
       refetch();
     } finally {
@@ -84,7 +84,7 @@ export default function AutoCasePoliciesPage() {
   }
 
   async function toggle(policy: AutoCasePolicy) {
-    await api.put(`/autocase/policies/${policy.id}`, {
+    await api.put(`/api/v1/autocase/policies/${policy.id}`, {
       ...policy,
       enabled: !policy.enabled,
     });

@@ -54,7 +54,7 @@ const EMPTY_RULE = (): Partial<RemediationRule> => ({
 
 export default function AutoRemediationPage() {
   const { data: rules, loading, refetch } = useApi<RemediationRule[]>(
-    () => api.get("/remediation/rules"),
+    () => api.get("/api/v1/remediation/rules"),
   );
 
   const [editing, setEditing] = useState<Partial<RemediationRule> | null>(null);
@@ -67,7 +67,7 @@ export default function AutoRemediationPage() {
     if (!editing) return;
     setSaving(true);
     try {
-      await api.put(`/remediation/rules/${editing.id}`, editing);
+      await api.put(`/api/v1/remediation/rules/${editing.id}`, editing);
       setEditing(null);
       refetch();
     } finally {
@@ -78,7 +78,7 @@ export default function AutoRemediationPage() {
   async function del(id: string) {
     setDeleting(id);
     try {
-      await api.del(`/remediation/rules/${id}`);
+      await api.del(`/api/v1/remediation/rules/${id}`);
       refetch();
     } finally {
       setDeleting(null);
@@ -86,7 +86,7 @@ export default function AutoRemediationPage() {
   }
 
   async function toggle(rule: RemediationRule) {
-    await api.put(`/remediation/rules/${rule.id}`, { ...rule, enabled: !rule.enabled });
+    await api.put(`/api/v1/remediation/rules/${rule.id}`, { ...rule, enabled: !rule.enabled });
     refetch();
   }
 
