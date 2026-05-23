@@ -1,16 +1,25 @@
 // internal/api/ratelimit.go
-// Per-IP rate limiting middleware using a token bucket algorithm.
-// Each client IP gets its own limiter; stale entries are pruned periodically.
+// Per-identity rate limiting middleware using a token bucket algorithm.
+// Authenticated requests are keyed by JWT user ID; unauthenticated by IP.
+// This is proxy-safe: even when all requests arrive from one Next.js server
+// IP, each analyst gets their own independent bucket.
 
 package api
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/time/rate"
+
+	"github.com/youredr/edr-backend/internal/users"
 )
 
 // TenantRateLimitOverride holds per-tenant rate limit values loaded from the
@@ -22,59 +31,62 @@ type TenantRateLimitOverride struct {
 
 // RateLimitConfig controls rate limiting behaviour.
 type RateLimitConfig struct {
-	// Enabled turns rate limiting on/off.
-	Enabled bool
-
-	// RequestsPerSecond is the sustained rate (token refill rate).
-	// Default: 20 requests/second per IP.
+	Enabled           bool
 	RequestsPerSecond float64
-
-	// Burst is the maximum number of requests allowed in a single burst.
-	// Default: 40.
-	Burst int
-
-	// CleanupInterval controls how often stale limiter entries are purged.
-	// Default: 5 minutes.
-	CleanupInterval time.Duration
-
-	// MaxAge is how long an idle limiter lives before being cleaned up.
-	// Default: 10 minutes.
-	MaxAge time.Duration
+	Burst             int
+	CleanupInterval   time.Duration
+	MaxAge            time.Duration
 }
 
 // DefaultRateLimitConfig returns production defaults.
+// Override with env vars: EDR_RATE_LIMIT_RPS and EDR_RATE_LIMIT_BURST.
 func DefaultRateLimitConfig() RateLimitConfig {
 	return RateLimitConfig{
 		Enabled:           true,
-		RequestsPerSecond: 20,
-		Burst:             40,
+		RequestsPerSecond: envFloat("EDR_RATE_LIMIT_RPS", 120),
+		Burst:             envInt("EDR_RATE_LIMIT_BURST", 300),
 		CleanupInterval:   5 * time.Minute,
 		MaxAge:            10 * time.Minute,
 	}
 }
 
-// ipLimiter tracks a per-IP rate limiter and last-seen time.
-type ipLimiter struct {
-	limiter  *rate.Limiter
-	lastSeen time.Time
+func envFloat(key string, def float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+			return f
+		}
+	}
+	return def
 }
 
-// rateLimiterStore manages per-IP limiters with periodic cleanup.
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if i, err := strconv.Atoi(v); err == nil && i > 0 {
+			return i
+		}
+	}
+	return def
+}
+
+// rateLimiterStore manages per-identity limiters with periodic cleanup.
 type rateLimiterStore struct {
-	mu       sync.RWMutex
-	limiters map[string]*ipLimiter
+	mu       sync.Mutex
+	limiters map[string]*identityLimiter
 	rate     rate.Limit
 	burst    int
 }
 
+type identityLimiter struct {
+	limiter  *rate.Limiter
+	lastSeen time.Time
+}
+
 func newRateLimiterStore(rps float64, burst int, cleanupInterval, maxAge time.Duration) *rateLimiterStore {
 	s := &rateLimiterStore{
-		limiters: make(map[string]*ipLimiter),
+		limiters: make(map[string]*identityLimiter),
 		rate:     rate.Limit(rps),
 		burst:    burst,
 	}
-
-	// Background cleanup of stale entries.
 	go func() {
 		ticker := time.NewTicker(cleanupInterval)
 		defer ticker.Stop()
@@ -82,45 +94,86 @@ func newRateLimiterStore(rps float64, burst int, cleanupInterval, maxAge time.Du
 			s.cleanup(maxAge)
 		}
 	}()
-
 	return s
 }
 
-// getLimiter returns the rate limiter for an IP, creating one if needed.
-func (s *rateLimiterStore) getLimiter(ip string) *rate.Limiter {
+func (s *rateLimiterStore) getLimiter(key string) *rate.Limiter {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	if entry, ok := s.limiters[ip]; ok {
-		entry.lastSeen = time.Now()
-		return entry.limiter
+	if e, ok := s.limiters[key]; ok {
+		e.lastSeen = time.Now()
+		return e.limiter
 	}
-
-	limiter := rate.NewLimiter(s.rate, s.burst)
-	s.limiters[ip] = &ipLimiter{limiter: limiter, lastSeen: time.Now()}
-	return limiter
+	l := rate.NewLimiter(s.rate, s.burst)
+	s.limiters[key] = &identityLimiter{limiter: l, lastSeen: time.Now()}
+	return l
 }
 
-// cleanup removes entries that haven't been seen for maxAge.
 func (s *rateLimiterStore) cleanup(maxAge time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cutoff := time.Now().Add(-maxAge)
-	for ip, entry := range s.limiters {
-		if entry.lastSeen.Before(cutoff) {
-			delete(s.limiters, ip)
+	for k, e := range s.limiters {
+		if e.lastSeen.Before(cutoff) {
+			delete(s.limiters, k)
 		}
 	}
 }
 
-// rateLimitMiddleware returns Gin middleware that enforces per-IP rate limits.
+// identityKey returns the rate-limit bucket key for a request.
+// Authenticated requests use "user:<userID>" so the Next.js proxy IP doesn't
+// collapse all analysts into a single shared bucket.
+//
+// The rate limiter runs before auth middleware, so claims may not be in context
+// yet. We fall back to parsing the JWT from the cookie/header directly — we
+// only need the subject for bucketing, not signature verification.
+func identityKey(c *gin.Context) string {
+	// Fast path: claims already set (e.g. middleware running inside auth group).
+	if raw, ok := c.Get(string(ctxClaims)); ok {
+		if claims, ok := raw.(*users.Claims); ok && claims.Subject != "" {
+			return "user:" + claims.Subject
+		}
+	}
+	// Slow path: parse JWT payload without verifying signature.
+	token := ""
+	if cookie, err := c.Cookie("edr_session"); err == nil && cookie != "" {
+		token = cookie
+	} else if auth := c.GetHeader("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		token = strings.TrimPrefix(auth, "Bearer ")
+	}
+	if sub := jwtSubjectUnsafe(token); sub != "" {
+		return "user:" + sub
+	}
+	return "ip:" + c.ClientIP()
+}
+
+// jwtSubjectUnsafe extracts the subject from a JWT without verifying the
+// signature. Used only for rate-limit bucket keying — never for access control.
+func jwtSubjectUnsafe(token string) string {
+	parts := strings.SplitN(token, ".", 3)
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Sub string `json:"sub"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	return claims.Sub
+}
+
+// rateLimitMiddleware enforces per-identity rate limits.
 func rateLimitMiddleware(cfg RateLimitConfig) gin.HandlerFunc {
 	if !cfg.Enabled {
 		return func(c *gin.Context) { c.Next() }
 	}
-
 	if cfg.RequestsPerSecond <= 0 {
-		cfg.RequestsPerSecond = 20
+		cfg.RequestsPerSecond = 120
 	}
 	if cfg.Burst <= 0 {
 		cfg.Burst = int(cfg.RequestsPerSecond * 2)
@@ -135,36 +188,26 @@ func rateLimitMiddleware(cfg RateLimitConfig) gin.HandlerFunc {
 	store := newRateLimiterStore(cfg.RequestsPerSecond, cfg.Burst, cfg.CleanupInterval, cfg.MaxAge)
 
 	return func(c *gin.Context) {
-		ip := c.ClientIP()
-		limiter := store.getLimiter(ip)
-
-		if !limiter.Allow() {
+		if !store.getLimiter(identityKey(c)).Allow() {
 			c.Header("Retry-After", "1")
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 				"error": "rate limit exceeded — try again shortly",
 			})
 			return
 		}
-
 		c.Next()
 	}
 }
 
-// strictRateLimitMiddleware applies a much tighter per-IP limit for expensive
-// or dangerous endpoints (bulk imports, event injection, threat hunting, etc.).
-// Default: 2 requests/second, burst of 5. Disabled when cfg.Enabled is false.
+// strictRateLimitMiddleware applies a tighter limit for expensive endpoints
+// (bulk imports, event injection, threat hunting, etc.).
 func strictRateLimitMiddleware(cfg RateLimitConfig) gin.HandlerFunc {
 	if !cfg.Enabled {
 		return func(c *gin.Context) { c.Next() }
 	}
-
-	store := newRateLimiterStore(2, 5, 5*time.Minute, 10*time.Minute)
-
+	store := newRateLimiterStore(5, 15, 5*time.Minute, 10*time.Minute)
 	return func(c *gin.Context) {
-		ip := c.ClientIP()
-		limiter := store.getLimiter(ip)
-
-		if !limiter.Allow() {
+		if !store.getLimiter(identityKey(c)).Allow() {
 			c.Header("Retry-After", "5")
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 				"error": "rate limit exceeded for this endpoint — try again shortly",
@@ -175,14 +218,11 @@ func strictRateLimitMiddleware(cfg RateLimitConfig) gin.HandlerFunc {
 	}
 }
 
-// tenantRateLimitMiddleware wraps rateLimitMiddleware but applies per-tenant
-// overrides when the JWT tenant_id matches a loaded override. Falls back to the
-// global config for unknown tenants.
+// tenantRateLimitMiddleware applies per-tenant overrides, falling back to cfg.
 func tenantRateLimitMiddleware(cfg RateLimitConfig, overrides map[string]TenantRateLimitOverride) gin.HandlerFunc {
 	if !cfg.Enabled || len(overrides) == 0 {
 		return rateLimitMiddleware(cfg)
 	}
-
 	stores := make(map[string]*rateLimiterStore, len(overrides))
 	for tid, ov := range overrides {
 		rps := ov.RequestsPerSecond
@@ -208,7 +248,7 @@ func tenantRateLimitMiddleware(cfg RateLimitConfig, overrides map[string]TenantR
 		if !ok {
 			store = defaultStore
 		}
-		if !store.getLimiter(c.ClientIP()).Allow() {
+		if !store.getLimiter(identityKey(c)).Allow() {
 			c.Header("Retry-After", "1")
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 				"error": "rate limit exceeded — try again shortly",

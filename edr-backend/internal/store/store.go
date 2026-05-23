@@ -4746,7 +4746,7 @@ RETURNING ewma, ewma_sq, sample_count`
 		EWMASq      float64 `db:"ewma_sq"`
 		SampleCount int     `db:"sample_count"`
 	}
-	if err := s.db.QueryRowxContext(ctx, q, id, tenantID, entityType, entityID, metric, value).StructScan(&row); err != nil {
+	if err := s.db.QueryRowxContext(ctx, q, id, tenantID, entityType, entityID, metric, value, value).StructScan(&row); err != nil {
 		return 0, err
 	}
 	if row.SampleCount < 10 {

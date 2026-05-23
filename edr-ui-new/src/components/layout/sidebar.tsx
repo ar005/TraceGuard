@@ -7,9 +7,11 @@ import { cn } from "@/lib/utils";
 import {
   Activity,
   AlertTriangle,
+  Archive,
   ArrowUpFromLine,
   BarChart3,
   BookOpen,
+  BookMarked,
   Box,
   Bug,
   CalendarClock,
@@ -85,6 +87,7 @@ const NAV_SECTIONS: NavSection[] = [
       { label: "Commands", href: "/commands", icon: Terminal },
       { label: "Browser", href: "/browser", icon: Globe },
       { label: "Browser Policy", href: "/browser/policy", icon: ShieldCheck },
+      { label: "Browser History", href: "/browser/history", icon: BookMarked },
       { label: "USB Devices", href: "/usb", icon: Usb },
       { label: "Email Threats", href: "/email-threats", icon: Mail },
       { label: "Hunt", href: "/hunt", icon: Crosshair },
@@ -142,6 +145,7 @@ const NAV_SECTIONS: NavSection[] = [
     title: "Operate",
     items: [
       { label: "Live Response", href: "/live-response", icon: Terminal },
+      { label: "Forensics", href: "/forensics", icon: Archive },
       { label: "Playbooks", href: "/playbooks", icon: PlaySquare },
       { label: "Playbook Runs", href: "/playbooks/runs", icon: Activity },
       { label: "Auto-Disruption", href: "/auto-disruption", icon: Zap },

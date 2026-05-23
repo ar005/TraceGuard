@@ -126,7 +126,11 @@ func New(st *store.Store, eng *detection.Engine, km *apikeys.Manager,
 
 	// Don't trust X-Forwarded-For from arbitrary clients — only loopback.
 	// Operators behind a known reverse proxy should set this to their proxy IP(s).
-	r.SetTrustedProxies([]string{"127.0.0.1", "::1"})
+	r.SetTrustedProxies([]string{
+		"127.0.0.1", "::1",
+		"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", // RFC1918
+		"100.64.0.0/10", // Tailscale / CGNAT
+	})
 
 	rl := DefaultRateLimitConfig()
 	if len(rlCfg) > 0 {
@@ -652,7 +656,7 @@ const authCookieName = "edr_session"
 // setAuthCookie writes the JWT as an httpOnly, SameSite=Strict cookie.
 func setAuthCookie(c *gin.Context, token string) {
 	secure := c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https"
-	c.SetCookie(authCookieName, token, 12*60*60, "/", "", secure, true) // httpOnly=true
+	c.SetCookie(authCookieName, token, 24*60*60, "/", "", secure, true) // httpOnly=true
 	c.SetSameSite(http.SameSiteStrictMode)
 }
 

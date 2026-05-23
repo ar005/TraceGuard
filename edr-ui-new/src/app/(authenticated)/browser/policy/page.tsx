@@ -64,7 +64,7 @@ export default function BrowserPolicyPage() {
   const handleDelete = async (id: string) => {
     setDeletingId(id);
     try {
-      await api.delete(`/api/v1/browser/policy/${id}`);
+      await api.del(`/api/v1/browser/policy/${id}`);
       refetch();
       showToast("Entry removed", true);
     } catch {

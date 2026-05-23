@@ -255,7 +255,8 @@ type IOC struct {
 	CampaignID *string `db:"campaign_id" json:"campaign_id,omitempty"`
 	Confidence int16   `db:"confidence"  json:"confidence"`
 	TLP        string  `db:"tlp"         json:"tlp,omitempty"`
-	TenantID   string  `db:"tenant_id"   json:"tenant_id,omitempty"`
+	TenantID    string     `db:"tenant_id"     json:"tenant_id,omitempty"`
+	TIPPushedAt *time.Time `db:"tip_pushed_at" json:"tip_pushed_at,omitempty"`
 }
 
 

@@ -110,7 +110,7 @@ export default function DeceptionPage() {
   const deleteHoneypot = async (id: string) => {
     setDeletingId(id);
     try {
-      await api.delete(`/api/v1/deception/honeypots/${id}`);
+      await api.del(`/api/v1/deception/honeypots/${id}`);
       refetchHP();
       showToast("Honeypot removed", true);
     } catch {
@@ -139,7 +139,7 @@ export default function DeceptionPage() {
   const deleteLure = async (id: string) => {
     setDeletingId(id);
     try {
-      await api.delete(`/api/v1/deception/lures/${id}`);
+      await api.del(`/api/v1/deception/lures/${id}`);
       refetchLures();
       showToast("Lure removed", true);
     } catch {
