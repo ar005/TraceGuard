@@ -168,6 +168,10 @@ func jwtSubjectUnsafe(token string) string {
 }
 
 // rateLimitMiddleware enforces per-identity rate limits.
+// Requests that carry a session cookie or Bearer token are passed through
+// without rate limiting — the auth middleware handles access control for those.
+// Rate limiting is enforced only on unauthenticated requests (e.g. brute-force
+// protection for /login).
 func rateLimitMiddleware(cfg RateLimitConfig) gin.HandlerFunc {
 	if !cfg.Enabled {
 		return func(c *gin.Context) { c.Next() }
@@ -188,6 +192,12 @@ func rateLimitMiddleware(cfg RateLimitConfig) gin.HandlerFunc {
 	store := newRateLimiterStore(cfg.RequestsPerSecond, cfg.Burst, cfg.CleanupInterval, cfg.MaxAge)
 
 	return func(c *gin.Context) {
+		// Skip rate limiting for requests that carry credentials — auth
+		// middleware will accept or reject them independently.
+		if hasCredentials(c) {
+			c.Next()
+			return
+		}
 		if !store.getLimiter(identityKey(c)).Allow() {
 			c.Header("Retry-After", "1")
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
@@ -197,6 +207,21 @@ func rateLimitMiddleware(cfg RateLimitConfig) gin.HandlerFunc {
 		}
 		c.Next()
 	}
+}
+
+// hasCredentials returns true if the request carries a session cookie or
+// an Authorization header — indicating it is an authenticated request.
+func hasCredentials(c *gin.Context) bool {
+	if cookie, err := c.Cookie("edr_session"); err == nil && cookie != "" {
+		return true
+	}
+	if auth := c.GetHeader("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		return true
+	}
+	if key := c.GetHeader("X-Agent-Key"); key != "" {
+		return true
+	}
+	return false
 }
 
 // strictRateLimitMiddleware applies a tighter limit for expensive endpoints

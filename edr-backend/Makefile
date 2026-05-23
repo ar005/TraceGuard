@@ -1,6 +1,8 @@
 BINARY  = edr-backend
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
+COMPOSE := docker compose
+
 .PHONY: all build run test clean docker-up docker-down
 
 all: build
@@ -21,17 +23,17 @@ clean:
 	rm -f $(BINARY)
 
 # Docker targets
-docker-up:
-	docker compose -f deploy/docker-compose.yml up -d --build
+docker-up: build
+	DOCKER_BUILDKIT=0 $(COMPOSE) -f deploy/docker-compose.yml up -d --build
 	@echo "==> Backend:  http://localhost:8080"
 	@echo "==> gRPC:     localhost:50051"
 	@echo "==> Postgres: localhost:5432"
 
 docker-down:
-	docker compose -f deploy/docker-compose.yml down
+	$(COMPOSE) -f deploy/docker-compose.yml down
 
 docker-logs:
-	docker compose -f deploy/docker-compose.yml logs -f backend
+	$(COMPOSE) -f deploy/docker-compose.yml logs -f backend
 
 # Local postgres (without Docker)
 db-start:
