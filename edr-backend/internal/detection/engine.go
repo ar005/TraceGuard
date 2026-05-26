@@ -700,9 +700,9 @@ func (e *Engine) fireAlert(ctx context.Context, ev *models.Event, rule *models.R
 	e.fireAlertWithContext(ctx, ev, rule, "")
 }
 
-// dedupLock returns the per-(rule, agent) mutex, creating it on first use.
-func (e *Engine) dedupLock(ruleID, agentID string) *sync.Mutex {
-	key := ruleID + "\x00" + agentID
+// dedupLock returns the per-(rule, agent, tenant) mutex, creating it on first use.
+func (e *Engine) dedupLock(ruleID, agentID, tenantID string) *sync.Mutex {
+	key := tenantID + "\x00" + ruleID + "\x00" + agentID
 	v, _ := e.dedupMu.LoadOrStore(key, &dedupEntry{})
 	entry := v.(*dedupEntry)
 	atomic.StoreInt64(&entry.lastSeen, time.Now().UnixNano())
@@ -710,14 +710,18 @@ func (e *Engine) dedupLock(ruleID, agentID string) *sync.Mutex {
 }
 
 func (e *Engine) fireAlertWithContext(ctx context.Context, ev *models.Event, rule *models.Rule, extraCtx string) {
-	// Serialise the read-then-insert per (rule, agent) so concurrent events for
-	// the same rule cannot both pass the dedup check and create duplicate alerts.
-	mu := e.dedupLock(rule.ID, ev.AgentID)
+	// Serialise the read-then-insert per (rule, agent, tenant) so concurrent events
+	// for the same rule cannot both pass the dedup check and create duplicate alerts.
+	tenantID := ev.TenantID
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	mu := e.dedupLock(rule.ID, ev.AgentID, tenantID)
 	mu.Lock()
 	defer mu.Unlock()
 
 	// Deduplication check.
-	existing, err := e.store.FindOpenAlert(ctx, rule.ID, ev.AgentID, dedupeWindow)
+	existing, err := e.store.FindOpenAlert(ctx, rule.ID, ev.AgentID, tenantID, dedupeWindow)
 	if err != nil {
 		e.log.Warn().Err(err).Str("rule", rule.ID).Msg("dedup check failed — firing new alert")
 	} else if existing != nil {
@@ -798,10 +802,14 @@ func (e *Engine) enrichRuleAlert(alertID string, ev *models.Event) {
 		}
 		return ""
 	}
+	evTenant := ev.TenantID
+	iocOwnedByTenant := func(ioc *models.IOC) bool {
+		return ioc.TenantID == "" || ioc.TenantID == "default" || ioc.TenantID == evTenant
+	}
 	checkIP := func(field, val string) {
 		val = strings.ToLower(strings.TrimSpace(val))
 		if val == "" { return }
-		if ioc, ok := ips[val]; ok {
+		if ioc, ok := ips[val]; ok && iocOwnedByTenant(ioc) {
 			matches = append(matches, iocMatch{Value: val, Type: "ip", Field: field, Source: ioc.Source})
 			hitIDs[ioc.ID] = struct{}{}
 			if firstIOC == nil { firstIOC = ioc }
@@ -810,7 +818,7 @@ func (e *Engine) enrichRuleAlert(alertID string, ev *models.Event) {
 	checkDomain := func(field, val string) {
 		val = strings.ToLower(strings.TrimSpace(val))
 		if val == "" { return }
-		if ioc, ok := doms[val]; ok {
+		if ioc, ok := doms[val]; ok && iocOwnedByTenant(ioc) {
 			matches = append(matches, iocMatch{Value: val, Type: "domain", Field: field, Source: ioc.Source})
 			hitIDs[ioc.ID] = struct{}{}
 			if firstIOC == nil { firstIOC = ioc }
@@ -819,7 +827,7 @@ func (e *Engine) enrichRuleAlert(alertID string, ev *models.Event) {
 	checkHash := func(field, val string) {
 		val = strings.ToLower(strings.TrimSpace(val))
 		if val == "" { return }
-		if ioc, ok := hashes[val]; ok {
+		if ioc, ok := hashes[val]; ok && iocOwnedByTenant(ioc) {
 			matches = append(matches, iocMatch{Value: val, Type: ioc.Type, Field: field, Source: ioc.Source})
 			hitIDs[ioc.ID] = struct{}{}
 			if firstIOC == nil { firstIOC = ioc }
@@ -935,12 +943,18 @@ func (e *Engine) checkIOCs(ctx context.Context, ev *models.Event, payload map[st
 		return
 	}
 
+	// iocBelongsToTenant returns true when the IOC's tenant matches the event's
+	// tenant, or when the IOC has no tenant (global / default).
+	iocBelongsToTenant := func(ioc *models.IOC) bool {
+		return ioc.TenantID == "" || ioc.TenantID == "default" || ioc.TenantID == ev.TenantID
+	}
+
 	// Check IP IOCs against network events.
 	if len(ips) > 0 {
 		for _, field := range []string{"dst_ip", "src_ip"} {
 			if v, ok := payload[field]; ok {
 				ip := strings.ToLower(fmt.Sprintf("%v", v))
-				if ioc, hit := ips[ip]; hit {
+				if ioc, hit := ips[ip]; hit && iocBelongsToTenant(ioc) {
 					e.fireIOCAlert(ctx, ev, ioc, field, ip)
 					// Auto-block: instruct agent to block the matched IP.
 					go e.autoBlockIP(ctx, ev.AgentID, ip)
@@ -954,7 +968,7 @@ func (e *Engine) checkIOCs(ctx context.Context, ev *models.Event, payload map[st
 		for _, field := range []string{"dns_query", "resolved_domain", "query"} {
 			if v, ok := payload[field]; ok {
 				domain := strings.ToLower(fmt.Sprintf("%v", v))
-				if ioc, hit := domains[domain]; hit {
+				if ioc, hit := domains[domain]; hit && iocBelongsToTenant(ioc) {
 					e.fireIOCAlert(ctx, ev, ioc, field, domain)
 				}
 			}
@@ -969,7 +983,7 @@ func (e *Engine) checkIOCs(ctx context.Context, ev *models.Event, payload map[st
 				if hash == "" {
 					continue
 				}
-				if ioc, hit := hashes[hash]; hit {
+				if ioc, hit := hashes[hash]; hit && iocBelongsToTenant(ioc) {
 					e.fireIOCAlert(ctx, ev, ioc, field, hash)
 					// Auto-quarantine: if the event has a file path, quarantine it.
 					if filePath, fpOK := payload["path"]; fpOK {
@@ -985,7 +999,11 @@ func (e *Engine) checkIOCs(ctx context.Context, ev *models.Event, payload map[st
 func (e *Engine) fireIOCAlert(ctx context.Context, ev *models.Event, ioc *models.IOC, field, value string) {
 	// Deduplication: check for existing open alert for this IOC + agent.
 	ruleID := "ioc-" + ioc.ID
-	existing, err := e.store.FindOpenAlert(ctx, ruleID, ev.AgentID, dedupeWindow)
+	tid := ev.TenantID
+	if tid == "" {
+		tid = "default"
+	}
+	existing, err := e.store.FindOpenAlert(ctx, ruleID, ev.AgentID, tid, dedupeWindow)
 	if err == nil && existing != nil {
 		go func() { _ = e.store.BumpAlert(context.Background(), existing.ID, ev.ID) }()
 		go func() { _ = e.store.IncrIOCHits(context.Background(), ioc.ID) }()
@@ -1074,7 +1092,11 @@ func (e *Engine) checkTyposquat(ctx context.Context, ev *models.Event, payload m
 
 	// Deduplication: use a synthetic rule ID for typosquat alerts.
 	ruleID := "typosquat-detection"
-	existing, err := e.store.FindOpenAlert(ctx, ruleID, ev.AgentID, dedupeWindow)
+	tsqTID := ev.TenantID
+	if tsqTID == "" {
+		tsqTID = "default"
+	}
+	existing, err := e.store.FindOpenAlert(ctx, ruleID, ev.AgentID, tsqTID, dedupeWindow)
 	if err == nil && existing != nil {
 		go func() { _ = e.store.BumpAlert(context.Background(), existing.ID, ev.ID) }()
 		return

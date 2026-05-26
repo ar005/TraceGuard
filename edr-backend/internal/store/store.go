@@ -667,9 +667,9 @@ func (s *Store) BacktestRule(ctx context.Context, p BacktestParams) (int, []mode
 	return len(events), events, nil
 }
 // FindOpenAlert returns the most recent OPEN/INVESTIGATING alert for this
-// (rule_id, agent_id) pair that was last seen within dedupeWindow.
+// (rule_id, agent_id, tenant_id) tuple that was last seen within dedupeWindow.
 // Returns nil, nil when no match (caller should insert a new alert).
-func (s *Store) FindOpenAlert(ctx context.Context, ruleID, agentID string, dedupeWindow time.Duration) (*models.Alert, error) {
+func (s *Store) FindOpenAlert(ctx context.Context, ruleID, agentID, tenantID string, dedupeWindow time.Duration) (*models.Alert, error) {
 	var a models.Alert
 	cutoff := time.Now().Add(-dedupeWindow)
 	err := s.rdb().GetContext(ctx, &a, `
@@ -678,13 +678,14 @@ func (s *Store) FindOpenAlert(ctx context.Context, ruleID, agentID string, dedup
 		       COALESCE(src_ip::text, '') AS src_ip,
 		       first_seen, last_seen, hit_count
 		FROM alerts
-		WHERE rule_id  = $1
-		  AND agent_id = $2
-		  AND status   IN ('OPEN','INVESTIGATING')
-		  AND last_seen >= $3
+		WHERE rule_id   = $1
+		  AND agent_id  = $2
+		  AND tenant_id = $3
+		  AND status    IN ('OPEN','INVESTIGATING')
+		  AND last_seen >= $4
 		ORDER BY last_seen DESC
 		LIMIT 1`,
-		ruleID, agentID, cutoff)
+		ruleID, agentID, tenantID, cutoff)
 	if err != nil {
 		if err.Error() == "sql: no rows in result set" {
 			return nil, nil
@@ -2210,10 +2211,10 @@ func (s *Store) GetIncidentGraph(ctx context.Context, incidentID, tenantID strin
 		return nil, err
 	}
 
-	// Load all linked alerts.
+	// Load linked alerts (cap at 500 to prevent unbounded memory for large incidents).
 	var alerts []models.Alert
 	if err := s.rdb().SelectContext(ctx, &alerts,
-		`SELECT * FROM alerts WHERE incident_id=$1 ORDER BY first_seen ASC`, incidentID); err != nil {
+		`SELECT * FROM alerts WHERE incident_id=$1 ORDER BY first_seen ASC LIMIT 500`, incidentID); err != nil {
 		return nil, err
 	}
 
