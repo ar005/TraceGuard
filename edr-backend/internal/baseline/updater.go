@@ -14,7 +14,7 @@ const anomalyThreshold = 3.0
 
 // Store is the subset of store.Store used by the updater.
 type Store interface {
-	ListAgents(ctx context.Context) ([]models.Agent, error)
+	ListAgents(ctx context.Context, tenantID string) ([]models.Agent, error)
 	ComputeAgentMetrics(ctx context.Context, agentID string) (map[string]float64, error)
 	ComputeUserMetrics(ctx context.Context, userUID string) (map[string]float64, error)
 	UpsertEntityBaseline(ctx context.Context, tenantID, entityType, entityID, metric string, value float64) (float64, error)
@@ -48,7 +48,7 @@ func (u *Updater) Run(ctx context.Context) {
 }
 
 func (u *Updater) update(ctx context.Context) {
-	agents, err := u.store.ListAgents(ctx)
+	agents, err := u.store.ListAgents(ctx, "default")
 	if err != nil {
 		u.log.Error().Err(err).Msg("baseline: list agents")
 		return

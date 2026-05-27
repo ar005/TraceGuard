@@ -27,7 +27,7 @@ func verifyHMACSignature(body []byte, secret, sigHex string) bool {
 
 // handleListSources returns all xdr_sources rows.
 func (s *Server) handleListSources(c *gin.Context) {
-	sources, err := s.store.ListSources(c.Request.Context())
+	sources, err := s.store.ListSources(c.Request.Context(), c.GetString("tenant_id"))
 	if err != nil {
 		s.jsonError(c, err)
 		return
@@ -37,7 +37,7 @@ func (s *Server) handleListSources(c *gin.Context) {
 
 // handleGetSource returns one xdr_sources row.
 func (s *Server) handleGetSource(c *gin.Context) {
-	src, err := s.store.GetSource(c.Request.Context(), c.Param("id"))
+	src, err := s.store.GetSource(c.Request.Context(), c.Param("id"), c.GetString("tenant_id"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -65,7 +65,7 @@ func (s *Server) handleCreateSource(c *gin.Context) {
 
 // handleUpdateSource replaces mutable fields on a source.
 func (s *Server) handleUpdateSource(c *gin.Context) {
-	existing, err := s.store.GetSource(c.Request.Context(), c.Param("id"))
+	existing, err := s.store.GetSource(c.Request.Context(), c.Param("id"), c.GetString("tenant_id"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -84,7 +84,7 @@ func (s *Server) handleUpdateSource(c *gin.Context) {
 
 // handleDeleteSource removes a source row.
 func (s *Server) handleDeleteSource(c *gin.Context) {
-	if err := s.store.DeleteSource(c.Request.Context(), c.Param("id")); err != nil {
+	if err := s.store.DeleteSource(c.Request.Context(), c.Param("id"), c.GetString("tenant_id")); err != nil {
 		s.jsonError(c, err)
 		return
 	}
@@ -94,7 +94,7 @@ func (s *Server) handleDeleteSource(c *gin.Context) {
 // handleGetSourceHealth returns the health of a running connector, if any.
 func (s *Server) handleGetSourceHealth(c *gin.Context) {
 	id := c.Param("id")
-	src, err := s.store.GetSource(c.Request.Context(), id)
+	src, err := s.store.GetSource(c.Request.Context(), id, "default")
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -132,7 +132,7 @@ func (s *Server) handleGetSourceHealth(c *gin.Context) {
 // has a "secret" field; otherwise any POST is accepted.
 func (s *Server) handleWebhookIngest(c *gin.Context) {
 	sourceID := c.Param("source_id")
-	src, err := s.store.GetSource(c.Request.Context(), sourceID)
+	src, err := s.store.GetSource(c.Request.Context(), sourceID, "default")
 	if err != nil {
 		c.Status(http.StatusNotFound)
 		return

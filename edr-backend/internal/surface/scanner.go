@@ -14,7 +14,7 @@ import (
 
 // Store is the subset of store.Store needed by the scanner.
 type Store interface {
-	ListAgents(ctx context.Context) ([]models.Agent, error)
+	ListAgents(ctx context.Context, tenantID string) ([]models.Agent, error)
 	ComputeAgentAttackSurface(ctx context.Context, agentID string) ([]store.OpenPort, []store.ExposedVuln, error)
 	UpsertAttackSurfaceSnapshot(ctx context.Context, snap *store.AttackSurfaceSnapshot) error
 }
@@ -48,7 +48,7 @@ func (sc *Scanner) Run(ctx context.Context) {
 }
 
 func (sc *Scanner) scan(ctx context.Context) {
-	agents, err := sc.store.ListAgents(ctx)
+	agents, err := sc.store.ListAgents(ctx, "default")
 	if err != nil {
 		sc.log.Warn().Err(err).Msg("list agents for surface scan")
 		return

@@ -23,7 +23,7 @@ type RunnerStore interface {
 	UpdatePlaybookRun(ctx context.Context, id, status, errMsg string, actionsLog []byte) error
 	IncrPlaybookRunCount(ctx context.Context, id string) error
 	UpdateAlertStatus(ctx context.Context, id, tenantID, status, assignee, notes string) error
-	GetAgent(ctx context.Context, id string) (*models.Agent, error)
+	GetAgent(ctx context.Context, id, tenantID string) (*models.Agent, error)
 	ListGroupsForAgent(ctx context.Context, agentID, tenantID string) ([]string, error)
 }
 
@@ -56,7 +56,7 @@ func (r *Runner) OnAlert(ctx context.Context, alert *models.Alert) {
 	var agentTags []string
 	if alert.AgentID != "" {
 		agentGroupIDs, _ = r.store.ListGroupsForAgent(ctx, alert.AgentID, alert.TenantID)
-		if agent, err2 := r.store.GetAgent(ctx, alert.AgentID); err2 == nil {
+		if agent, err2 := r.store.GetAgent(ctx, alert.AgentID, "default"); err2 == nil {
 			agentTags = agent.Tags
 		}
 	}

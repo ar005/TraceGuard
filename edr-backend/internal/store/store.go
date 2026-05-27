@@ -113,15 +113,19 @@ func (s *Store) MarkAgentOffline(ctx context.Context, agentID string) error {
 	return err
 }
 
-func (s *Store) GetAgent(ctx context.Context, id string) (*models.Agent, error) {
+func (s *Store) GetAgent(ctx context.Context, id, tenantID string) (*models.Agent, error) {
 	var a models.Agent
-	err := s.rdb().GetContext(ctx, &a, `SELECT * FROM agents WHERE id=$1`, id)
+	err := s.rdb().GetContext(ctx, &a,
+		`SELECT * FROM agents WHERE id=$1 AND (tenant_id=$2 OR tenant_id='default' OR $2='default')`,
+		id, tenantID)
 	return &a, err
 }
 
-func (s *Store) ListAgents(ctx context.Context) ([]models.Agent, error) {
+func (s *Store) ListAgents(ctx context.Context, tenantID string) ([]models.Agent, error) {
 	var agents []models.Agent
-	err := s.rdb().SelectContext(ctx, &agents, `SELECT * FROM agents ORDER BY last_seen DESC`)
+	err := s.rdb().SelectContext(ctx, &agents,
+		`SELECT * FROM agents WHERE (tenant_id=$1 OR tenant_id='default' OR $1='default') ORDER BY last_seen DESC`,
+		tenantID)
 	return agents, err
 }
 
@@ -532,9 +536,11 @@ func (s *Store) ListRules(ctx context.Context, tenantID string) ([]models.Rule, 
 	return rules, err
 }
 
-func (s *Store) GetRule(ctx context.Context, id string) (*models.Rule, error) {
+func (s *Store) GetRule(ctx context.Context, id, tenantID string) (*models.Rule, error) {
 	var r models.Rule
-	err := s.rdb().GetContext(ctx, &r, `SELECT * FROM rules WHERE id=$1`, id)
+	err := s.rdb().GetContext(ctx, &r,
+		`SELECT * FROM rules WHERE id=$1 AND (tenant_id=$2 OR tenant_id='default' OR $2='default')`,
+		id, tenantID)
 	return &r, err
 }
 
@@ -583,6 +589,58 @@ func (s *Store) DeleteRule(ctx context.Context, id, tenantID string) error {
 
 // ─── Suppression Rules ────────────────────────────────────────────────────────
 
+// RulesChangedSince returns (changed bool, currentCount int, err).
+// It runs a fast COUNT + MAX(updated_at) query; the full reload is only
+// needed when either the count or the max timestamp has advanced.
+func (s *Store) RulesChangedSince(ctx context.Context, since time.Time, knownCount int) (bool, int, error) {
+	var count int
+	var maxUpdated time.Time
+	err := s.rdb().QueryRowContext(ctx,
+		`SELECT COUNT(*), COALESCE(MAX(updated_at), '1970-01-01') FROM rules`).
+		Scan(&count, &maxUpdated)
+	if err != nil {
+		return true, 0, err // on error, force a reload
+	}
+	changed := count != knownCount || maxUpdated.After(since)
+	return changed, count, nil
+}
+
+// AddThresholdEvent records a single event occurrence for distributed threshold tracking.
+func (s *Store) AddThresholdEvent(ctx context.Context, ruleID, groupVal string) error {
+	_, err := s.rdb().ExecContext(ctx,
+		`INSERT INTO threshold_windows(rule_id, group_val) VALUES($1, $2)`,
+		ruleID, groupVal)
+	return err
+}
+
+// CountThresholdWindow counts events for (ruleID, groupVal) within the sliding window.
+func (s *Store) CountThresholdWindow(ctx context.Context, ruleID, groupVal string, window time.Duration) (int, error) {
+	cutoff := time.Now().Add(-window)
+	var count int
+	err := s.rdb().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM threshold_windows WHERE rule_id=$1 AND group_val=$2 AND event_ts >= $3`,
+		ruleID, groupVal, cutoff).Scan(&count)
+	return count, err
+}
+
+// ResetThresholdWindow deletes all window rows for (ruleID, groupVal) so the counter
+// restarts after a threshold fires (prevents immediate re-fire on the next event).
+func (s *Store) ResetThresholdWindow(ctx context.Context, ruleID, groupVal string) error {
+	_, err := s.rdb().ExecContext(ctx,
+		`DELETE FROM threshold_windows WHERE rule_id=$1 AND group_val=$2`,
+		ruleID, groupVal)
+	return err
+}
+
+// PruneThresholdWindows removes stale rows older than maxAge across all rules.
+// Call periodically (e.g. every 5 minutes) to prevent unbounded table growth.
+func (s *Store) PruneThresholdWindows(ctx context.Context, maxAge time.Duration) error {
+	cutoff := time.Now().Add(-maxAge)
+	_, err := s.rdb().ExecContext(ctx,
+		`DELETE FROM threshold_windows WHERE event_ts < $1`, cutoff)
+	return err
+}
+
 func (s *Store) ListSuppressions(ctx context.Context) ([]models.SuppressionRule, error) {
 	var sups []models.SuppressionRule
 	err := s.rdb().SelectContext(ctx, &sups,
@@ -590,9 +648,11 @@ func (s *Store) ListSuppressions(ctx context.Context) ([]models.SuppressionRule,
 	return sups, err
 }
 
-func (s *Store) GetSuppression(ctx context.Context, id string) (*models.SuppressionRule, error) {
+func (s *Store) GetSuppression(ctx context.Context, id, tenantID string) (*models.SuppressionRule, error) {
 	var r models.SuppressionRule
-	err := s.rdb().GetContext(ctx, &r, `SELECT * FROM suppression_rules WHERE id=$1`, id)
+	err := s.rdb().GetContext(ctx, &r,
+		`SELECT * FROM suppression_rules WHERE id=$1 AND (tenant_id=$2 OR tenant_id='default' OR $2='default')`,
+		id, tenantID)
 	return &r, err
 }
 
@@ -601,10 +661,14 @@ func (s *Store) UpsertSuppression(ctx context.Context, r *models.SuppressionRule
 	if err != nil {
 		return err
 	}
+	tid := r.TenantID
+	if tid == "" {
+		tid = "default"
+	}
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO suppression_rules
-			(id, name, description, enabled, event_types, conditions, author, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,NOW(),NOW())
+			(id, name, description, enabled, event_types, conditions, author, tenant_id, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),NOW())
 		ON CONFLICT (id) DO UPDATE SET
 			name        = EXCLUDED.name,
 			description = EXCLUDED.description,
@@ -613,12 +677,14 @@ func (s *Store) UpsertSuppression(ctx context.Context, r *models.SuppressionRule
 			conditions  = EXCLUDED.conditions,
 			updated_at  = NOW()
 	`, r.ID, r.Name, r.Description, r.Enabled,
-		pq.Array(r.EventTypes), conds, r.Author)
+		pq.Array(r.EventTypes), conds, r.Author, tid)
 	return err
 }
 
-func (s *Store) DeleteSuppression(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM suppression_rules WHERE id=$1`, id)
+func (s *Store) DeleteSuppression(ctx context.Context, id, tenantID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM suppression_rules WHERE id=$1 AND (tenant_id=$2 OR tenant_id='default' OR $2='default')`,
+		id, tenantID)
 	return err
 }
 
@@ -2073,10 +2139,13 @@ func (s *Store) InsertIOCBatch(ctx context.Context, iocs []models.IOC) (int, err
 	return count, tx.Commit()
 }
 
-func (s *Store) ListIOCs(ctx context.Context, iocType, source, search string, enabledOnly bool, limit, offset int) ([]models.IOC, error) {
-	q := "SELECT * FROM iocs WHERE 1=1"
-	args := []interface{}{}
-	n := 0
+func (s *Store) ListIOCs(ctx context.Context, tenantID, iocType, source, search string, enabledOnly bool, limit, offset int) ([]models.IOC, error) {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	q := "SELECT * FROM iocs WHERE (tenant_id=$1 OR tenant_id='default' OR $1='default')"
+	args := []interface{}{tenantID}
+	n := 1
 
 	if iocType != "" {
 		n++
@@ -2119,8 +2188,10 @@ func (s *Store) GetIOC(ctx context.Context, id string) (*models.IOC, error) {
 	return &ioc, err
 }
 
-func (s *Store) DeleteIOC(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM iocs WHERE id=$1`, id)
+func (s *Store) DeleteIOC(ctx context.Context, id, tenantID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM iocs WHERE id=$1 AND (tenant_id=$2 OR tenant_id='default' OR $2='default')`,
+		id, tenantID)
 	return err
 }
 
@@ -2148,9 +2219,13 @@ func (s *Store) GetYARARule(ctx context.Context, id string) (*models.YARARule, e
 }
 
 func (s *Store) UpsertYARARule(ctx context.Context, r *models.YARARule) error {
+	tid := r.TenantID
+	if tid == "" {
+		tid = "default"
+	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO yara_rules (id, name, description, rule_text, enabled, severity, mitre_ids, tags, author, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW(),NOW())
+		INSERT INTO yara_rules (id, name, description, rule_text, enabled, severity, mitre_ids, tags, author, tenant_id, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW(),NOW())
 		ON CONFLICT (id) DO UPDATE SET
 			name        = EXCLUDED.name,
 			description = EXCLUDED.description,
@@ -2162,12 +2237,14 @@ func (s *Store) UpsertYARARule(ctx context.Context, r *models.YARARule) error {
 			author      = EXCLUDED.author,
 			updated_at  = NOW()`,
 		r.ID, r.Name, r.Description, r.RuleText, r.Enabled, r.Severity,
-		pq.Array(coalesceStringSlice(r.MitreIDs)), pq.Array(coalesceStringSlice(r.Tags)), r.Author)
+		pq.Array(coalesceStringSlice(r.MitreIDs)), pq.Array(coalesceStringSlice(r.Tags)), r.Author, tid)
 	return err
 }
 
-func (s *Store) DeleteYARARule(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM yara_rules WHERE id=$1`, id)
+func (s *Store) DeleteYARARule(ctx context.Context, id, tenantID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM yara_rules WHERE id=$1 AND (tenant_id=$2 OR tenant_id='default' OR $2='default')`,
+		id, tenantID)
 	return err
 }
 

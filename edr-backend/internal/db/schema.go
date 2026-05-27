@@ -2415,6 +2415,31 @@ CREATE INDEX IF NOT EXISTS idx_fj_tenant   ON forensics_jobs(tenant_id, created_
 CREATE INDEX IF NOT EXISTS idx_fj_pending  ON forensics_jobs(agent_id, status) WHERE status = 'pending';
 `,
 	},
+	{
+		name: "tenant_id_on_shared_tables",
+		sql: `
+ALTER TABLE agents            ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
+ALTER TABLE suppression_rules ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
+ALTER TABLE yara_rules        ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
+ALTER TABLE xdr_sources       ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
+CREATE INDEX IF NOT EXISTS idx_agents_tenant        ON agents(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_suppression_tenant   ON suppression_rules(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_yara_rules_tenant    ON yara_rules(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_xdr_sources_tenant   ON xdr_sources(tenant_id);
+`,
+	},
+	{
+		name: "threshold_windows",
+		sql: `
+CREATE TABLE IF NOT EXISTS threshold_windows (
+    rule_id   TEXT        NOT NULL,
+    group_val TEXT        NOT NULL,
+    event_ts  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_tw_lookup
+    ON threshold_windows(rule_id, group_val, event_ts);
+`,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.

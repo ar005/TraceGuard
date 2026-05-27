@@ -470,6 +470,21 @@ func main() {
 
 		ingestSink = natsbus.NewSink(natsBus)
 		logger.Info().Str("url", cfg.NATS.URL).Msg("XDR pipeline enabled (NATS JetStream)")
+
+		// Multi-node: use PG-backed threshold windows so events across nodes share state.
+		engine.SetDistributed(true)
+		logger.Info().Msg("distributed threshold windows enabled (PostgreSQL-backed)")
+
+		// Prune stale PG threshold rows every 5 minutes (longest realistic window).
+		go func() {
+			t := time.NewTicker(5 * time.Minute)
+			defer t.Stop()
+			for range t.C {
+				if err := st.PruneThresholdWindows(ctx, time.Hour); err != nil {
+					logger.Warn().Err(err).Msg("prune threshold_windows failed")
+				}
+			}
+		}()
 	} else {
 		logger.Info().Msg("XDR pipeline disabled — running inline detection (EDR mode)")
 	}
@@ -574,7 +589,7 @@ func main() {
 		CertFile: cfg.Server.TLS.CertFile,
 		KeyFile:  cfg.Server.TLS.KeyFile,
 		CAFile:   cfg.Server.TLS.CAFile,
-	})
+	}, cfg.Auth.APIKey)
 	go func() {
 		if err := grpcServer.Listen(cfg.Server.GRPCAddr); err != nil {
 			logger.Fatal().Err(err).Msg("gRPC server failed")
@@ -669,7 +684,7 @@ func main() {
 				logger.Warn().Err(err).Msg("stale agent sweep failed")
 			}
 			// Update Prometheus agent gauges.
-			if agents, err := st.ListAgents(context.Background()); err == nil {
+			if agents, err := st.ListAgents(context.Background(), "default"); err == nil {
 				metrics.AgentsTotal.Set(float64(len(agents)))
 				online := 0
 				for _, a := range agents {

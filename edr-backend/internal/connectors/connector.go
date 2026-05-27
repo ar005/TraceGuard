@@ -152,7 +152,7 @@ func (r *Registry) StopAll() {
 
 // LoadAndStart reads all enabled sources from the DB, builds connectors, and starts them.
 func (r *Registry) LoadAndStart(ctx context.Context) error {
-	sources, err := r.store.ListSources(ctx)
+	sources, err := r.store.ListSources(ctx, "default")
 	if err != nil {
 		return fmt.Errorf("load sources: %w", err)
 	}

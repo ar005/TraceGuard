@@ -111,7 +111,7 @@ func AgentBelongsToGroup(agent *models.Agent, group *models.AgentGroup) bool {
 
 // ListGroupsForAgent returns all group IDs the agent belongs to within a tenant.
 func (s *Store) ListGroupsForAgent(ctx context.Context, agentID, tenantID string) ([]string, error) {
-	agent, err := s.GetAgent(ctx, agentID)
+	agent, err := s.GetAgent(ctx, agentID, "default")
 	if err != nil {
 		return nil, err
 	}

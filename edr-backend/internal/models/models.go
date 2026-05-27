@@ -28,6 +28,7 @@ type Agent struct {
 	Notes          string          `db:"notes"            json:"notes"`
 	WinEventConfig     json.RawMessage `db:"winevent_config"      json:"winevent_config,omitempty"`
 	FleetMonitorConfig json.RawMessage `db:"fleet_monitor_config" json:"fleet_monitor_config,omitempty"`
+	TenantID           string          `db:"tenant_id"            json:"tenant_id,omitempty"`
 	RiskScore          int16           `db:"risk_score"           json:"risk_score"`
 	RiskFactors        json.RawMessage `db:"risk_factors"         json:"risk_factors,omitempty"`
 	RiskUpdatedAt      *time.Time      `db:"risk_updated_at"      json:"risk_updated_at,omitempty"`
@@ -174,6 +175,7 @@ type SuppressionRule struct {
 	Author      string          `db:"author"      json:"author"`
 	HitCount    int64           `db:"hit_count"   json:"hit_count"`
 	LastHitAt   *time.Time      `db:"last_hit_at" json:"last_hit_at,omitempty"`
+	TenantID    string          `db:"tenant_id"   json:"tenant_id,omitempty"`
 }
 
 // Incident groups related alerts into a single investigation unit.
@@ -274,6 +276,7 @@ type YARARule struct {
 	Author      string         `db:"author"      json:"author"`
 	CreatedAt   time.Time      `db:"created_at"  json:"created_at"`
 	UpdatedAt   time.Time      `db:"updated_at"  json:"updated_at"`
+	TenantID    string         `db:"tenant_id"   json:"tenant_id,omitempty"`
 }
 
 // IOCStats holds IOC counts by type.
@@ -396,6 +399,7 @@ type XdrSource struct {
 	ErrorState  string          `db:"error_state"  json:"error_state"`
 	CreatedAt   time.Time       `db:"created_at"   json:"created_at"`
 	UpdatedAt   time.Time       `db:"updated_at"   json:"updated_at"`
+	TenantID    string          `db:"tenant_id"    json:"tenant_id,omitempty"`
 }
 
 

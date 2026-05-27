@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strings"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -72,6 +73,13 @@ type Server struct {
 	taxiiPoller  TAXIIPoller        // optional — nil if TAXII disabled
 	huntScheduler HuntSchedulerRunner // optional — nil if not configured
 	tipMgr        TIPManager          // optional — nil if not configured
+	loginAttempts sync.Map            // map[username]*loginAttemptEntry
+}
+
+type loginAttemptEntry struct {
+	mu          sync.Mutex
+	count       int
+	lockedUntil time.Time
 }
 
 // TIPManager manages bi-directional MISP sync.
@@ -847,12 +855,38 @@ func (s *Server) handleLogin(c *gin.Context) {
 		return
 	}
 
+	// Account lockout: check per-username failed-attempt counter.
+	raw, _ := s.loginAttempts.LoadOrStore(body.Username, &loginAttemptEntry{})
+	entry := raw.(*loginAttemptEntry)
+	entry.mu.Lock()
+	if time.Now().Before(entry.lockedUntil) {
+		remaining := time.Until(entry.lockedUntil).Round(time.Second)
+		entry.mu.Unlock()
+		s.al.Log(c.Request.Context(), "", body.Username, "login_locked", "user", "", body.Username, c.ClientIP(), "account locked")
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": fmt.Sprintf("account locked; try again in %v", remaining)})
+		return
+	}
+	entry.mu.Unlock()
+
 	u, token, err := s.um.Authenticate(c.Request.Context(), body.Username, body.Password)
 	if err != nil {
+		entry.mu.Lock()
+		entry.count++
+		if entry.count >= 10 {
+			entry.lockedUntil = time.Now().Add(15 * time.Minute)
+			entry.count = 0
+		}
+		entry.mu.Unlock()
 		s.al.Log(c.Request.Context(), "", body.Username, "login_fail", "user", "", body.Username, c.ClientIP(), err.Error())
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
+
+	// Successful auth — clear failed-attempt counter.
+	entry.mu.Lock()
+	entry.count = 0
+	entry.lockedUntil = time.Time{}
+	entry.mu.Unlock()
 
 	// If TOTP is enabled, don't issue a full token yet — require TOTP step.
 	if u.TOTPEnabled {
@@ -1266,7 +1300,7 @@ func (s *Server) handleHealth(c *gin.Context) {
 }
 
 func (s *Server) handleMetrics(c *gin.Context) {
-	agents, _ := s.store.ListAgents(c.Request.Context())
+	agents, _ := s.store.ListAgents(c.Request.Context(), "default")
 	online := 0
 	for _, a := range agents {
 		if a.IsOnline {
@@ -1357,7 +1391,7 @@ func (s *Server) handleDashboard(c *gin.Context) {
 	sinceDur := parseDashRange(c.Query("range"))
 	sinceTime := time.Now().Add(-sinceDur)
 
-	agents, _ := s.store.ListAgents(ctx)
+	agents, _ := s.store.ListAgents(ctx, "default")
 	online := 0
 	for _, a := range agents {
 		if a.IsOnline {
@@ -1381,7 +1415,7 @@ func (s *Server) handleDashboard(c *gin.Context) {
 	openCount := alertStats["OPEN"]
 
 	// XDR summary — non-fatal; zero values if tables empty.
-	sources, _     := s.store.ListSources(ctx)
+	sources, _     := s.store.ListSources(ctx, "default")
 	sourcesOnline  := 0
 	for _, src := range sources {
 		if src.ErrorState == "" && src.LastSeenAt != nil {
@@ -1429,7 +1463,7 @@ func parseDashRange(r string) time.Duration {
 // ─── Agents ───────────────────────────────────────────────────────────────────
 
 func (s *Server) handleListAgents(c *gin.Context) {
-	agents, err := s.store.ListAgents(c.Request.Context())
+	agents, err := s.store.ListAgents(c.Request.Context(), c.GetString("tenant_id"))
 	if err != nil {
 		s.jsonError(c, err)
 		return
@@ -1438,7 +1472,7 @@ func (s *Server) handleListAgents(c *gin.Context) {
 }
 
 func (s *Server) handleGetAgent(c *gin.Context) {
-	agent, err := s.store.GetAgent(c.Request.Context(), c.Param("id"))
+	agent, err := s.store.GetAgent(c.Request.Context(), c.Param("id"), c.GetString("tenant_id"))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "agent not found"})
@@ -1589,7 +1623,7 @@ func (s *Server) handlePushGroupFleetConfig(c *gin.Context) {
 		s.jsonError(c, err)
 		return
 	}
-	agents, err := s.store.ListAgents(c.Request.Context())
+	agents, err := s.store.ListAgents(c.Request.Context(), "default")
 	if err != nil {
 		s.jsonError(c, err)
 		return
@@ -1960,7 +1994,7 @@ func (s *Server) handleCreateSuppression(c *gin.Context) {
 
 // PUT /api/v1/suppressions/:id
 func (s *Server) handleUpdateSuppression(c *gin.Context) {
-	existing, err := s.store.GetSuppression(c.Request.Context(), c.Param("id"))
+	existing, err := s.store.GetSuppression(c.Request.Context(), c.Param("id"), c.GetString("tenant_id"))
 	if err != nil {
 		s.jsonError(c, err)
 		return
@@ -2000,7 +2034,7 @@ func (s *Server) handleUpdateSuppression(c *gin.Context) {
 
 // DELETE /api/v1/suppressions/:id
 func (s *Server) handleDeleteSuppression(c *gin.Context) {
-	if err := s.store.DeleteSuppression(c.Request.Context(), c.Param("id")); err != nil {
+	if err := s.store.DeleteSuppression(c.Request.Context(), c.Param("id"), c.GetString("tenant_id")); err != nil {
 		s.jsonError(c, err)
 		return
 	}
@@ -2016,7 +2050,7 @@ func (s *Server) handleDeleteSuppression(c *gin.Context) {
 // match count, match rate, and up to 5 sample matches.
 func (s *Server) handleBacktestRule(c *gin.Context) {
 	ctx := c.Request.Context()
-	rule, err := s.store.GetRule(ctx, c.Param("id"))
+	rule, err := s.store.GetRule(ctx, c.Param("id"), c.GetString("tenant_id"))
 	if err != nil {
 		s.jsonError(c, err)
 		return
@@ -2474,7 +2508,7 @@ func (s *Server) handleUpdateYARARule(c *gin.Context) {
 }
 
 func (s *Server) handleDeleteYARARule(c *gin.Context) {
-	if err := s.store.DeleteYARARule(c.Request.Context(), c.Param("id")); err != nil {
+	if err := s.store.DeleteYARARule(c.Request.Context(), c.Param("id"), c.GetString("tenant_id")); err != nil {
 		s.jsonError(c, err)
 		return
 	}
@@ -2493,7 +2527,7 @@ func (s *Server) handleListRules(c *gin.Context) {
 }
 
 func (s *Server) handleGetRule(c *gin.Context) {
-	rule, err := s.store.GetRule(c.Request.Context(), c.Param("id"))
+	rule, err := s.store.GetRule(c.Request.Context(), c.Param("id"), c.GetString("tenant_id"))
 	if err != nil {
 		s.jsonError(c, err)
 		return
@@ -2588,7 +2622,7 @@ func (s *Server) handleCreateRule(c *gin.Context) {
 }
 
 func (s *Server) handleUpdateRule(c *gin.Context) {
-	existing, err := s.store.GetRule(c.Request.Context(), c.Param("id"))
+	existing, err := s.store.GetRule(c.Request.Context(), c.Param("id"), c.GetString("tenant_id"))
 	if err != nil {
 		s.jsonError(c, err)
 		return
@@ -3242,7 +3276,7 @@ func (s *Server) handleListIOCs(c *gin.Context) {
 	limit := intQuery(c, "limit", 100)
 	offset := intQuery(c, "offset", 0)
 
-	iocs, err := s.store.ListIOCs(c.Request.Context(), iocType, source, search, enabledOnly, limit, offset)
+	iocs, err := s.store.ListIOCs(c.Request.Context(), c.GetString("tenant_id"), iocType, source, search, enabledOnly, limit, offset)
 	if err != nil {
 		s.jsonError(c, err)
 		return
@@ -3462,7 +3496,7 @@ func (s *Server) handleBulkRetireIOCs(c *gin.Context) {
 // DELETE /api/v1/iocs/:id
 func (s *Server) handleDeleteIOC(c *gin.Context) {
 	id := c.Param("id")
-	if err := s.store.DeleteIOC(c.Request.Context(), id); err != nil {
+	if err := s.store.DeleteIOC(c.Request.Context(), id, c.GetString("tenant_id")); err != nil {
 		s.jsonError(c, err)
 		return
 	}

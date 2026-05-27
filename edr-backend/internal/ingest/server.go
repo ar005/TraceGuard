@@ -17,11 +17,16 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"strings"
+
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
 
 	"github.com/youredr/edr-backend/internal/chainid"
 	"github.com/youredr/edr-backend/internal/configver"
@@ -80,7 +85,7 @@ type TLSConfig struct {
 // New creates an ingest Server.
 // Pass a non-nil sink to enable XDR pipeline mode (detection via NATS worker).
 // Pass nil to keep inline detection (default EDR single-node mode).
-func New(st *store.Store, eng *detection.Engine, sb *sse.Broker, lr *liveresponse.Manager, sink EventSink, log zerolog.Logger, tls TLSConfig) *Server {
+func New(st *store.Store, eng *detection.Engine, sb *sse.Broker, lr *liveresponse.Manager, sink EventSink, log zerolog.Logger, tls TLSConfig, agentAPIKey string) *Server {
 	s := &Server{
 		store:     st,
 		engine:    eng,
@@ -106,7 +111,8 @@ func New(st *store.Store, eng *detection.Engine, sb *sse.Broker, lr *liverespons
 		}),
 		grpc.MaxRecvMsgSize(8 * 1024 * 1024), // 8 MB
 		grpc.MaxSendMsgSize(1 * 1024 * 1024), // 1 MB
-		grpc.ChainUnaryInterceptor(loggingInterceptor(log)),
+		grpc.ChainUnaryInterceptor(agentAuthUnaryInterceptor(agentAPIKey, log), loggingInterceptor(log)),
+		grpc.ChainStreamInterceptor(agentAuthStreamInterceptor(agentAPIKey, log)),
 	}
 	if tls.Enabled {
 		creds, err := loadServerTLS(tls.CertFile, tls.KeyFile, tls.CAFile, log)
@@ -538,6 +544,49 @@ func (s *Server) processPackageInventory(ctx context.Context, agentID string, pa
 }
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
+
+// agentAuthUnaryInterceptor rejects unary RPCs whose Authorization header
+// does not match the configured agentAPIKey. No-op when key is empty.
+func agentAuthUnaryInterceptor(agentAPIKey string, log zerolog.Logger) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+		if agentAPIKey == "" {
+			return handler(ctx, req)
+		}
+		md, ok := metadata.FromIncomingContext(ctx)
+		if !ok {
+			log.Warn().Str("method", info.FullMethod).Msg("gRPC agent auth: missing metadata")
+			return nil, status.Error(codes.Unauthenticated, "missing authorization metadata")
+		}
+		vals := md.Get("authorization")
+		if len(vals) == 0 || !strings.EqualFold(strings.TrimPrefix(vals[0], "Bearer "), agentAPIKey) {
+			log.Warn().Str("method", info.FullMethod).Msg("gRPC agent auth: invalid key")
+			return nil, status.Error(codes.Unauthenticated, "invalid agent API key")
+		}
+		return handler(ctx, req)
+	}
+}
+
+// agentAuthStreamInterceptor rejects streaming RPCs whose Authorization header
+// does not match the configured agentAPIKey. When agentAPIKey is empty, the
+// check is skipped (backward-compatible for deployments without a key set).
+func agentAuthStreamInterceptor(agentAPIKey string, log zerolog.Logger) grpc.StreamServerInterceptor {
+	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		if agentAPIKey == "" {
+			return handler(srv, ss)
+		}
+		md, ok := metadata.FromIncomingContext(ss.Context())
+		if !ok {
+			log.Warn().Str("method", info.FullMethod).Msg("gRPC agent auth: missing metadata")
+			return status.Error(codes.Unauthenticated, "missing authorization metadata")
+		}
+		vals := md.Get("authorization")
+		if len(vals) == 0 || !strings.EqualFold(strings.TrimPrefix(vals[0], "Bearer "), agentAPIKey) {
+			log.Warn().Str("method", info.FullMethod).Msg("gRPC agent auth: invalid key")
+			return status.Error(codes.Unauthenticated, "invalid agent API key")
+		}
+		return handler(srv, ss)
+	}
+}
 
 func loggingInterceptor(log zerolog.Logger) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {

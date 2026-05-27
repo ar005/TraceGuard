@@ -73,6 +73,15 @@ type Engine struct {
 	// seqStates tracks per-(rule, chain) progress through sequence steps.
 	seqMu     sync.Mutex
 	seqStates map[seqStateKey]*chainSeqState
+
+	// Incremental reload tracking: skip full DB fetch when rules haven't changed.
+	lastLoadAt    time.Time
+	lastRuleCount int
+
+	// distributed, when true, stores threshold window state in PostgreSQL instead of
+	// the in-process sync.Map. Required for multi-node (NATS-enabled) deployments so
+	// that events spread across nodes still trip thresholds correctly.
+	distributed bool
 }
 
 // dedupEntry wraps a per-(rule,agent) mutex with an access timestamp for eviction.
@@ -138,8 +147,27 @@ func (e *Engine) SetAutoResponder(lr *liveresponse.Manager) {
 	e.lr = lr
 }
 
+// SetDistributed switches threshold window storage between in-process memory (default)
+// and PostgreSQL. Enable when running multiple backend nodes behind NATS so that events
+// spread across nodes still accumulate against a shared counter.
+func (e *Engine) SetDistributed(distributed bool) {
+	e.distributed = distributed
+}
+
 // Reload refreshes the rule and suppression cache from the database.
+// Uses a fast COUNT+MAX(updated_at) check to skip the full fetch when nothing changed.
 func (e *Engine) Reload(ctx context.Context) error {
+	if !e.lastLoadAt.IsZero() {
+		changed, _, err := e.store.RulesChangedSince(ctx, e.lastLoadAt, e.lastRuleCount)
+		if err != nil {
+			e.log.Warn().Err(err).Msg("rules change-check failed — forcing full reload")
+		} else if !changed {
+			e.log.Debug().Int("rules", e.lastRuleCount).Msg("rules unchanged — skipping reload")
+			return nil
+		}
+	}
+
+	loadedAt := time.Now()
 	rules, err := e.store.ListRules(ctx, "") // "" = all tenants; engine matches per-event tenant at runtime
 	if err != nil {
 		return fmt.Errorf("load rules: %w", err)
@@ -153,6 +181,10 @@ func (e *Engine) Reload(ctx context.Context) error {
 	e.rules = rules
 	e.suppressions = sups
 	e.mu.Unlock()
+
+	e.lastLoadAt = loadedAt
+	e.lastRuleCount = len(rules)
+
 	e.log.Info().Int("rules", len(rules)).Int("suppressions", len(sups)).Msg("rules loaded")
 	return nil
 }
@@ -318,18 +350,25 @@ func (e *Engine) evaluateThreshold(ctx context.Context, ev *models.Event, rule *
 		return
 	}
 
-	// Resolve the group-by key value from the event payload or base fields.
 	groupVal := e.resolveGroupKey(ev, payload, rule.GroupBy)
-	key := windowKey{ruleID: rule.ID, groupVal: groupVal}
 	window := time.Duration(rule.ThresholdWindowS) * time.Second
+
+	if e.distributed {
+		e.evaluateThresholdPG(ctx, ev, rule, groupVal, window)
+	} else {
+		e.evaluateThresholdMem(ctx, ev, rule, groupVal, window)
+	}
+}
+
+// evaluateThresholdMem is the single-node in-process threshold path.
+func (e *Engine) evaluateThresholdMem(ctx context.Context, ev *models.Event, rule *models.Rule, groupVal string, window time.Duration) {
+	key := windowKey{ruleID: rule.ID, groupVal: groupVal}
 	now := time.Now()
 	cutoff := now.Add(-window)
 
 	e.winMu.Lock()
-	// Append this event's timestamp.
 	ts := e.windows[key]
 	ts = append(ts, now)
-	// Prune entries outside the window (sliding window eviction).
 	start := 0
 	for start < len(ts) && ts[start].Before(cutoff) {
 		start++
@@ -348,13 +387,11 @@ func (e *Engine) evaluateThreshold(ctx context.Context, ev *models.Event, rule *
 		Msg("threshold window tick")
 
 	if count >= rule.ThresholdCount {
-		// Reset window so we don't fire on every subsequent event.
 		e.winMu.Lock()
 		delete(e.windows, key)
 		e.winMu.Unlock()
 
-		// Build a synthetic event with threshold context for the alert.
-		thresholdEv := *ev // copy
+		thresholdEv := *ev
 		e.log.Warn().
 			Str("rule", rule.Name).
 			Str("group_by", rule.GroupBy).
@@ -363,6 +400,51 @@ func (e *Engine) evaluateThreshold(ctx context.Context, ev *models.Event, rule *
 			Int("window_s", rule.ThresholdWindowS).
 			Str("agent", ev.Hostname).
 			Msg("threshold rule fired")
+		e.fireAlertWithContext(ctx, &thresholdEv, rule,
+			fmt.Sprintf("%d events in %ds (group: %s=%s)", count, rule.ThresholdWindowS, rule.GroupBy, groupVal))
+	}
+}
+
+// evaluateThresholdPG is the distributed multi-node threshold path backed by PostgreSQL.
+// All nodes write to and read from the shared threshold_windows table, so events
+// spread across nodes still accumulate against the same counter.
+func (e *Engine) evaluateThresholdPG(ctx context.Context, ev *models.Event, rule *models.Rule, groupVal string, window time.Duration) {
+	if err := e.store.AddThresholdEvent(ctx, rule.ID, groupVal); err != nil {
+		e.log.Warn().Err(err).Str("rule", rule.ID).Msg("threshold: failed to record event in PG — falling back to memory")
+		e.evaluateThresholdMem(ctx, ev, rule, groupVal, window)
+		return
+	}
+
+	count, err := e.store.CountThresholdWindow(ctx, rule.ID, groupVal, window)
+	if err != nil {
+		e.log.Warn().Err(err).Str("rule", rule.ID).Msg("threshold: failed to count PG window")
+		return
+	}
+
+	e.log.Debug().
+		Str("rule", rule.Name).
+		Str("group", groupVal).
+		Int("count", count).
+		Int("threshold", rule.ThresholdCount).
+		Int("window_s", rule.ThresholdWindowS).
+		Msg("threshold window tick (distributed)")
+
+	if count >= rule.ThresholdCount {
+		// Delete before firing to minimise the chance of a second node racing to fire
+		// the same threshold in the brief window between count and delete.
+		if err := e.store.ResetThresholdWindow(ctx, rule.ID, groupVal); err != nil {
+			e.log.Warn().Err(err).Str("rule", rule.ID).Msg("threshold: failed to reset PG window")
+		}
+
+		thresholdEv := *ev
+		e.log.Warn().
+			Str("rule", rule.Name).
+			Str("group_by", rule.GroupBy).
+			Str("group_val", groupVal).
+			Int("count", count).
+			Int("window_s", rule.ThresholdWindowS).
+			Str("agent", ev.Hostname).
+			Msg("threshold rule fired (distributed)")
 		e.fireAlertWithContext(ctx, &thresholdEv, rule,
 			fmt.Sprintf("%d events in %ds (group: %s=%s)", count, rule.ThresholdWindowS, rule.GroupBy, groupVal))
 	}

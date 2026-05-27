@@ -13,24 +13,33 @@ import (
 	"github.com/youredr/edr-backend/internal/models"
 )
 
-// ListSources returns all xdr_sources rows ordered by name.
-func (s *Store) ListSources(ctx context.Context) ([]models.XdrSource, error) {
+// ListSources returns xdr_sources rows visible to tenantID, ordered by name.
+func (s *Store) ListSources(ctx context.Context, tenantID string) ([]models.XdrSource, error) {
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	var rows []models.XdrSource
 	err := s.rdb().SelectContext(ctx, &rows, `
 		SELECT id, name, source_type, connector, config, enabled,
-		       last_seen_at, events_today, error_state, created_at, updated_at
+		       last_seen_at, events_today, error_state, tenant_id, created_at, updated_at
 		FROM xdr_sources
-		ORDER BY name`)
+		WHERE (tenant_id=$1 OR tenant_id='default' OR $1='default')
+		ORDER BY name`, tenantID)
 	return rows, err
 }
 
-// GetSource returns one xdr_sources row by ID.
-func (s *Store) GetSource(ctx context.Context, id string) (*models.XdrSource, error) {
+// GetSource returns one xdr_sources row by ID, scoped to tenantID.
+func (s *Store) GetSource(ctx context.Context, id, tenantID string) (*models.XdrSource, error) {
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	var row models.XdrSource
 	err := s.rdb().GetContext(ctx, &row, `
 		SELECT id, name, source_type, connector, config, enabled,
-		       last_seen_at, events_today, error_state, created_at, updated_at
-		FROM xdr_sources WHERE id = $1`, id)
+		       last_seen_at, events_today, error_state, tenant_id, created_at, updated_at
+		FROM xdr_sources WHERE id = $1
+		  AND (tenant_id=$2 OR tenant_id='default' OR $2='default')`,
+		id, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -42,15 +51,18 @@ func (s *Store) CreateSource(ctx context.Context, in *models.XdrSource) (*models
 	if in.ID == "" {
 		in.ID = uuid.New().String()
 	}
+	if in.TenantID == "" {
+		in.TenantID = "default"
+	}
 	now := time.Now()
 	in.CreatedAt = now
 	in.UpdatedAt = now
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO xdr_sources (id, name, source_type, connector, config, enabled,
-		                         error_state, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		                         error_state, tenant_id, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 		in.ID, in.Name, in.SourceType, in.Connector, in.Config,
-		in.Enabled, in.ErrorState, in.CreatedAt, in.UpdatedAt)
+		in.Enabled, in.ErrorState, in.TenantID, in.CreatedAt, in.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create source: %w", err)
 	}
@@ -70,9 +82,14 @@ func (s *Store) UpdateSource(ctx context.Context, in *models.XdrSource) error {
 	return err
 }
 
-// DeleteSource removes an xdr_sources row.
-func (s *Store) DeleteSource(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM xdr_sources WHERE id = $1`, id)
+// DeleteSource removes an xdr_sources row scoped to tenantID.
+func (s *Store) DeleteSource(ctx context.Context, id, tenantID string) error {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM xdr_sources WHERE id = $1 AND (tenant_id=$2 OR tenant_id='default' OR $2='default')`,
+		id, tenantID)
 	return err
 }
 

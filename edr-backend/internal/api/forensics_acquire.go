@@ -85,7 +85,7 @@ func (s *Server) handleCreateForensicsJob(c *gin.Context) {
 
 	// Resolve hostname from agent record (best-effort).
 	hostname := ""
-	if ag, err := s.store.GetAgent(c.Request.Context(), agentID); err == nil {
+	if ag, err := s.store.GetAgent(c.Request.Context(), agentID, tid); err == nil {
 		hostname = ag.Hostname
 	}
 
