@@ -148,16 +148,18 @@ func (s *Server) handleWebhookIngest(c *gin.Context) {
 		return
 	}
 
-	// Verify HMAC if secret is configured.
+	// HMAC-SHA256 verification is mandatory — reject if secret is not configured.
 	var cfg struct {
 		Secret string `json:"secret"`
 	}
-	if json.Unmarshal(src.Config, &cfg) == nil && cfg.Secret != "" {
-		sig := c.GetHeader("X-Webhook-Signature")
-		if !verifyHMACSignature(body, cfg.Secret, sig) {
-			c.Status(http.StatusUnauthorized)
-			return
-		}
+	if json.Unmarshal(src.Config, &cfg) != nil || cfg.Secret == "" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "webhook source must have a secret configured"})
+		return
+	}
+	sig := c.GetHeader("X-Webhook-Signature")
+	if !verifyHMACSignature(body, cfg.Secret, sig) {
+		c.Status(http.StatusUnauthorized)
+		return
 	}
 
 	// Touch stats regardless of pipeline availability.

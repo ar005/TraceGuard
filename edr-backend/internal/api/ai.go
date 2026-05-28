@@ -4,6 +4,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/youredr/edr-backend/internal/llm"
@@ -57,8 +58,21 @@ func (s *Server) handleGenerateHuntQuery(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "description required"})
 		return
 	}
+	const maxDescBytes = 2 * 1024
+	if len(body.Description) > maxDescBytes {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "description exceeds 2 KB limit"})
+		return
+	}
+	// Strip control characters to limit prompt-injection surface.
+	var sb strings.Builder
+	for _, r := range body.Description {
+		if r >= 0x20 || r == '\t' {
+			sb.WriteRune(r)
+		}
+	}
+	description := sb.String()
 
-	result, err := s.llm.GenerateHuntQuery(c.Request.Context(), body.Description)
+	result, err := s.llm.GenerateHuntQuery(c.Request.Context(), description)
 	if err != nil {
 		s.log.Warn().Err(err).Msg("LLM hunt generate failed")
 		c.JSON(http.StatusBadGateway, gin.H{"error": "LLM request failed: " + err.Error()})
@@ -85,6 +99,18 @@ func (s *Server) handleAlertChat(c *gin.Context) {
 	if err := c.ShouldBindJSON(&body); err != nil || len(body.Messages) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "messages required"})
 		return
+	}
+	const maxMessages = 50
+	const maxMsgBytes = 8 * 1024
+	if len(body.Messages) > maxMessages {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "too many messages (max 50)"})
+		return
+	}
+	for _, m := range body.Messages {
+		if len(m.Content) > maxMsgBytes {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "message content exceeds 8 KB limit"})
+			return
+		}
 	}
 	ctx := c.Request.Context()
 	tid := c.GetString("tenant_id")

@@ -11,7 +11,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -289,7 +291,6 @@ func (s *Server) registerRoutes() {
 
 		// Settings (read)
 		v1.GET("/settings/retention",   s.handleGetRetention)
-		v1.GET("/settings/llm",         s.handleGetLLMSettings)
 		v1.GET("/settings/enrichment",  s.handleGetEnrichmentSettings)
 		v1.GET("/alerts/:id/enrichments", s.handleGetAlertEnrichments)
 
@@ -301,7 +302,7 @@ func (s *Server) registerRoutes() {
 		// Admin-only live-response & pending-command routes
 		v1.POST("/liveresponse/command",      s.adminOnly(), s.handleLRCommand)
 		v1.POST("/pending-commands",          s.adminOnly(), s.handleCreatePendingCommand)
-		v1.GET("/pending-commands/:agent_id", s.handleListPendingCommands)
+		v1.GET("/pending-commands/:agent_id", s.adminOnly(), s.handleListPendingCommands)
 		v1.DELETE("/pending-commands/:id",    s.adminOnly(), s.handleCancelPendingCommand)
 
 		// Agent containment audit log
@@ -375,6 +376,7 @@ func (s *Server) registerRoutes() {
 			w.PUT("/yara/rules/:id",    s.handleUpdateYARARule)
 			w.DELETE("/yara/rules/:id", s.handleDeleteYARARule)
 
+			w.GET("/settings/llm",          s.handleGetLLMSettings)
 			w.POST("/settings/retention",   s.handleSetRetention)
 			w.POST("/settings/llm",         s.handleSetLLMSettings)
 			w.POST("/settings/llm/test",    s.handleTestLLM)
@@ -405,7 +407,7 @@ func (s *Server) registerRoutes() {
 			sw.DELETE("/:id", s.handleDeleteSource)
 		}
 
-		v1.POST("/ingest/webhook/:source_id", s.handleWebhookIngest)
+		// Webhook ingest is registered outside the auth group (see below).
 
 		// XDR Identity graph
 		v1.GET("/identity",                    s.handleListIdentities)
@@ -597,7 +599,7 @@ func (s *Server) registerRoutes() {
 		v1.POST("/agents/:id/tasks",             s.adminOnly(), s.handleCreateAgentTask)
 		v1.PUT("/agents/:id/tasks/:tid",         s.adminOnly(), s.handleUpdateAgentTask)
 		v1.DELETE("/agents/:id/tasks/:tid",      s.adminOnly(), s.handleDeleteAgentTask)
-		v1.POST("/agents/:id/tasks/:tid/run",    s.handleRunAgentTask)
+		v1.POST("/agents/:id/tasks/:tid/run",    s.adminOnly(), s.handleRunAgentTask)
 
 		// Global task views (across all agents)
 		v1.GET("/tasks",         s.handleListAllTasks)
@@ -612,6 +614,9 @@ func (s *Server) registerRoutes() {
 
 	// Canary trigger webhook — NO auth (honeypot callback)
 	r.POST("/api/canary/trigger/:token", s.handleCanaryTrigger)
+
+	// Webhook ingest — unauthenticated; HMAC-SHA256 required (enforced in handler).
+	r.POST("/api/v1/ingest/webhook/:source_id", s.handleWebhookIngest)
 
 	// Admin-only user management + audit log
 	adm := r.Group("/api/v1/admin", s.authMiddleware(), s.adminOnly())
@@ -661,6 +666,20 @@ func (s *Server) Handler() http.Handler { return s.router }
 
 const authCookieName = "edr_session"
 
+// sanitizeFilename strips characters that could break a Content-Disposition header value.
+func sanitizeFilename(name string) string {
+	var out []byte
+	for i := 0; i < len(name); i++ {
+		switch name[i] {
+		case '"', '\\', '\r', '\n', '/':
+			// drop
+		default:
+			out = append(out, name[i])
+		}
+	}
+	return string(out)
+}
+
 // setAuthCookie writes the JWT as an httpOnly, SameSite=Strict cookie.
 func setAuthCookie(c *gin.Context, token string) {
 	secure := c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https"
@@ -679,8 +698,9 @@ func clearAuthCookie(c *gin.Context) {
 type ctxKey string
 
 const (
-	ctxClaims ctxKey = "claims"
-	ctxApiKey ctxKey = "apikey"
+	ctxClaims    ctxKey = "claims"
+	ctxApiKey    ctxKey = "apikey"
+	ctxLegacyKey ctxKey = "legacy_key"
 )
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
@@ -739,6 +759,7 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 
 		// ── Legacy plain-text key from config ──────────────────────────────
 		if s.apiKey != "" && raw == s.apiKey {
+			c.Set(string(ctxLegacyKey), true)
 			c.Next()
 			return
 		}
@@ -767,8 +788,7 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 	}
 }
 
-// adminOnly blocks non-admin JWT callers. API key callers are treated as admin
-// for backward compatibility (keys are managed by admins anyway).
+// adminOnly blocks non-admin callers.
 func (s *Server) adminOnly() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// JWT auth: enforce admin role.
@@ -783,7 +803,7 @@ func (s *Server) adminOnly() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		// API key auth: check key's role field.
+		// Named API key: check key's role field.
 		if raw, exists := c.Get(string(ctxApiKey)); exists {
 			if key, ok := raw.(*apikeys.Key); ok && key.Role != users.RoleAdmin {
 				c.AbortWithStatusJSON(http.StatusForbidden,
@@ -793,8 +813,13 @@ func (s *Server) adminOnly() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		// Legacy single-key fallback — treated as admin (backwards compat).
-		c.Next()
+		// Legacy plain-text key — treated as admin (backwards compat, key is admin-managed).
+		if _, exists := c.Get(string(ctxLegacyKey)); exists {
+			c.Next()
+			return
+		}
+		// Nothing set a recognized auth context — deny.
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "admin role required"})
 	}
 }
 
@@ -1004,10 +1029,7 @@ func (s *Server) handleSetupStatus(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"setup_needed": true})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"setup_needed": len(us) == 0,
-		"user_count":   len(us),
-	})
+	c.JSON(http.StatusOK, gin.H{"setup_needed": len(us) == 0})
 }
 
 // POST /api/v1/setup — no auth required, only works when no users exist.
@@ -1511,7 +1533,7 @@ func (s *Server) handleUpdateAgent(c *gin.Context) {
 		return
 	}
 	if err := s.store.UpdateAgentTags(c.Request.Context(),
-		c.Param("id"), body.Env, body.Notes, body.Tags); err != nil {
+		c.Param("id"), c.GetString("tenant_id"), body.Env, body.Notes, body.Tags); err != nil {
 		s.jsonError(c, err)
 		return
 	}
@@ -1847,10 +1869,20 @@ func (s *Server) handleInjectEvent(c *gin.Context) {
 	if tid == "" { tid = "default" }
 
 	ctx := c.Request.Context()
-	// Auto-create agent record so the FK constraint is satisfied.
-	_, _ = s.store.DB().ExecContext(ctx,
-		`INSERT INTO agents (id, hostname, os, ip) VALUES ($1,$2,'unknown','0.0.0.0') ON CONFLICT (id) DO NOTHING`,
-		agentID, hostname)
+
+	// Only allow injection for agent IDs that actually belong to the caller's tenant.
+	// This prevents ghost agent record creation and cross-tenant event injection.
+	if agentID != "test-injection" {
+		if _, err := s.store.GetAgent(ctx, agentID, tid); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "agent_id not found in caller's tenant"})
+			return
+		}
+	} else {
+		// For the synthetic test-injection agent, ensure the record exists.
+		_, _ = s.store.DB().ExecContext(ctx,
+			`INSERT INTO agents (id, hostname, os, ip, tenant_id) VALUES ($1,$2,'unknown','0.0.0.0',$3) ON CONFLICT (id) DO NOTHING`,
+			agentID, hostname, tid)
+	}
 
 	ev := &models.Event{
 		ID:        "evt-inject-" + uuid.New().String(),
@@ -2061,6 +2093,7 @@ func (s *Server) handleBacktestRule(c *gin.Context) {
 		EventTypes:  []string(rule.EventTypes),
 		Conditions:  rule.Conditions,
 		WindowHours: window,
+		TenantID:    c.GetString("tenant_id"),
 	})
 	if err != nil {
 		s.jsonError(c, err)
@@ -2261,6 +2294,12 @@ func (s *Server) handleCreatePendingCommand(c *gin.Context) {
 // GET /api/v1/pending-commands/:agent_id — list pending commands for an agent.
 func (s *Server) handleListPendingCommands(c *gin.Context) {
 	agentID := c.Param("agent_id")
+	tid := c.GetString("tenant_id")
+	// Verify the agent belongs to the caller's tenant.
+	if _, err := s.store.GetAgent(c.Request.Context(), agentID, tid); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "agent not found"})
+		return
+	}
 	status := c.Query("status") // optional filter
 	cmds, err := s.store.ListPendingCommands(c.Request.Context(), agentID, status)
 	if err != nil {
@@ -2537,6 +2576,30 @@ func (s *Server) handleGetRule(c *gin.Context) {
 
 // validateConditions parses rule conditions and pre-compiles any regex patterns,
 // returning a user-facing error on invalid syntax or oversized patterns.
+// validateFeedURL rejects private/loopback/link-local targets to prevent SSRF.
+func validateFeedURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return fmt.Errorf("URL scheme must be http or https")
+	}
+	host := u.Hostname()
+	blocked := []string{"169.254.169.254", "metadata.google.internal", "fd00:ec2::254"}
+	for _, b := range blocked {
+		if host == b {
+			return fmt.Errorf("URL target is blocked")
+		}
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsMulticast() {
+			return fmt.Errorf("URL must not point to a private/loopback address")
+		}
+	}
+	return nil
+}
+
 func validateConditions(raw json.RawMessage) error {
 	if len(raw) == 0 {
 		return nil
@@ -2840,6 +2903,11 @@ func (s *Server) handleGetProcessTree(c *gin.Context) {
 	agentID := c.Query("agent_id")
 	if agentID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "agent_id is required"})
+		return
+	}
+	// Verify the agent belongs to the caller's tenant.
+	if _, err := s.store.GetAgent(c.Request.Context(), agentID, c.GetString("tenant_id")); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "agent not found"})
 		return
 	}
 	depth := intQuery(c, "depth", 5)
@@ -3571,7 +3639,7 @@ func (s *Server) handleIOCSourceStats(c *gin.Context) {
 // DELETE /api/v1/iocs/source/:source
 func (s *Server) handleDeleteIOCsBySource(c *gin.Context) {
 	source := c.Param("source")
-	count, err := s.store.DeleteIOCsBySource(c.Request.Context(), source)
+	count, err := s.store.DeleteIOCsBySource(c.Request.Context(), source, c.GetString("tenant_id"))
 	if err != nil {
 		s.jsonError(c, err)
 		return
@@ -3847,7 +3915,7 @@ func (s *Server) handleDownloadReport(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
-	filename := fmt.Sprintf("traceguard-%s-%s.csv", r.Type, r.CreatedAt.Format("20060102"))
+	filename := sanitizeFilename(fmt.Sprintf("traceguard-%s-%s.csv", r.Type, r.CreatedAt.Format("20060102")))
 	c.Header("Content-Disposition", `attachment; filename="`+filename+`"`)
 	c.Header("Content-Type", "text/csv")
 	c.String(http.StatusOK, r.Data)
@@ -3971,6 +4039,16 @@ func (s *Server) handleUpsertCustomIOCFeed(c *gin.Context) {
 	if err := c.ShouldBindJSON(&f); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+	// Validate all outbound URLs to prevent SSRF.
+	for _, rawURL := range []string{f.URL, f.TAXIIUrl, f.MISPUrl} {
+		if rawURL == "" {
+			continue
+		}
+		if err := validateFeedURL(rawURL); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid feed URL: " + err.Error()})
+			return
+		}
 	}
 	f.ID = c.Param("id")
 	f.TenantID = tid
@@ -4421,18 +4499,19 @@ func (s *Server) handleDownloadLure(c *gin.Context) {
 	triggerURL := backendURL + "/api/canary/trigger/" + lf.CanaryID
 
 	var content, filename string
+	safeName := sanitizeFilename(lf.Name)
 	switch lf.LureType {
 	case "batch":
-		filename = lf.Name + ".bat"
+		filename = safeName + ".bat"
 		content = "@echo off\r\ncurl -s -o nul \"" + triggerURL + "\"\r\n"
 	case "powershell":
-		filename = lf.Name + ".ps1"
+		filename = safeName + ".ps1"
 		content = "Invoke-WebRequest -Uri '" + triggerURL + "' -UseBasicParsing | Out-Null\r\n"
 	case "python":
-		filename = lf.Name + ".py"
+		filename = safeName + ".py"
 		content = "import urllib.request\nurllib.request.urlopen('" + triggerURL + "')\n"
 	default: // "script"
-		filename = lf.Name + ".sh"
+		filename = safeName + ".sh"
 		content = "#!/bin/sh\ncurl -s \"" + triggerURL + "\" >/dev/null 2>&1\n"
 	}
 

@@ -124,7 +124,7 @@ func (s *Store) GetAgent(ctx context.Context, id, tenantID string) (*models.Agen
 func (s *Store) ListAgents(ctx context.Context, tenantID string) ([]models.Agent, error) {
 	var agents []models.Agent
 	err := s.rdb().SelectContext(ctx, &agents,
-		`SELECT * FROM agents WHERE (tenant_id=$1 OR tenant_id='default' OR $1='default') ORDER BY last_seen DESC`,
+		`SELECT * FROM agents WHERE (tenant_id=$1 OR tenant_id='default' OR $1='default') ORDER BY last_seen DESC LIMIT 10000`,
 		tenantID)
 	return agents, err
 }
@@ -706,6 +706,7 @@ type BacktestParams struct {
 	Conditions  []byte // raw JSON conditions
 	WindowHours int    // how many hours of history to scan
 	Limit       int    // max events to scan
+	TenantID    string // restrict to caller's tenant; empty = all (internal only)
 }
 
 // BacktestRule runs a rule's conditions against recent historical events and
@@ -720,8 +721,9 @@ func (s *Store) BacktestRule(ctx context.Context, p BacktestParams) (int, []mode
 	since := time.Now().Add(-time.Duration(p.WindowHours) * time.Hour)
 
 	params := QueryEventsParams{
-		Since: &since,
-		Limit: p.Limit,
+		Since:    &since,
+		Limit:    p.Limit,
+		TenantID: p.TenantID,
 	}
 	if len(p.EventTypes) > 0 && p.EventTypes[0] != "*" {
 		params.EventTypes = p.EventTypes
@@ -777,10 +779,10 @@ func (s *Store) BumpAlert(ctx context.Context, alertID, eventID string) error {
 }
 
 // UpdateAgentTags sets tags, env, and notes for an agent.
-func (s *Store) UpdateAgentTags(ctx context.Context, id, env, notes string, tags []string) error {
+func (s *Store) UpdateAgentTags(ctx context.Context, id, tenantID, env, notes string, tags []string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE agents SET tags=$2, env=$3, notes=$4 WHERE id=$1`,
-		id, pq.Array(tags), env, notes)
+		`UPDATE agents SET tags=$3, env=$4, notes=$5 WHERE id=$1 AND (tenant_id=$2 OR tenant_id='default' OR $2='default')`,
+		id, tenantID, pq.Array(tags), env, notes)
 	return err
 }
 
@@ -2166,11 +2168,13 @@ func (s *Store) ListIOCs(ctx context.Context, tenantID, iocType, source, search 
 		args = append(args, "%"+search+"%")
 	}
 	q += " ORDER BY created_at DESC"
-	if limit > 0 {
-		n++
-		q += fmt.Sprintf(" LIMIT $%d", n)
-		args = append(args, limit)
+	const maxIOCLimit = 1000
+	if limit <= 0 || limit > maxIOCLimit {
+		limit = maxIOCLimit
 	}
+	n++
+	q += fmt.Sprintf(" LIMIT $%d", n)
+	args = append(args, limit)
 	if offset > 0 {
 		n++
 		q += fmt.Sprintf(" OFFSET $%d", n)
@@ -2422,8 +2426,10 @@ func (s *Store) GetIncidentGraph(ctx context.Context, incidentID, tenantID strin
 	return &IncidentGraph{Nodes: nodes, Edges: edges}, nil
 }
 
-func (s *Store) DeleteIOCsBySource(ctx context.Context, source string) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM iocs WHERE source=$1`, source)
+func (s *Store) DeleteIOCsBySource(ctx context.Context, source, tenantID string) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM iocs WHERE source=$1 AND (tenant_id=$2 OR tenant_id='default' OR $2='default')`,
+		source, tenantID)
 	if err != nil {
 		return 0, err
 	}

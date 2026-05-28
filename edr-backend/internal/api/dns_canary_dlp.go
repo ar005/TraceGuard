@@ -138,8 +138,8 @@ func (s *Server) handleDeleteCanaryToken(c *gin.Context) {
 // handleCanaryTrigger is registered WITHOUT JWT auth. It receives webhook
 // callbacks from deployed canaries.
 func (s *Server) handleCanaryTrigger(c *gin.Context) {
-	// Consume body up to 64 KB and discard — the caller may send context.
-	_, _ = io.LimitReader(c.Request.Body, 64*1024).Read(make([]byte, 64*1024))
+	// Fully drain body up to 64 KB so the TCP connection stays clean.
+	_, _ = io.ReadAll(io.LimitReader(c.Request.Body, 64*1024))
 
 	token := c.Param("token")
 

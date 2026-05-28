@@ -118,13 +118,19 @@ func (s *Server) handleForensicsPending(c *gin.Context) {
 }
 
 // handleForensicsUploadBundle accepts the tar.gz bundle from the agent.
-// Auth: agent API key.
+// Auth: agent API key + X-Agent-ID header must match the job's assigned agent.
 func (s *Server) handleForensicsUploadBundle(c *gin.Context) {
 	jobID := c.Param("id")
 
 	job, err := s.store.GetForensicsJobByID(c.Request.Context(), jobID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
+		return
+	}
+	// Verify the uploading agent owns this job.
+	callerAgentID := c.GetHeader("X-Agent-ID")
+	if callerAgentID == "" || callerAgentID != job.AgentID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "agent not authorized for this job"})
 		return
 	}
 	if job.Status != "collecting" {
@@ -188,7 +194,7 @@ func (s *Server) handleForensicsDownload(c *gin.Context) {
 		return
 	}
 
-	fileName := fmt.Sprintf("forensics-%s-%s.tar.gz", job.Hostname, jobID[:8])
+	fileName := fmt.Sprintf("forensics-%s-%s.tar.gz", sanitizeFilename(job.Hostname), jobID[:8])
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, fileName))
 	c.Header("Content-Type", "application/gzip")
 	c.File(job.BundlePath)

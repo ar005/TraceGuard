@@ -120,16 +120,27 @@ func validateOutboundURL(rawURL string) error {
 		return fmt.Errorf("outbound URL must use https")
 	}
 	host := u.Hostname()
-	if ip := net.ParseIP(host); ip != nil {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsMulticast() {
-			return fmt.Errorf("outbound URL must not point to a private/loopback address")
-		}
-	}
-	// Block common cloud metadata endpoints by hostname
+	// Block common cloud metadata endpoints by hostname.
 	blocked := []string{"169.254.169.254", "metadata.google.internal", "fd00:ec2::254"}
 	for _, b := range blocked {
 		if host == b {
 			return fmt.Errorf("outbound URL target is blocked")
+		}
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if !isAllowedIP(ip) {
+			return fmt.Errorf("outbound URL must not point to a private/loopback address")
+		}
+		return nil
+	}
+	// Resolve hostname to catch DNS rebinding to private ranges.
+	addrs, err := net.LookupHost(host)
+	if err != nil {
+		return fmt.Errorf("cannot resolve host %q: %w", host, err)
+	}
+	for _, addr := range addrs {
+		if ip := net.ParseIP(addr); ip != nil && !isAllowedIP(ip) {
+			return fmt.Errorf("outbound URL resolves to a private/loopback address")
 		}
 	}
 	return nil

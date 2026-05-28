@@ -82,6 +82,10 @@ type Engine struct {
 	// the in-process sync.Map. Required for multi-node (NATS-enabled) deployments so
 	// that events spread across nodes still trip thresholds correctly.
 	distributed bool
+
+	// enrichSem is a counting semaphore that limits concurrent enrichRuleAlert
+	// goroutines to prevent goroutine accumulation at high ingest rates.
+	enrichSem chan struct{}
 }
 
 // dedupEntry wraps a per-(rule,agent) mutex with an access timestamp for eviction.
@@ -102,6 +106,7 @@ func New(st *store.Store, log zerolog.Logger, onAlert AlertCallback) *Engine {
 		iocDomains: make(map[string]*models.IOC),
 		iocHashes:  make(map[string]*models.IOC),
 		seqStates:  make(map[seqStateKey]*chainSeqState),
+		enrichSem:  make(chan struct{}, 200),
 	}
 	// Prune stale windows every 5 minutes to prevent unbounded memory growth.
 	go func() {
@@ -846,9 +851,16 @@ func (e *Engine) fireAlertWithContext(ctx context.Context, ev *models.Event, rul
 
 	if e.onAlert != nil { e.onAlert(ctx, alert) }
 
-	// Async IOC enrichment: look up event observables against in-memory IOC
-	// cache and attach any matches to the alert's enrichments column.
-	go e.enrichRuleAlert(alertID, ev)
+	// Async IOC enrichment with bounded concurrency (semaphore cap 200).
+	select {
+	case e.enrichSem <- struct{}{}:
+		go func() {
+			defer func() { <-e.enrichSem }()
+			e.enrichRuleAlert(alertID, ev)
+		}()
+	default:
+		e.log.Warn().Str("alert", alertID).Msg("enrichSem full — skipping IOC enrichment for this alert")
+	}
 }
 
 // enrichRuleAlert looks up event observables (IPs, domains, hashes) against
