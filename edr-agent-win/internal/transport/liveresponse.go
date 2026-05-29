@@ -7,12 +7,39 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"google.golang.org/grpc"
 )
+
+// winSensitivePaths are Windows path substrings that must never be exposed.
+var winSensitivePaths = []string{
+	`\windows\system32\config\sam`,
+	`\windows\system32\config\system`,
+	`\windows\system32\config\security`,
+	`ntuser.dat`,
+	`agent.yaml`,
+	`agent.yml`,
+}
+
+// winSafePath resolves junctions and rejects sensitive Windows paths.
+func winSafePath(p string) error {
+	clean := filepath.Clean(p)
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		clean = resolved
+	}
+	lower := strings.ToLower(clean)
+	for _, blocked := range winSensitivePaths {
+		if strings.Contains(lower, blocked) {
+			return fmt.Errorf("access to path %q is not permitted", clean)
+		}
+	}
+	return nil
+}
 
 const methodLiveResponse = "/edr.v1.EventService/LiveResponse"
 
@@ -34,7 +61,7 @@ type liveResult struct {
 }
 
 var allowedActions = map[string]bool{
-	"exec": true, "ps": true, "ls": true, "cat": true,
+	"ps": true, "ls": true, "cat": true,
 	"kill": true, "netstat": true, "df": true, "who": true,
 	"id": true, "uname": true, "uptime": true, "stat": true,
 	"find": true, "md5sum": true, "sha256sum": true,
@@ -313,24 +340,57 @@ func (t *GRPCTransport) executeCommand(cmd *liveCommand) *liveResult {
 		return result
 
 	// ── Windows command equivalents ──
-	case "exec":
-		if len(cmd.Args) == 0 {
-			result.Status = "error"
-			result.Error = "exec requires at least one argument"
-			return result
-		}
-		cmdName = cmd.Args[0]
-		cmdArgs = cmd.Args[1:]
 	case "ps":
 		cmdName = "tasklist"
 		cmdArgs = append([]string{"/v"}, cmd.Args...)
 	case "ls":
-		cmdName = "cmd.exe"
-		dirArgs := []string{"/c", "dir", "/a"}
-		cmdArgs = append(dirArgs, cmd.Args...)
+		dirPath := "."
+		for _, a := range cmd.Args {
+			if !strings.HasPrefix(a, "/") && !strings.HasPrefix(a, "-") {
+				if err := winSafePath(a); err != nil {
+					result.Status = "error"
+					result.Error = err.Error()
+					return result
+				}
+				dirPath = a
+			}
+		}
+		entries, err := os.ReadDir(dirPath)
+		if err != nil {
+			result.Status = "error"
+			result.Error = err.Error()
+			return result
+		}
+		var sb strings.Builder
+		for _, e := range entries {
+			info, _ := e.Info()
+			if info != nil {
+				sb.WriteString(fmt.Sprintf("%-10d  %s  %s\n", info.Size(), info.ModTime().Format("2006-01-02 15:04:05"), e.Name()))
+			} else {
+				sb.WriteString(e.Name() + "\n")
+			}
+		}
+		result.Stdout = sb.String()
+		return result
 	case "cat":
-		cmdName = "cmd.exe"
-		cmdArgs = append([]string{"/c", "type"}, cmd.Args...)
+		if len(cmd.Args) == 0 {
+			result.Status = "error"
+			result.Error = "cat requires a file path argument"
+			return result
+		}
+		if err := winSafePath(cmd.Args[0]); err != nil {
+			result.Status = "error"
+			result.Error = err.Error()
+			return result
+		}
+		data, err := os.ReadFile(cmd.Args[0])
+		if err != nil {
+			result.Status = "error"
+			result.Error = err.Error()
+			return result
+		}
+		result.Stdout = string(data)
+		return result
 	case "kill":
 		cmdName = "taskkill"
 		if len(cmd.Args) > 0 {
@@ -355,6 +415,13 @@ func (t *GRPCTransport) executeCommand(cmd *liveCommand) *liveResult {
 		cmdName = "cmd.exe"
 		cmdArgs = []string{"/c", "net", "statistics", "server"}
 	case "stat":
+		for _, a := range cmd.Args {
+			if err := winSafePath(a); err != nil {
+				result.Status = "error"
+				result.Error = err.Error()
+				return result
+			}
+		}
 		cmdName = "cmd.exe"
 		cmdArgs = append([]string{"/c", "fsutil", "file", "queryFileNameById"}, cmd.Args...)
 	case "find":
@@ -366,12 +433,22 @@ func (t *GRPCTransport) executeCommand(cmd *liveCommand) *liveResult {
 			result.Error = "md5sum requires file path"
 			return result
 		}
+		if err := winSafePath(cmd.Args[0]); err != nil {
+			result.Status = "error"
+			result.Error = err.Error()
+			return result
+		}
 		cmdName = "certutil"
 		cmdArgs = []string{"-hashfile", cmd.Args[0], "MD5"}
 	case "sha256sum":
 		if len(cmd.Args) == 0 {
 			result.Status = "error"
 			result.Error = "sha256sum requires file path"
+			return result
+		}
+		if err := winSafePath(cmd.Args[0]); err != nil {
+			result.Status = "error"
+			result.Error = err.Error()
 			return result
 		}
 		cmdName = "certutil"

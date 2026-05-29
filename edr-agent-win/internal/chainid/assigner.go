@@ -1,6 +1,6 @@
 // Package chainid provides agent-side chain ID assignment for TraceGuard EDR.
-// The agent generates a chain_id at process creation, propagates it to child
-// processes, and stamps ALL emitted events with it before sending to the backend.
+// Maintains a PID→chainID cache and stamps chain_id on every event before
+// it is sent to the backend.
 package chainid
 
 import (
@@ -13,22 +13,20 @@ import (
 	"time"
 )
 
-// cacheEntry stores a chain ID with its insertion time for cache eviction.
 type cacheEntry struct {
 	chainID    string
 	insertedAt time.Time
 }
 
 // Assigner maintains a PID→chainID cache and assigns chain IDs to events.
-// Unlike the backend Assigner, this is agent-local (no multi-agent concern).
 type Assigner struct {
 	agentID string
 	mu      sync.RWMutex
-	cache   map[uint32]*cacheEntry // pid → entry
+	cache   map[uint32]*cacheEntry
 	stopCh  chan struct{}
 }
 
-// New creates an Assigner for the given agent and starts the background eviction loop.
+// New creates an Assigner and starts the background eviction loop.
 func New(agentID string) *Assigner {
 	a := &Assigner{
 		agentID: agentID,
@@ -77,8 +75,7 @@ type genericPayload struct {
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
-// Assign returns the chain ID for the given event type + JSON payload,
-// updating the internal PID cache as needed.
+// Assign returns the chain ID for the given event type + JSON payload.
 func (a *Assigner) Assign(eventType string, payload []byte) string {
 	switch eventType {
 	case "PROCESS_EXEC":
@@ -109,7 +106,6 @@ func (a *Assigner) assignProcessExec(payload []byte) string {
 		return ""
 	}
 
-	// Find root: oldest ancestor, or the process itself.
 	root := ev.Process
 	if len(ev.Ancestry) > 0 {
 		root = ev.Ancestry[len(ev.Ancestry)-1]
@@ -119,7 +115,6 @@ func (a *Assigner) assignProcessExec(payload []byte) string {
 
 	a.mu.Lock()
 	now := time.Now()
-	// Register all ancestor PIDs so siblings share the same chain.
 	for _, anc := range ev.Ancestry {
 		if anc.PID != 0 {
 			if existing, ok := a.cache[anc.PID]; !ok || existing.chainID != chainID {
@@ -145,9 +140,6 @@ func (a *Assigner) assignProcessFork(payload []byte) string {
 		childPID = ev.ChildPID
 	}
 
-	// Hold a single write lock for the combined parent-lookup + child-store so
-	// a concurrent PROCESS_EXEC for the same PID cannot overwrite with a stale
-	// chain ID between the two operations.
 	if parentPID == 0 {
 		return a.lookupByPID(payload)
 	}
@@ -167,8 +159,6 @@ func (a *Assigner) assignProcessFork(payload []byte) string {
 
 func (a *Assigner) handleProcessExit(payload []byte) string {
 	chainID := a.lookupByPID(payload)
-
-	// Schedule PID removal.
 	var gp genericPayload
 	if err := json.Unmarshal(payload, &gp); err == nil && gp.Process.PID != 0 {
 		a.NotifyExit(gp.Process.PID)
@@ -185,13 +175,12 @@ func (a *Assigner) lookupByPID(payload []byte) string {
 
 	a.mu.RLock()
 	if e, ok := a.cache[pid]; ok {
-		chainID := e.chainID
+		id := e.chainID
 		a.mu.RUnlock()
-		return chainID
+		return id
 	}
 	a.mu.RUnlock()
 
-	// No cached entry — synthesise a fallback label.
 	prefix := a.agentID
 	if len(prefix) > 8 {
 		prefix = prefix[:8]
@@ -205,8 +194,6 @@ func (a *Assigner) lookupByPID(payload []byte) string {
 	return chainID
 }
 
-// evict runs in the background, sweeping the cache every 30 minutes and
-// evicting entries older than 4 hours.
 func (a *Assigner) evict() {
 	ticker := time.NewTicker(30 * time.Minute)
 	defer ticker.Stop()
@@ -227,8 +214,6 @@ func (a *Assigner) evict() {
 	}
 }
 
-// computeChainID produces a 16-char deterministic hex ID incorporating
-// agent ID, root PID, and root process start time to resist PID reuse.
 func computeChainID(agentID string, rootPID uint32, rootStart time.Time) string {
 	h := sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%d", agentID, rootPID, rootStart.UnixNano())))
 	return hex.EncodeToString(h[:])[:16]

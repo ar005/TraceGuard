@@ -213,8 +213,12 @@ export default function CaseDetailPage() {
 
   async function updateField(field: string, value: unknown) {
     if (!cs) return;
-    await api.put(`/api/v1/cases/${id}`, { ...cs, [field]: value });
-    refetch();
+    try {
+      await api.put(`/api/v1/cases/${id}`, { ...cs, [field]: value });
+      refetch();
+    } catch (e) {
+      alert(`Failed to update case: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   async function handleGenerateNarrative() {
@@ -231,14 +235,22 @@ export default function CaseDetailPage() {
 
   async function deleteNote(noteID: string) {
     if (!confirm("Delete this note?")) return;
-    await api.del(`/api/v1/cases/${id}/notes/${noteID}`);
-    refetch();
+    try {
+      await api.del(`/api/v1/cases/${id}/notes/${noteID}`);
+      refetch();
+    } catch (e) {
+      alert(`Failed to delete note: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   async function unlinkAlert(alertID: string) {
     if (!confirm("Unlink this alert from the case?")) return;
-    await api.del(`/api/v1/cases/${id}/alerts/${alertID}`);
-    refetch();
+    try {
+      await api.del(`/api/v1/cases/${id}/alerts/${alertID}`);
+      refetch();
+    } catch (e) {
+      alert(`Failed to unlink alert: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   if (loading) return <div className="p-8 text-sm text-white/40">Loading…</div>;

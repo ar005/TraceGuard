@@ -132,7 +132,7 @@ export default function SettingsPage() {
 
   useEffect(() => {
     const saved = localStorage.getItem("edr-theme-id");
-    if (saved) setActiveThemeId(saved);
+    if (saved && THEMES.some(t => t.id === saved)) setActiveThemeId(saved);
   }, []);
 
   const fetchRetention = useCallback(

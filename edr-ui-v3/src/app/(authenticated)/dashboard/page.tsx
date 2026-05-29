@@ -1,3 +1,6 @@
+// NOTE: edr-ui-new/src/app/(authenticated)/page.tsx is the canonical dashboard.
+// This file is a legacy copy maintained for edr-ui-v3. Bug fixes must be applied
+// to the edr-ui-new version first, then propagated here.
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState, useMemo } from "react";

@@ -169,14 +169,14 @@ export function Sidebar() {
     if (typeof window !== "undefined") {
       // Default collapsed on phones (< 640px)
       if (window.innerWidth < 640) return true;
-      return localStorage.getItem("sidebar-collapsed") === "true";
+      return localStorage.getItem("tg-sidebar-collapsed") === "true";
     }
     return false;
   });
   const pathname = usePathname();
 
   useEffect(() => {
-    localStorage.setItem("sidebar-collapsed", String(collapsed));
+    localStorage.setItem("tg-sidebar-collapsed", String(collapsed));
   }, [collapsed]);
 
   // Auto-collapse on phone when navigating

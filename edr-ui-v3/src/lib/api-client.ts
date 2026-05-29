@@ -1,4 +1,12 @@
-const BASE = process.env.NEXT_PUBLIC_BACKEND_URL ?? "";
+// Deployment modes:
+//   Proxy mode (recommended): leave NEXT_PUBLIC_BACKEND_URL unset.
+//     All /api/* requests go through the Next.js rewrites proxy (next.config.ts).
+//     httpOnly cookies and CSP connect-src work correctly.
+//   Direct mode: set NEXT_PUBLIC_BACKEND_URL=https://your-backend-host.
+//     Requests bypass the proxy and go directly to the backend (cross-origin).
+//     Requires CORS configured on the backend and breaks httpOnly cookie delivery
+//     in some browsers. Only use when the Next.js proxy is not viable.
+export const BASE = process.env.NEXT_PUBLIC_BACKEND_URL ?? "";
 if (!BASE && typeof window !== "undefined") {
   console.error(
     "[TraceGuard] NEXT_PUBLIC_BACKEND_URL is not set. " +
@@ -83,4 +91,3 @@ export const api = {
   },
 };
 
-export { BASE };

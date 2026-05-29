@@ -249,16 +249,18 @@ function IntelContextCard({ enrichments }: { enrichments: { intel_context?: Inte
   const [campaignName, setCampaignName] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
     if (ctx?.actor_id) {
       api.get<{ name?: string; id: string }>(`/api/v1/intel/actors/${ctx.actor_id}`)
-        .then((r) => setActorName(r.name ?? ctx.actor_id ?? null))
-        .catch(() => setActorName(ctx.actor_id ?? null));
+        .then((r) => { if (!cancelled) setActorName(r.name ?? ctx.actor_id ?? null); })
+        .catch(() => { if (!cancelled) setActorName(ctx.actor_id ?? null); });
     }
     if (ctx?.campaign_id) {
       api.get<{ name?: string; id: string }>(`/api/v1/intel/campaigns/${ctx.campaign_id}`)
-        .then((r) => setCampaignName(r.name ?? ctx.campaign_id ?? null))
-        .catch(() => setCampaignName(ctx.campaign_id ?? null));
+        .then((r) => { if (!cancelled) setCampaignName(r.name ?? ctx.campaign_id ?? null); })
+        .catch(() => { if (!cancelled) setCampaignName(ctx.campaign_id ?? null); });
     }
+    return () => { cancelled = true; };
   }, [ctx?.actor_id, ctx?.campaign_id]);
 
   if (!ctx?.ioc_value) return null;

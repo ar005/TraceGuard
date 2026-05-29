@@ -68,10 +68,10 @@ export default function SettingsPage() {
   const [llmTesting, setLlmTesting] = useState(false);
   const [llmTestMsg, setLlmTestMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
-  // Load saved theme from localStorage
+  // Load saved theme from localStorage — validate against allowlist before applying.
   useEffect(() => {
     const saved = localStorage.getItem("edr-theme-id");
-    if (saved) {
+    if (saved && THEMES.some(t => t.id === saved)) {
       setActiveThemeId(saved);
     }
   }, []);

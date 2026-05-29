@@ -70,7 +70,7 @@ type subscriberEntry struct {
 	id      string
 	ch      chan Event
 	handler Handler
-	once    sync.Once // ensures close happens once
+	done    chan struct{} // closed by unsubscribe; never close ch itself to avoid send-on-closed panic
 }
 
 // NewBus creates a DefaultBus. agentID and hostname are embedded into every event.
@@ -130,16 +130,23 @@ func (b *DefaultBus) Subscribe(eventType string, handler Handler) func() {
 		id:      newID(),
 		ch:      make(chan Event, bufSize),
 		handler: handler,
+		done:    make(chan struct{}),
 	}
 
 	b.mu.Lock()
 	b.subscribers[eventType] = append(b.subscribers[eventType], entry)
 	b.mu.Unlock()
 
-	// Consumer goroutine.
+	// Consumer goroutine — exits when done is closed.
+	// entry.ch is never closed, preventing send-on-closed panics in Publish.
 	go func() {
-		for event := range entry.ch {
-			handler(event)
+		for {
+			select {
+			case event := <-entry.ch:
+				handler(event)
+			case <-entry.done:
+				return
+			}
 		}
 	}()
 
@@ -156,9 +163,13 @@ func (b *DefaultBus) Subscribe(eventType string, handler Handler) func() {
 		b.subscribers[eventType] = filtered
 		b.mu.Unlock()
 
-		entry.once.Do(func() {
-			close(entry.ch)
-		})
+		// Signal consumer to exit. Never close entry.ch — Publish may still hold
+		// a snapshot reference and a send-on-closed-channel would panic.
+		select {
+		case <-entry.done:
+		default:
+			close(entry.done)
+		}
 	}
 }
 

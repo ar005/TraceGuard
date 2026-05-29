@@ -57,10 +57,11 @@ type Agent struct {
 	agentID  string
 	hostname string
 
-	bus       events.Bus
-	buf       *buffer.LocalBuffer
-	transport *transport.GRPCTransport
-	protect   *selfprotect.Provider
+	bus          events.Bus
+	buf          *buffer.LocalBuffer
+	transport    *transport.GRPCTransport
+	protect      *selfprotect.Provider
+	chainAssigner *chainid.Assigner
 
 	runCtx      context.Context
 	fleetCfgMu  sync.Mutex
@@ -139,6 +140,7 @@ func New(cfg *config.Config) (*Agent, error) {
 		TLSKey:     cfg.Agent.TLS.Key,
 		TLSCA:      cfg.Agent.TLS.CA,
 		Insecure:   cfg.Agent.TLS.Insecure,
+		APIKey:     cfg.Agent.APIKey,
 		AgentID:    agentID,
 		Hostname:   hostname,
 		Tags:       cfg.Agent.Tags,
@@ -152,13 +154,14 @@ func New(cfg *config.Config) (*Agent, error) {
 	trans.SetContainment(contain)
 
 	a := &Agent{
-		cfg:       cfg,
-		log:       log,
-		agentID:   agentID,
-		hostname:  hostname,
-		bus:       bus,
-		buf:       buf,
-		transport: trans,
+		cfg:           cfg,
+		log:           log,
+		agentID:       agentID,
+		hostname:      hostname,
+		bus:           bus,
+		buf:           buf,
+		transport:     trans,
+		chainAssigner: chainAssigner,
 	}
 
 	// Register config-change callback: fetch fleet monitor config from backend and hot-reload.
@@ -548,6 +551,8 @@ func (a *Agent) shutdown() error {
 	time.Sleep(500 * time.Millisecond)
 
 	// Stop monitors in reverse order.
+	// Hold fleetCfgMu so we don't race with applyFleetConfig setting fields to nil.
+	a.fleetCfgMu.Lock()
 	if a.tlssniMonitor != nil {
 		a.tlssniMonitor.Stop()
 	}
@@ -599,7 +604,9 @@ func (a *Agent) shutdown() error {
 	if a.protect != nil {
 		a.protect.Stop()
 	}
+	a.fleetCfgMu.Unlock()
 
+	a.chainAssigner.Stop()
 	a.transport.Stop()
 	a.buf.Close()
 
@@ -1151,6 +1158,7 @@ func (a *Agent) executeForensicsJob(ctx context.Context, backendURL, jobID, jobT
 		return
 	}
 	req.Header.Set("Content-Type", "application/gzip")
+	req.Header.Set("X-Agent-ID", a.agentID)
 	if a.cfg.Agent.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+a.cfg.Agent.APIKey)
 	}

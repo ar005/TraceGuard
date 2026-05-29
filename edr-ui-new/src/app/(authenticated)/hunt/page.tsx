@@ -150,7 +150,7 @@ export default function HuntPage() {
   const [showExportMenu, setShowExportMenu] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  async function runQuery() {
+  const runQuery = useCallback(async () => {
     if (!query.trim()) return;
     setLoading(true);
     setError(null);
@@ -166,7 +166,7 @@ export default function HuntPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [query]);
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -180,7 +180,7 @@ export default function HuntPage() {
       el.addEventListener("keydown", handleKeyDown);
       return () => el.removeEventListener("keydown", handleKeyDown);
     }
-  });
+  }, [runQuery]);
 
   return (
     <div className="animate-fade-in space-y-4">

@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useApi } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
-import { cn, formatDate } from "@/lib/utils";
+import { cn, formatDate, safeHref } from "@/lib/utils";
 import { Clock, Globe, RefreshCw, Loader2, Search, Download, BookOpen } from "lucide-react";
 import type { Event, Agent } from "@/types";
 import { exportToCSV } from "@/lib/export";
@@ -208,7 +208,7 @@ export default function BrowserHistoryPage() {
                       </td>
                       <td className="px-4 py-2.5 max-w-sm">
                         <a
-                          href={p.url}
+                          href={safeHref(p.url)}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-sky-400 hover:underline truncate block max-w-xs font-mono text-xs"

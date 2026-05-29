@@ -14,7 +14,10 @@ package selfprotect
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"syscall"
@@ -118,12 +121,28 @@ func (p *Provider) Stop() {
 // In production, pair with inotify for immediate detection.
 func (p *Provider) watchBinary(ctx context.Context) {
 	var lastInfo os.FileInfo
+	var lastHash string
 	var err error
+
+	hashFile := func(path string) string {
+		f, err := os.Open(path)
+		if err != nil {
+			return ""
+		}
+		defer f.Close()
+		h := sha256.New()
+		if _, err := io.Copy(h, f); err != nil {
+			return ""
+		}
+		return hex.EncodeToString(h.Sum(nil))
+	}
 
 	if p.cfg.AgentBinPath != "" {
 		lastInfo, err = os.Stat(p.cfg.AgentBinPath)
 		if err != nil {
 			p.log.Warn().Err(err).Msg("cannot stat agent binary")
+		} else {
+			lastHash = hashFile(p.cfg.AgentBinPath)
 		}
 	}
 
@@ -148,15 +167,24 @@ func (p *Provider) watchBinary(ctx context.Context) {
 					p.cfg.AgentBinPath, err,
 				))
 				lastInfo = nil
+				lastHash = ""
 				continue
 			}
+			// Check both mtime AND SHA256 so cp --preserve=timestamps is caught.
+			currentHash := hashFile(p.cfg.AgentBinPath)
 			if lastInfo != nil && info.ModTime() != lastInfo.ModTime() {
 				p.handleTamperAttempt(fmt.Sprintf(
 					"agent binary %q has been modified (mtime changed)",
 					p.cfg.AgentBinPath,
 				))
+			} else if lastHash != "" && currentHash != "" && currentHash != lastHash {
+				p.handleTamperAttempt(fmt.Sprintf(
+					"agent binary %q has been modified (SHA256 changed, mtime preserved)",
+					p.cfg.AgentBinPath,
+				))
 			}
 			lastInfo = info
+			lastHash = currentHash
 		}
 	}
 }
@@ -215,7 +243,10 @@ func (e *tamperEvent) EventID() string   { return e.ID }
 // RunWatchdog monitors childPID and re-execs the agent if it dies.
 // Call this in a separate goroutine before starting the main agent.
 func RunWatchdog(agentBin string, agentArgs []string) {
+	delay := 3 * time.Second
+	const maxDelay = 60 * time.Second
 	for {
+		start := time.Now()
 		cmd := exec.Command(agentBin, agentArgs...)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -224,11 +255,22 @@ func RunWatchdog(agentBin string, agentArgs []string) {
 		}
 		if err := cmd.Run(); err != nil {
 			fmt.Fprintf(os.Stderr,
-				"[watchdog] agent exited with error: %v — restarting in 3s\n", err)
+				"[watchdog] agent exited with error: %v — restarting in %s\n", err, delay)
 		} else {
 			fmt.Fprintf(os.Stderr,
-				"[watchdog] agent exited cleanly — restarting in 3s\n")
+				"[watchdog] agent exited cleanly — restarting in %s\n", delay)
 		}
-		time.Sleep(3 * time.Second)
+		// Reset backoff if the agent ran for more than 30 seconds (healthy run).
+		if time.Since(start) > 30*time.Second {
+			delay = 3 * time.Second
+		}
+		time.Sleep(delay)
+		// Exponential backoff capped at maxDelay.
+		if delay < maxDelay {
+			delay *= 2
+			if delay > maxDelay {
+				delay = maxDelay
+			}
+		}
 	}
 }

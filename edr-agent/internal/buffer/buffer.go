@@ -68,6 +68,7 @@ type LocalBuffer struct {
 	mu      sync.Mutex
 	stopCh  chan struct{}
 	writeCh chan writeRequest
+	wg      sync.WaitGroup
 }
 
 // New opens (or creates) the SQLite buffer.
@@ -113,6 +114,7 @@ func New(cfg Config, log zerolog.Logger) (*LocalBuffer, error) {
 		<-buf.stopCh
 		cancel()
 	}()
+	buf.wg.Add(1)
 	go buf.flushLoop(ctx)
 	go buf.evictionLoop()
 	return buf, nil
@@ -143,6 +145,7 @@ func (b *LocalBuffer) Write(ev events.Event) {
 // flushLoop accumulates up to 500 events or 500ms and writes them in a single
 // batched INSERT transaction for throughput.
 func (b *LocalBuffer) flushLoop(ctx context.Context) {
+	defer b.wg.Done()
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	batch := make([]writeRequest, 0, 500)
@@ -163,11 +166,18 @@ func (b *LocalBuffer) flushLoop(ctx context.Context) {
 			batch = batch[:0]
 			return
 		}
+		var execErr error
 		for _, r := range batch {
-			stmt.Exec(r.id, r.eventType, r.ts, r.severity, r.payload)
+			if _, err := stmt.Exec(r.id, r.eventType, r.ts, r.severity, r.payload); err != nil {
+				b.log.Error().Err(err).Str("event_id", r.id).Msg("buffer: exec insert")
+				execErr = err
+			}
 		}
 		stmt.Close()
-		if err := tx.Commit(); err != nil {
+		if execErr != nil {
+			tx.Rollback()
+			b.log.Error().Err(execErr).Msg("buffer: rolling back batch due to exec error")
+		} else if err := tx.Commit(); err != nil {
 			b.log.Error().Err(err).Msg("buffer: commit batch")
 		}
 		batch = batch[:0]
@@ -257,9 +267,10 @@ func (b *LocalBuffer) Stats() (total, unsent int64, sizeMB float64) {
 	return
 }
 
-// Close shuts down the buffer cleanly.
+// Close shuts down the buffer cleanly, waiting for flushLoop to drain.
 func (b *LocalBuffer) Close() {
 	close(b.stopCh)
+	b.wg.Wait() // wait for flushLoop to finish its current batch
 	b.db.Close()
 }
 

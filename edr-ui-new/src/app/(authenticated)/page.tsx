@@ -6,17 +6,18 @@ import { useApi } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
 import { cn, timeAgo, severityLabel, severityBgClass, eventTypeColor } from "@/lib/utils";
 import type { DashboardData, Agent, Event } from "@/types";
-import {
-  AreaChart,
-  Area,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  Cell,
-} from "recharts";
+import dynamic from "next/dynamic";
+
+// Lazy-load recharts to keep it out of the initial bundle (~400 KB gz).
+const AreaChart     = dynamic(() => import("recharts").then(m => m.AreaChart),       { ssr: false });
+const Area          = dynamic(() => import("recharts").then(m => m.Area),             { ssr: false });
+const BarChart      = dynamic(() => import("recharts").then(m => m.BarChart),         { ssr: false });
+const Bar           = dynamic(() => import("recharts").then(m => m.Bar),              { ssr: false });
+const XAxis         = dynamic(() => import("recharts").then(m => m.XAxis),            { ssr: false });
+const YAxis         = dynamic(() => import("recharts").then(m => m.YAxis),            { ssr: false });
+const Tooltip       = dynamic(() => import("recharts").then(m => m.Tooltip),          { ssr: false });
+const ResponsiveContainer = dynamic(() => import("recharts").then(m => m.ResponsiveContainer), { ssr: false });
+const Cell          = dynamic(() => import("recharts").then(m => m.Cell),             { ssr: false });
 
 const TIME_RANGES = ["1h", "6h", "24h", "7d"] as const;
 type TimeRange = (typeof TIME_RANGES)[number];

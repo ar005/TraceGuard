@@ -153,3 +153,14 @@ export function eventTypeColor(type: string): string {
       return "text-neutral-400";
   }
 }
+
+/** Allow only http/https URLs in href attributes — returns "#" for javascript:, data:, etc. */
+export function safeHref(url: string | undefined | null): string {
+  if (!url) return "#";
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" || u.protocol === "http:" ? url : "#";
+  } catch {
+    return "#";
+  }
+}

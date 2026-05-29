@@ -40,12 +40,15 @@ type Config struct {
 	FlushEvery time.Duration
 }
 
+const writeQueueDepth = 8192
+
 type LocalBuffer struct {
-	cfg    Config
-	db     *sql.DB
-	log    zerolog.Logger
-	mu     sync.Mutex
-	stopCh chan struct{}
+	cfg     Config
+	db      *sql.DB
+	log     zerolog.Logger
+	mu      sync.Mutex
+	writeCh chan events.Event
+	stopCh  chan struct{}
 }
 
 func New(cfg Config, log zerolog.Logger) (*LocalBuffer, error) {
@@ -75,29 +78,43 @@ func New(cfg Config, log zerolog.Logger) (*LocalBuffer, error) {
 	}
 
 	buf := &LocalBuffer{
-		cfg:    cfg,
-		db:     db,
-		log:    log.With().Str("component", "buffer").Logger(),
-		stopCh: make(chan struct{}),
+		cfg:     cfg,
+		db:      db,
+		log:     log.With().Str("component", "buffer").Logger(),
+		writeCh: make(chan events.Event, writeQueueDepth),
+		stopCh:  make(chan struct{}),
 	}
+	go buf.writeLoop()
 	go buf.evictionLoop()
 	return buf, nil
 }
 
+// Write enqueues ev for async persistence. Drops and logs if the queue is full.
 func (b *LocalBuffer) Write(ev events.Event) {
-	payload, err := json.Marshal(ev)
-	if err != nil {
-		b.log.Error().Err(err).Msg("marshal event for buffer")
-		return
+	select {
+	case b.writeCh <- ev:
+	default:
+		b.log.Warn().Str("event_type", ev.EventType()).Msg("buffer write queue full — event dropped")
 	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	_, err = b.db.Exec(
-		`INSERT INTO events (event_id, event_type, timestamp, severity, payload) VALUES (?, ?, ?, ?, ?)`,
-		ev.EventID(), ev.EventType(), time.Now().UnixNano(), 0, payload,
-	)
-	if err != nil {
-		b.log.Error().Err(err).Msg("write event to buffer")
+}
+
+// writeLoop drains writeCh and persists each event to SQLite.
+func (b *LocalBuffer) writeLoop() {
+	for ev := range b.writeCh {
+		payload, err := json.Marshal(ev)
+		if err != nil {
+			b.log.Error().Err(err).Msg("marshal event for buffer")
+			continue
+		}
+		b.mu.Lock()
+		_, err = b.db.Exec(
+			`INSERT INTO events (event_id, event_type, timestamp, severity, payload) VALUES (?, ?, ?, ?, ?)`,
+			ev.EventID(), ev.EventType(), time.Now().UnixNano(), 0, payload,
+		)
+		b.mu.Unlock()
+		if err != nil {
+			b.log.Error().Err(err).Msg("write event to buffer")
+		}
 	}
 }
 
@@ -160,6 +177,7 @@ func (b *LocalBuffer) Stats() (total, unsent int64, sizeMB float64) {
 
 func (b *LocalBuffer) Close() {
 	close(b.stopCh)
+	close(b.writeCh) // signals writeLoop to drain and exit
 	b.db.Close()
 }
 

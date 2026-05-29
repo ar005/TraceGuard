@@ -17,11 +17,13 @@ import (
 	"google.golang.org/grpc"
 )
 
-// sensitivePaths are prefixes that cat/stat/find must never expose.
+// sensitivePaths lists locations that must never be read via live-response.
+// Entries ending in "/" are treated as directory prefixes (any path underneath is blocked).
+// Entries without "/" are exact file matches only.
 var sensitivePaths = []string{
 	"/etc/shadow", "/etc/gshadow", "/etc/master.passwd",
-	"/root/", "/home/", // private home dirs
-	"/proc/", "/sys/",  // kernel internals
+	"/root/", "/home/",  // private home dirs
+	"/proc/", "/sys/",   // kernel internals
 	"/.ssh/", "/.gnupg/",
 }
 
@@ -29,11 +31,24 @@ var validPID = regexp.MustCompile(`^[1-9][0-9]{0,6}$`)
 var validSignal = regexp.MustCompile(`^(-[1-9][0-9]?|-SIG[A-Z]+)$`)
 
 // safePath rejects paths that resolve to sensitive locations.
+// Symlinks are resolved first to prevent TOCTOU bypass.
 func safePath(p string) error {
 	clean := filepath.Clean(p)
+	// Resolve symlinks; if the path doesn't exist yet, fall back to lexical clean.
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		clean = resolved
+	}
 	for _, blocked := range sensitivePaths {
-		if strings.HasPrefix(clean, blocked) || clean == strings.TrimSuffix(blocked, "/") {
-			return fmt.Errorf("access to path %q is not permitted", clean)
+		if strings.HasSuffix(blocked, "/") {
+			// Directory prefix: block the dir itself and anything inside it.
+			if clean == strings.TrimSuffix(blocked, "/") || strings.HasPrefix(clean, blocked) {
+				return fmt.Errorf("access to path %q is not permitted", clean)
+			}
+		} else {
+			// Exact file match only — avoids false positives like /etc/shadow2.
+			if clean == blocked {
+				return fmt.Errorf("access to path %q is not permitted", clean)
+			}
 		}
 	}
 	return nil
@@ -397,6 +412,15 @@ func (t *GRPCTransport) executeCommand(cmd *liveCommand) *liveResult {
 		cmdName = "ps"
 		cmdArgs = append([]string{"aux"}, cmd.Args...)
 	case "ls":
+		for _, a := range cmd.Args {
+			if !strings.HasPrefix(a, "-") {
+				if err := safePath(a); err != nil {
+					result.Status = "error"
+					result.Error = err.Error()
+					return result
+				}
+			}
+		}
 		cmdName = "ls"
 		cmdArgs = append([]string{"-la"}, cmd.Args...)
 	case "cat":
@@ -441,6 +465,15 @@ func (t *GRPCTransport) executeCommand(cmd *liveCommand) *liveResult {
 		cmdName = "uptime"
 		cmdArgs = cmd.Args
 	case "stat":
+		for _, a := range cmd.Args {
+			if !strings.HasPrefix(a, "-") {
+				if err := safePath(a); err != nil {
+					result.Status = "error"
+					result.Error = err.Error()
+					return result
+				}
+			}
+		}
 		cmdName = "stat"
 		cmdArgs = cmd.Args
 	case "find":
@@ -465,9 +498,23 @@ func (t *GRPCTransport) executeCommand(cmd *liveCommand) *liveResult {
 		cmdName = "find"
 		cmdArgs = cmd.Args
 	case "md5sum":
+		for _, a := range cmd.Args {
+			if err := safePath(a); err != nil {
+				result.Status = "error"
+				result.Error = err.Error()
+				return result
+			}
+		}
 		cmdName = "md5sum"
 		cmdArgs = cmd.Args
 	case "sha256sum":
+		for _, a := range cmd.Args {
+			if err := safePath(a); err != nil {
+				result.Status = "error"
+				result.Error = err.Error()
+				return result
+			}
+		}
 		cmdName = "sha256sum"
 		cmdArgs = cmd.Args
 	default:

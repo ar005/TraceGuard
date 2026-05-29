@@ -6,9 +6,14 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -37,6 +42,7 @@ import (
 	"github.com/youredr/edr-agent-win/internal/monitor/usb"
 	"github.com/youredr/edr-agent-win/internal/monitor/vuln"
 	"github.com/youredr/edr-agent-win/internal/monitor/winevent"
+	"github.com/youredr/edr-agent-win/internal/chainid"
 	"github.com/youredr/edr-agent-win/internal/tasks"
 	"github.com/youredr/edr-agent-win/internal/transport"
 	"github.com/youredr/edr-agent-win/internal/version"
@@ -49,9 +55,13 @@ type Agent struct {
 	agentID  string
 	hostname string
 
-	bus       events.Bus
-	buf       *buffer.LocalBuffer
-	transport *transport.GRPCTransport
+	bus           events.Bus
+	buf           *buffer.LocalBuffer
+	transport     *transport.GRPCTransport
+	chainAssigner *chainid.Assigner
+
+	runCtx     context.Context
+	fleetCfgMu sync.Mutex
 
 	processMonitor  *process.Monitor
 	networkMonitor  *network.Monitor
@@ -92,6 +102,18 @@ func New(cfg *config.Config) (*Agent, error) {
 
 	bus := events.NewBus(agentID, hostname)
 
+	// Chain stamper: assigns chain_id to every event before fan-out.
+	chainAssigner := chainid.New(agentID)
+	bus.SetChainStamper(func(ev events.Event) {
+		b, err := json.Marshal(ev)
+		if err != nil {
+			return
+		}
+		if id := chainAssigner.Assign(ev.EventType(), b); id != "" {
+			ev.SetChainID(id)
+		}
+	})
+
 	buf, err := buffer.New(buffer.Config{
 		Path:       cfg.Buffer.Path,
 		MaxSizeMB:  cfg.Buffer.MaxSizeMB,
@@ -107,6 +129,7 @@ func New(cfg *config.Config) (*Agent, error) {
 		TLSKey:     cfg.Agent.TLS.Key,
 		TLSCA:      cfg.Agent.TLS.CA,
 		Insecure:   cfg.Agent.TLS.Insecure,
+		APIKey:     cfg.Agent.APIKey,
 		AgentID:    agentID,
 		Hostname:   hostname,
 		Tags:       cfg.Agent.Tags,
@@ -114,23 +137,24 @@ func New(cfg *config.Config) (*Agent, error) {
 		Notes:      cfg.Agent.Notes,
 	}, log)
 
-	trans.OnConfigChange(func(newVer string) {
-		log.Info().Str("version", newVer).Msg("config update received from backend")
-	})
-
 	contain := containment.New(cfg.Agent.BackendURL, log)
 	contain.RestoreState()
 	trans.SetContainment(contain)
 
 	a := &Agent{
-		cfg:       cfg,
-		log:       log,
-		agentID:   agentID,
-		hostname:  hostname,
-		bus:       bus,
-		buf:       buf,
-		transport: trans,
+		cfg:           cfg,
+		log:           log,
+		agentID:       agentID,
+		hostname:      hostname,
+		bus:           bus,
+		buf:           buf,
+		transport:     trans,
+		chainAssigner: chainAssigner,
 	}
+
+	trans.OnConfigChange(func(newVer string) {
+		go a.fetchAndApplyFleetConfig(newVer)
+	})
 
 	// ── Wire monitors ──
 
@@ -253,10 +277,18 @@ func New(cfg *config.Config) (*Agent, error) {
 		}, bus, log)
 	}
 
+	// Apply any persisted fleet config from a previous push.
+	if persisted := loadPersistedFleetConfig(log); persisted != nil {
+		log.Info().Msg("applying persisted fleet monitor config")
+		a.cfg.Monitors = *persisted
+	}
+
 	return a, nil
 }
 
 func (a *Agent) Start(ctx context.Context) error {
+	a.runCtx = ctx
+
 	unsubBuf := a.bus.Subscribe("*", func(ev events.Event) { a.buf.Write(ev) })
 	defer unsubBuf()
 	unsubTrans := a.bus.Subscribe("*", func(ev events.Event) { a.transport.Send(ev) })
@@ -377,6 +409,7 @@ func (a *Agent) shutdown() error {
 		}
 	}
 
+	a.chainAssigner.Stop()
 	a.transport.Stop()
 	a.buf.Close()
 
@@ -398,6 +431,333 @@ func (a *Agent) sendHeartbeat() {
 		},
 		EventsPublished: stats.Published, EventsDropped: stats.Dropped,
 	})
+}
+
+const fleetConfigPath = `C:\ProgramData\TraceGuard\fleet-config.json`
+
+func (a *Agent) fetchAndApplyFleetConfig(newVer string) {
+	backendURL := a.cfg.Agent.RESTBackendURL
+	if backendURL == "" {
+		backendURL = a.cfg.Agent.BackendURL
+	}
+	if backendURL == "" {
+		return
+	}
+	ctx := a.runCtx
+	if ctx == nil {
+		return
+	}
+
+	url := strings.TrimRight(backendURL, "/") + "/api/v1/agents/" + a.agentID + "/fleet-config"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		a.log.Warn().Err(err).Msg("fleet config fetch: build request failed")
+		return
+	}
+	if a.cfg.Agent.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+a.cfg.Agent.APIKey)
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		a.log.Warn().Err(err).Msg("fleet config fetch failed")
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		a.log.Warn().Int("status", resp.StatusCode).Msg("fleet config fetch: unexpected status")
+		return
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		a.log.Warn().Err(err).Msg("fleet config fetch: read body failed")
+		return
+	}
+	if string(raw) == "{}" || len(raw) == 0 {
+		return
+	}
+	var newCfg config.MonitorsConfig
+	if err := json.Unmarshal(raw, &newCfg); err != nil {
+		a.log.Warn().Err(err).Msg("fleet config fetch: unmarshal failed")
+		return
+	}
+	a.log.Info().Str("version", newVer).Msg("fleet monitor config received — applying")
+	a.applyFleetConfig(newCfg)
+	_ = os.WriteFile(fleetConfigPath, raw, 0600)
+}
+
+func (a *Agent) applyFleetConfig(newCfg config.MonitorsConfig) {
+	a.fleetCfgMu.Lock()
+	defer a.fleetCfgMu.Unlock()
+	ctx := a.runCtx
+	if ctx == nil {
+		return
+	}
+
+	// Process
+	if newCfg.Process.Enabled && a.processMonitor == nil {
+		a.processMonitor = process.New(process.Config{MaxAncestryDepth: newCfg.Process.MaxAncestryDepth}, a.bus, a.log)
+		if err := a.processMonitor.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("fleet reload: start process monitor failed")
+			a.processMonitor = nil
+		} else {
+			a.log.Info().Msg("fleet reload: process monitor started")
+		}
+	} else if !newCfg.Process.Enabled && a.processMonitor != nil {
+		a.processMonitor.Stop(); a.processMonitor = nil
+		a.log.Info().Msg("fleet reload: process monitor stopped")
+	}
+
+	// Network
+	if newCfg.Network.Enabled && a.networkMonitor == nil {
+		a.networkMonitor = network.New(network.Config{IgnoreLocalhost: newCfg.Network.IgnoreLocalhost}, a.bus, a.log)
+		if err := a.networkMonitor.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("fleet reload: start network monitor failed")
+			a.networkMonitor = nil
+		} else {
+			a.log.Info().Msg("fleet reload: network monitor started")
+		}
+	} else if !newCfg.Network.Enabled && a.networkMonitor != nil {
+		a.networkMonitor.Stop(); a.networkMonitor = nil
+		a.log.Info().Msg("fleet reload: network monitor stopped")
+	}
+
+	// File
+	if newCfg.File.Enabled && a.fileMonitor == nil {
+		a.fileMonitor = file.New(file.Config{WatchPaths: newCfg.File.WatchPaths, HashOnWrite: newCfg.File.HashOnWrite}, a.bus, a.log)
+		if err := a.fileMonitor.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("fleet reload: start file monitor failed")
+			a.fileMonitor = nil
+		} else {
+			a.log.Info().Msg("fleet reload: file monitor started")
+		}
+	} else if !newCfg.File.Enabled && a.fileMonitor != nil {
+		a.fileMonitor.Stop(); a.fileMonitor = nil
+		a.log.Info().Msg("fleet reload: file monitor stopped")
+	}
+
+	// Registry
+	if newCfg.Registry.Enabled && a.registryMonitor == nil {
+		a.registryMonitor = registry.New(registry.Config{ExtraKeys: newCfg.Registry.ExtraKeys}, a.bus, a.log)
+		if err := a.registryMonitor.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("fleet reload: start registry monitor failed")
+			a.registryMonitor = nil
+		} else {
+			a.log.Info().Msg("fleet reload: registry monitor started")
+		}
+	} else if !newCfg.Registry.Enabled && a.registryMonitor != nil {
+		a.registryMonitor.Stop(); a.registryMonitor = nil
+		a.log.Info().Msg("fleet reload: registry monitor stopped")
+	}
+
+	// DNS
+	if newCfg.DNS.Enabled && a.dnsMonitor == nil {
+		a.dnsMonitor = dns.New(dns.Config{}, a.bus, a.log)
+		if err := a.dnsMonitor.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("fleet reload: start dns monitor failed")
+			a.dnsMonitor = nil
+		} else {
+			a.log.Info().Msg("fleet reload: dns monitor started")
+		}
+	} else if !newCfg.DNS.Enabled && a.dnsMonitor != nil {
+		a.dnsMonitor.Stop(); a.dnsMonitor = nil
+		a.log.Info().Msg("fleet reload: dns monitor stopped")
+	}
+
+	// Auth
+	if newCfg.Auth.Enabled && a.authMonitor == nil {
+		a.authMonitor = auth.New(auth.Config{}, a.bus, a.log)
+		if err := a.authMonitor.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("fleet reload: start auth monitor failed")
+			a.authMonitor = nil
+		} else {
+			a.log.Info().Msg("fleet reload: auth monitor started")
+		}
+	} else if !newCfg.Auth.Enabled && a.authMonitor != nil {
+		a.authMonitor.Stop(); a.authMonitor = nil
+		a.log.Info().Msg("fleet reload: auth monitor stopped")
+	}
+
+	// Command
+	if newCfg.Command.Enabled && a.commandMonitor == nil {
+		a.commandMonitor = command.New(command.Config{}, a.bus, a.log)
+		if err := a.commandMonitor.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("fleet reload: start command monitor failed")
+			a.commandMonitor = nil
+		} else {
+			a.log.Info().Msg("fleet reload: command monitor started")
+		}
+	} else if !newCfg.Command.Enabled && a.commandMonitor != nil {
+		a.commandMonitor.Stop(); a.commandMonitor = nil
+		a.log.Info().Msg("fleet reload: command monitor stopped")
+	}
+
+	// Browser
+	if newCfg.Browser.Enabled && a.browserMonitor == nil {
+		listenAddr := newCfg.Browser.ListenAddr
+		if listenAddr == "" {
+			listenAddr = "127.0.0.1:9999"
+		}
+		a.browserMonitor = browser.New(browser.Config{Enabled: true, ListenAddr: listenAddr}, a.bus, a.log)
+		if err := a.browserMonitor.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("fleet reload: start browser monitor failed")
+			a.browserMonitor = nil
+		} else {
+			a.log.Info().Msg("fleet reload: browser monitor started")
+		}
+	} else if !newCfg.Browser.Enabled && a.browserMonitor != nil {
+		a.browserMonitor.Stop(); a.browserMonitor = nil
+		a.log.Info().Msg("fleet reload: browser monitor stopped")
+	}
+
+	// Driver
+	if newCfg.Driver.Enabled && a.driverMonitor == nil {
+		pollInterval := newCfg.Driver.PollIntervalS
+		if pollInterval <= 0 {
+			pollInterval = 5
+		}
+		a.driverMonitor = driver.New(driver.Config{PollIntervalS: pollInterval}, a.bus, a.log)
+		if err := a.driverMonitor.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("fleet reload: start driver monitor failed")
+			a.driverMonitor = nil
+		} else {
+			a.log.Info().Msg("fleet reload: driver monitor started")
+		}
+	} else if !newCfg.Driver.Enabled && a.driverMonitor != nil {
+		a.driverMonitor.Stop(); a.driverMonitor = nil
+		a.log.Info().Msg("fleet reload: driver monitor stopped")
+	}
+
+	// USB
+	if newCfg.USB.Enabled && a.usbMonitor == nil {
+		pollInterval := newCfg.USB.PollIntervalS
+		if pollInterval <= 0 {
+			pollInterval = 10
+		}
+		a.usbMonitor = usb.New(usb.Config{PollIntervalS: pollInterval}, a.bus, a.log)
+		if err := a.usbMonitor.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("fleet reload: start usb monitor failed")
+			a.usbMonitor = nil
+		} else {
+			a.log.Info().Msg("fleet reload: usb monitor started")
+		}
+	} else if !newCfg.USB.Enabled && a.usbMonitor != nil {
+		a.usbMonitor.Stop(); a.usbMonitor = nil
+		a.log.Info().Msg("fleet reload: usb monitor stopped")
+	}
+
+	// Pipe
+	if newCfg.Pipe.Enabled && a.pipeMonitor == nil {
+		pollInterval := newCfg.Pipe.PollIntervalS
+		if pollInterval <= 0 {
+			pollInterval = 10
+		}
+		a.pipeMonitor = pipe.New(pipe.Config{PollIntervalS: pollInterval}, a.bus, a.log)
+		if err := a.pipeMonitor.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("fleet reload: start pipe monitor failed")
+			a.pipeMonitor = nil
+		} else {
+			a.log.Info().Msg("fleet reload: pipe monitor started")
+		}
+	} else if !newCfg.Pipe.Enabled && a.pipeMonitor != nil {
+		a.pipeMonitor.Stop(); a.pipeMonitor = nil
+		a.log.Info().Msg("fleet reload: pipe monitor stopped")
+	}
+
+	// Share
+	if newCfg.Share.Enabled && a.shareMonitor == nil {
+		pollInterval := newCfg.Share.PollIntervalS
+		if pollInterval <= 0 {
+			pollInterval = 10
+		}
+		a.shareMonitor = share.New(share.Config{PollIntervalS: pollInterval}, a.bus, a.log)
+		if err := a.shareMonitor.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("fleet reload: start share monitor failed")
+			a.shareMonitor = nil
+		} else {
+			a.log.Info().Msg("fleet reload: share monitor started")
+		}
+	} else if !newCfg.Share.Enabled && a.shareMonitor != nil {
+		a.shareMonitor.Stop(); a.shareMonitor = nil
+		a.log.Info().Msg("fleet reload: share monitor stopped")
+	}
+
+	// MemMon
+	if newCfg.MemMon.Enabled && a.memMonitor == nil {
+		pollInterval := newCfg.MemMon.PollIntervalS
+		if pollInterval <= 0 {
+			pollInterval = 15
+		}
+		a.memMonitor = memmon.New(memmon.Config{PollIntervalS: pollInterval, IgnoreComms: newCfg.MemMon.IgnoreComms}, a.bus, a.log)
+		if err := a.memMonitor.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("fleet reload: start memmon failed")
+			a.memMonitor = nil
+		} else {
+			a.log.Info().Msg("fleet reload: memmon started")
+		}
+	} else if !newCfg.MemMon.Enabled && a.memMonitor != nil {
+		a.memMonitor.Stop(); a.memMonitor = nil
+		a.log.Info().Msg("fleet reload: memmon stopped")
+	}
+
+	// SchTask
+	if newCfg.SchTask.Enabled && a.schtaskMonitor == nil {
+		pollInterval := newCfg.SchTask.PollIntervalS
+		if pollInterval <= 0 {
+			pollInterval = 30
+		}
+		a.schtaskMonitor = schtask.New(schtask.Config{PollIntervalS: pollInterval}, a.bus, a.log)
+		if err := a.schtaskMonitor.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("fleet reload: start schtask monitor failed")
+			a.schtaskMonitor = nil
+		} else {
+			a.log.Info().Msg("fleet reload: schtask monitor started")
+		}
+	} else if !newCfg.SchTask.Enabled && a.schtaskMonitor != nil {
+		a.schtaskMonitor.Stop(); a.schtaskMonitor = nil
+		a.log.Info().Msg("fleet reload: schtask monitor stopped")
+	}
+
+	// FIM
+	if newCfg.FIM.Enabled && a.fimMonitor == nil {
+		pollInterval := newCfg.FIM.PollIntervalS
+		if pollInterval <= 0 {
+			pollInterval = 300
+		}
+		a.fimMonitor = fim.New(fim.Config{
+			PollIntervalS: pollInterval,
+			WatchPaths:    newCfg.FIM.WatchPaths,
+			BaselinePath:  newCfg.FIM.BaselinePath,
+			AutoBaseline:  newCfg.FIM.AutoBaseline,
+		}, a.bus, a.log)
+		if err := a.fimMonitor.Start(ctx); err != nil {
+			a.log.Warn().Err(err).Msg("fleet reload: start fim monitor failed")
+			a.fimMonitor = nil
+		} else {
+			a.log.Info().Msg("fleet reload: fim monitor started")
+		}
+	} else if !newCfg.FIM.Enabled && a.fimMonitor != nil {
+		a.fimMonitor.Stop(); a.fimMonitor = nil
+		a.log.Info().Msg("fleet reload: fim monitor stopped")
+	}
+
+	a.cfg.Monitors = newCfg
+}
+
+func loadPersistedFleetConfig(log zerolog.Logger) *config.MonitorsConfig {
+	raw, err := os.ReadFile(fleetConfigPath)
+	if err != nil {
+		return nil
+	}
+	if string(raw) == "{}" || len(raw) == 0 {
+		return nil
+	}
+	var cfg config.MonitorsConfig
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		log.Warn().Err(err).Msg("failed to parse persisted fleet config — ignoring")
+		return nil
+	}
+	return &cfg
 }
 
 func loadOrGenerateAgentID(path string) string {

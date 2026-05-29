@@ -161,21 +161,53 @@ func (m *Manager) QuarantineFile(filePath string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Reject paths that would break the system if removed.
+	// Resolve symlinks before the blocklist check to prevent bypass via junction/symlink.
+	// Reject if the entry itself is a symlink — we only quarantine real files.
+	linfo, err := os.Lstat(filePath)
+	if err != nil {
+		return "", fmt.Errorf("lstat %s: %w", filePath, err)
+	}
+	if linfo.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("quarantine of symlinks is not permitted: %s", filePath)
+	}
+
 	clean := filepath.Clean(filePath)
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		clean = resolved
+	}
+
+	// Reject paths that would break the system if removed.
 	for _, blocked := range quarantineBlocklist {
 		if clean == strings.TrimSuffix(blocked, "/") || strings.HasPrefix(clean, blocked) {
 			return "", fmt.Errorf("quarantine of system path %q is not permitted", clean)
 		}
 	}
 
-	// Validate the file exists.
-	info, err := os.Stat(filePath)
+	// Open the file once and hold the FD for hashing and copying to prevent TOCTOU.
+	f, err := os.Open(clean)
 	if err != nil {
-		return "", fmt.Errorf("stat %s: %w", filePath, err)
+		return "", fmt.Errorf("open %s: %w", clean, err)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return "", fmt.Errorf("stat fd: %w", err)
 	}
 	if info.IsDir() {
-		return "", fmt.Errorf("cannot quarantine a directory: %s", filePath)
+		return "", fmt.Errorf("cannot quarantine a directory: %s", clean)
+	}
+
+	// Compute SHA256 from the open FD.
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", fmt.Errorf("hash file: %w", err)
+	}
+	hash := fmt.Sprintf("%x", h.Sum(nil))
+
+	// Seek back to start for the copy.
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return "", fmt.Errorf("seek: %w", err)
 	}
 
 	// Create quarantine dir if not exists.
@@ -183,20 +215,24 @@ func (m *Manager) QuarantineFile(filePath string) (string, error) {
 		return "", fmt.Errorf("create quarantine dir: %w", err)
 	}
 
-	// Compute SHA256 of the file.
-	hash, err := fileSHA256(filePath)
-	if err != nil {
-		return "", fmt.Errorf("hash file: %w", err)
-	}
-
 	// Generate quarantine name: sha256_timestamp.
 	now := time.Now().UTC()
 	qName := fmt.Sprintf("%s_%d", hash, now.UnixNano())
 	qPath := filepath.Join(quarantineDir, qName)
 
-	// Copy file to quarantine dir.
-	if err := copyFile(filePath, qPath); err != nil {
+	// Copy from open FD to quarantine dir (no second open of the source).
+	out, err := os.Create(qPath)
+	if err != nil {
+		return "", fmt.Errorf("create quarantine file: %w", err)
+	}
+	if _, err := io.Copy(out, f); err != nil {
+		out.Close()
+		os.Remove(qPath)
 		return "", fmt.Errorf("copy to quarantine: %w", err)
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(qPath)
+		return "", fmt.Errorf("close quarantine file: %w", err)
 	}
 
 	// Strip execute permissions on quarantined copy.
@@ -414,17 +450,18 @@ func (m *Manager) ListBlockedIPs() []string {
 // BlockDomain resolves a domain to IPs, blocks each IP and adds a DNS string match rule.
 // If persistent is true, the domain block will be restored on agent restart.
 func (m *Manager) BlockDomain(domain string, persistent bool) error {
+	// Resolve DNS before acquiring the lock — LookupHost can block for 30+ s under
+	// containment, and holding mu during that wait stalls all concurrent operations.
+	ips, err := net.LookupHost(domain)
+	if err != nil {
+		return fmt.Errorf("resolve domain %s: %w", domain, err)
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if _, exists := m.blockedDomains[domain]; exists {
 		return fmt.Errorf("domain %s is already blocked", domain)
-	}
-
-	// Resolve domain to IPs.
-	ips, err := net.LookupHost(domain)
-	if err != nil {
-		return fmt.Errorf("resolve domain %s: %w", domain, err)
 	}
 
 	// Block each resolved IP (skip already-blocked ones silently).

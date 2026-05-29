@@ -6,8 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
+	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -17,7 +18,6 @@ import (
 
 const (
 	maxOutputBytes = 64 * 1024 // 64 KB cap on combined stdout+stderr
-	scriptTimeout  = 5 * time.Minute
 	collectTimeout = 30 * time.Second
 )
 
@@ -46,8 +46,6 @@ func (e *Executor) Handle(task transport.TaskInstruction) {
 	var err error
 
 	switch task.Type {
-	case "script":
-		output, err = e.runScript(task.Payload)
 	case "collect":
 		output, err = e.runCollect()
 	case "scan":
@@ -73,29 +71,6 @@ func (e *Executor) Handle(task transport.TaskInstruction) {
 		Output: capOutput(output),
 		ErrMsg: errMsg,
 	})
-}
-
-// runScript executes a PowerShell command from the task payload.
-// Payload: {"cmd": "Get-Process | Select-Object -First 5"}
-func (e *Executor) runScript(payload json.RawMessage) (string, error) {
-	var p struct {
-		Cmd string `json:"cmd"`
-	}
-	if err := json.Unmarshal(payload, &p); err != nil || strings.TrimSpace(p.Cmd) == "" {
-		return "", fmt.Errorf("invalid script payload: cmd is required")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), scriptTimeout)
-	defer cancel()
-
-	var buf bytes.Buffer
-	// -NoProfile -NonInteractive keep startup fast and output clean.
-	cmd := exec.CommandContext(ctx, "powershell.exe", // #nosec G204 — admin-created tasks only
-		"-NoProfile", "-NonInteractive", "-Command", p.Cmd)
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-	err := cmd.Run()
-	return buf.String(), err
 }
 
 // runCollect gathers basic Windows system information via PowerShell.
@@ -147,17 +122,19 @@ func (e *Executor) runScan(payload json.RawMessage) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), collectTimeout)
 	defer cancel()
 
+	// Pass path via env var to avoid PowerShell injection through string interpolation.
 	script := fmt.Sprintf(
-		`Get-ChildItem -Path '%s' -Recurse -File -ErrorAction SilentlyContinue |`+
+		`Get-ChildItem -Path $env:SCAN_PATH -Recurse -File -ErrorAction SilentlyContinue |`+
 			` Where-Object { $_.LastWriteTime -gt (Get-Date).AddDays(-%d) } |`+
 			` Select-Object FullName,LastWriteTime,@{n='Size(KB)';e={[math]::Round($_.Length/1KB,1)}} |`+
 			` Sort-Object LastWriteTime -Descending | Select-Object -First 50 |`+
 			` Format-Table -AutoSize | Out-String`,
-		p.Path, p.Days,
+		p.Days,
 	)
 
 	var buf bytes.Buffer
 	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
+	cmd.Env = append(os.Environ(), "SCAN_PATH="+p.Path)
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
 	err := cmd.Run()

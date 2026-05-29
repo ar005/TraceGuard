@@ -181,13 +181,19 @@ func (m *Monitor) readLoop(ctx context.Context, fd int) {
 		}
 		seen[key] = time.Now()
 
-		// Periodic cleanup of dedup cache.
-		if time.Since(lastClean) > 60*time.Second || len(seen) > 10000 {
+		// Sweep expired entries when the map grows large or every 60 s.
+		// Hard cap: if still > 2000 after sweep, clear everything to prevent
+		// unbounded growth under high ephemeral-port churn.
+		const dedupCap = 2000
+		if time.Since(lastClean) > 60*time.Second || len(seen) > dedupCap {
 			now := time.Now()
 			for k, t := range seen {
 				if now.Sub(t) > 60*time.Second {
 					delete(seen, k)
 				}
+			}
+			if len(seen) > dedupCap {
+				seen = make(map[string]time.Time)
 			}
 			lastClean = now
 		}

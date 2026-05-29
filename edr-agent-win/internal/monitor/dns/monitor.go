@@ -71,29 +71,45 @@ func (m *Monitor) Stop() {
 func (m *Monitor) pollLoop(ctx context.Context) {
 	defer m.wg.Done()
 
-	// Track known domains to only emit new ones.
-	known := make(map[string]bool)
+	// Track known domains with timestamps; sweep entries older than 24 h to
+	// prevent unbounded growth when domains cycle through the DNS cache.
+	known := make(map[string]time.Time)
+	const knownTTL = 24 * time.Hour
+	const knownCap = 10000
 
 	// Build initial baseline.
 	for _, entry := range m.getDNSCache(ctx) {
-		known[entry.Domain] = true
+		known[entry.Domain] = time.Now()
 	}
 	m.log.Debug().Int("baseline_entries", len(known)).Msg("DNS cache baseline captured")
 
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
+	sweepTicker := time.NewTicker(10 * time.Minute)
+	defer sweepTicker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-sweepTicker.C:
+			cutoff := time.Now().Add(-knownTTL)
+			for d, t := range known {
+				if t.Before(cutoff) {
+					delete(known, d)
+				}
+			}
+			// Hard cap: if still too large, clear to avoid OOM.
+			if len(known) > knownCap {
+				known = make(map[string]time.Time)
+			}
 		case <-ticker.C:
 			entries := m.getDNSCache(ctx)
 			for _, entry := range entries {
-				if !known[entry.Domain] {
+				if _, seen := known[entry.Domain]; !seen {
 					m.emitDNS(entry)
-					known[entry.Domain] = true
 				}
+				known[entry.Domain] = time.Now()
 			}
 		}
 	}

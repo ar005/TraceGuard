@@ -146,7 +146,11 @@ func (s *TraceGuardService) Execute(args []string, r <-chan svc.ChangeRequest, c
 			case svc.Stop, svc.Shutdown:
 				changes <- svc.Status{State: svc.StopPending}
 				cancel()
-				<-agentDone
+				select {
+				case <-agentDone:
+				case <-time.After(15 * time.Second):
+					crashLog("agent shutdown timed out after 15s — forcing exit")
+				}
 				return false, 0
 			}
 		case err := <-agentDone:

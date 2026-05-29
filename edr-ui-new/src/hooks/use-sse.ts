@@ -16,8 +16,18 @@ export function useSSE(path: string, maxEvents = 200): UseSSEResult {
 
   useEffect(() => {
     let cancelled = false;
+    let retryDelay = 2000; // ms, doubles on each failure up to 30 s
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
     async function connect() {
+      if (cancelled) return;
+
+      // Close any existing connection before reconnecting.
+      if (esRef.current) {
+        esRef.current.close();
+        esRef.current = null;
+      }
+
       // Exchange the session JWT for a short-lived SSE ticket (30s) so the
       // long-lived token never appears in a URL (logs, Referer, browser history).
       let ticket = "";
@@ -26,7 +36,6 @@ export function useSSE(path: string, maxEvents = 200): UseSSEResult {
         ticket = res.ticket ?? "";
       } catch {
         // Fallback: if the ticket endpoint isn't available, skip auth.
-        // The SSE handler will reject the connection if auth is required.
       }
 
       if (cancelled) return;
@@ -38,7 +47,10 @@ export function useSSE(path: string, maxEvents = 200): UseSSEResult {
       esRef.current = es;
 
       es.onopen = () => {
-        if (!cancelled) setConnected(true);
+        if (!cancelled) {
+          setConnected(true);
+          retryDelay = 2000; // reset backoff on successful connection
+        }
       };
 
       es.onmessage = (msg) => {
@@ -54,7 +66,15 @@ export function useSSE(path: string, maxEvents = 200): UseSSEResult {
       };
 
       es.onerror = () => {
-        if (!cancelled) setConnected(false);
+        if (cancelled) return;
+        setConnected(false);
+        // Close the dead connection and schedule a reconnect with backoff.
+        es.close();
+        esRef.current = null;
+        retryTimer = setTimeout(() => {
+          retryDelay = Math.min(retryDelay * 2, 30000);
+          connect();
+        }, retryDelay);
       };
     }
 
@@ -62,6 +82,7 @@ export function useSSE(path: string, maxEvents = 200): UseSSEResult {
 
     return () => {
       cancelled = true;
+      if (retryTimer !== null) clearTimeout(retryTimer);
       if (esRef.current) {
         esRef.current.close();
         esRef.current = null;

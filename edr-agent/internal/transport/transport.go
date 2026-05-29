@@ -121,12 +121,22 @@ type Config struct {
 	AgentID           string
 	Hostname          string
 	Insecure          bool
+	APIKey            string
 	ReconnectDelay    time.Duration
 	MaxReconnectDelay time.Duration
 	Tags              []string
 	Env               string
 	Notes             string
 }
+
+// apiKeyCredentials implements credentials.PerRPCCredentials, sending the
+// configured API key as an Authorization: Bearer header on every RPC.
+type apiKeyCredentials struct{ key string }
+
+func (a apiKeyCredentials) GetRequestMetadata(_ context.Context, _ ...string) (map[string]string, error) {
+	return map[string]string{"authorization": "Bearer " + a.key}, nil
+}
+func (a apiKeyCredentials) RequireTransportSecurity() bool { return false }
 
 func (c *Config) applyDefaults() {
 	if c.ReconnectDelay == 0    { c.ReconnectDelay = 2 * time.Second }
@@ -194,10 +204,16 @@ func (t *GRPCTransport) OnTask(fn func(TaskInstruction)) {
 	t.onTask = fn
 }
 
+const maxPendingResults = 1000
+
 // ReportTaskResult queues an execution result to be sent on the next heartbeat.
+// Drops oldest entries if the queue exceeds maxPendingResults to prevent unbounded growth.
 func (t *GRPCTransport) ReportTaskResult(r TaskResult) {
 	t.resultsMu.Lock()
 	t.pendingResults = append(t.pendingResults, r)
+	if len(t.pendingResults) > maxPendingResults {
+		t.pendingResults = t.pendingResults[len(t.pendingResults)-maxPendingResults:]
+	}
 	t.resultsMu.Unlock()
 }
 
@@ -259,15 +275,19 @@ func (t *GRPCTransport) connect(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	//nolint:staticcheck // DialContext is fine here
-	conn, err := grpc.DialContext(ctx, t.cfg.BackendURL,
+	dialOpts := []grpc.DialOption{
 		grpc.WithTransportCredentials(creds),
 		grpc.WithDefaultCallOptions(grpc.CallContentSubtype("json")),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time: 30 * time.Second, Timeout: 10 * time.Second,
 			PermitWithoutStream: true,
 		}),
-	)
+	}
+	if t.cfg.APIKey != "" {
+		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(apiKeyCredentials{t.cfg.APIKey}))
+	}
+	//nolint:staticcheck // DialContext is fine here
+	conn, err := grpc.DialContext(ctx, t.cfg.BackendURL, dialOpts...)
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", t.cfg.BackendURL, err)
 	}
@@ -403,8 +423,14 @@ func (t *GRPCTransport) heartbeatLoop(ctx context.Context) {
 	defer ticker.Stop()
 	reconnectDelay := 2 * time.Second
 	// Immediate first attempt — don't wait 20s for first tick
+	t.wg.Add(1)
 	go func() {
-		time.Sleep(2 * time.Second) // brief delay for startup
+		defer t.wg.Done()
+		select {
+		case <-time.After(2 * time.Second):
+		case <-t.stopCh:
+			return
+		}
 		if !t.IsConnected() {
 			if err := t.connect(ctx); err != nil {
 				t.log.Warn().Err(err).Msg("startup reconnect failed")
@@ -445,14 +471,16 @@ func (t *GRPCTransport) heartbeatLoop(ctx context.Context) {
 			t.pendingResults = nil
 			t.resultsMu.Unlock()
 
-			hbCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			var resp heartbeatResponse
-			err := conn.Invoke(hbCtx, methodHeartbeat, &heartbeatRequest{
-				AgentID: t.cfg.AgentID, Hostname: t.cfg.Hostname,
-				Timestamp: time.Now().UnixNano(), OS: "linux",
-				TaskResults: results,
-			}, &resp, grpc.CallContentSubtype("json"))
-			cancel()
+			err := func() error {
+				hbCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				defer cancel()
+				return conn.Invoke(hbCtx, methodHeartbeat, &heartbeatRequest{
+					AgentID: t.cfg.AgentID, Hostname: t.cfg.Hostname,
+					Timestamp: time.Now().UnixNano(), OS: "linux",
+					TaskResults: results,
+				}, &resp, grpc.CallContentSubtype("json"))
+			}()
 			if err != nil {
 				t.log.Warn().Err(err).Msg("heartbeat failed — marking disconnected")
 				t.mu.Lock()

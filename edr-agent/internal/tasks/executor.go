@@ -17,7 +17,6 @@ import (
 
 const (
 	maxOutputBytes = 64 * 1024 // 64 KB cap on combined stdout+stderr
-	scriptTimeout  = 5 * time.Minute
 	collectTimeout = 30 * time.Second
 )
 
@@ -45,8 +44,6 @@ func (e *Executor) Handle(task transport.TaskInstruction) {
 	var err error
 
 	switch task.Type {
-	case "script":
-		output, err = e.runScript(task.Payload)
 	case "collect":
 		output, err = e.runCollect()
 	case "scan":
@@ -72,27 +69,6 @@ func (e *Executor) Handle(task transport.TaskInstruction) {
 		Output: cap(output),
 		ErrMsg: errMsg,
 	})
-}
-
-// runScript executes a shell command from the task payload.
-// Payload: {"cmd": "echo hello"}
-func (e *Executor) runScript(payload json.RawMessage) (string, error) {
-	var p struct {
-		Cmd string `json:"cmd"`
-	}
-	if err := json.Unmarshal(payload, &p); err != nil || strings.TrimSpace(p.Cmd) == "" {
-		return "", fmt.Errorf("invalid script payload: cmd is required")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), scriptTimeout)
-	defer cancel()
-
-	var buf bytes.Buffer
-	cmd := exec.CommandContext(ctx, "bash", "-c", p.Cmd) // #nosec G204 — admin-created tasks only
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-	err := cmd.Run()
-	return buf.String(), err
 }
 
 // runCollect gathers basic system information.

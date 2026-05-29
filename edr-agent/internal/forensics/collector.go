@@ -34,6 +34,29 @@ type Params struct {
 	Path string `json:"path"`
 }
 
+// forensicsBlocklist are path prefixes that the file collector must never read.
+var forensicsBlocklist = []string{
+	"/etc/shadow", "/etc/gshadow", "/etc/master.passwd",
+	"/root/", "/home/",
+	"/.ssh/", "/.gnupg/",
+	"/proc/", "/sys/",
+}
+
+// checkForensicsPath rejects sensitive paths and symlinks pointing to them.
+func checkForensicsPath(p string) error {
+	clean := filepath.Clean(p)
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		clean = resolved
+	}
+	lower := strings.ToLower(clean)
+	for _, blocked := range forensicsBlocklist {
+		if strings.HasPrefix(lower, strings.ToLower(blocked)) || lower == strings.TrimSuffix(strings.ToLower(blocked), "/") {
+			return fmt.Errorf("path %q is not permitted for forensic collection", clean)
+		}
+	}
+	return nil
+}
+
 // Collect creates a tar.gz archive for the given job type and params.
 // Returns the compressed archive as a byte slice.
 func Collect(ctx context.Context, jobType string, rawParams json.RawMessage) ([]byte, error) {
@@ -57,8 +80,8 @@ func Collect(ctx context.Context, jobType string, rawParams json.RawMessage) ([]
 			}
 		}
 	case "process_memory":
-		if params.PID <= 0 {
-			return nil, fmt.Errorf("process_memory requires pid in params")
+		if params.PID <= 1 {
+			return nil, fmt.Errorf("process_memory requires pid > 1")
 		}
 		if err := collectProcMemory(ctx, tw, params.PID); err != nil {
 			return nil, fmt.Errorf("proc memory pid %d: %w", params.PID, err)
@@ -66,6 +89,9 @@ func Collect(ctx context.Context, jobType string, rawParams json.RawMessage) ([]
 	case "file":
 		if params.Path == "" {
 			return nil, fmt.Errorf("file requires path in params")
+		}
+		if err := checkForensicsPath(params.Path); err != nil {
+			return nil, err
 		}
 		clean := filepath.Clean(params.Path)
 		if err := addFileToTar(tw, clean, "files"+clean); err != nil {

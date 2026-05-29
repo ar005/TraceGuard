@@ -156,6 +156,7 @@ const NAV: NavGroup[] = [
       { href: "/live-response",    icon: Terminal,          label: "Live Response" },
       { href: "/forensics",        icon: Archive,           label: "Forensics" },
       { href: "/playbooks",        icon: PlaySquare,        label: "Playbooks",         matchPrefix: "/playbooks" },
+      { href: "/playbooks/runs",   icon: PlaySquare,        label: "Playbook Runs" },
       { href: "/auto-disruption",  icon: Zap,               label: "Auto-Disruption" },
       { href: "/auto-remediation", icon: Siren,             label: "Auto-Remediation" },
       { href: "/compliance",       icon: ClipboardCheck,    label: "Compliance" },
@@ -172,7 +173,7 @@ const NAV: NavGroup[] = [
   },
 ];
 
-const STORAGE_KEY = "tg-sidebar-expanded";
+const STORAGE_KEY = "tg-sidebar-collapsed";
 
 const SEV_COLORS = ["var(--fg-3)", "oklch(0.65 0.15 200)", "oklch(0.70 0.16 80)", "oklch(0.65 0.18 35)", "var(--sev-critical)"];
 
@@ -294,7 +295,7 @@ export function Sidebar() {
   const { notifications, unread, markAllRead, clear } = useNotifications();
 
   useEffect(() => {
-    try { setExpanded(localStorage.getItem(STORAGE_KEY) === "1"); } catch {/* ignore */}
+    try { setExpanded(localStorage.getItem(STORAGE_KEY) !== "true"); } catch {/* ignore */}
   }, []);
 
   // Close bell dropdown on outside click
@@ -312,7 +313,7 @@ export function Sidebar() {
   const toggle = () => {
     setExpanded(v => {
       const next = !v;
-      try { localStorage.setItem(STORAGE_KEY, next ? "1" : "0"); } catch {/* ignore */}
+      try { localStorage.setItem(STORAGE_KEY, next ? "false" : "true"); } catch {/* ignore */}
       return next;
     });
   };

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useApi } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
-import { cn, timeAgo } from "@/lib/utils";
+import { cn, timeAgo, safeHref } from "@/lib/utils";
 import { exportToCSV, exportToJSON } from "@/lib/export";
 import { Bug, Download, ExternalLink, Package, Shield, Search, Loader2 } from "lucide-react";
 import type { Agent, Vulnerability } from "@/types";
@@ -144,7 +144,7 @@ function CVEDetailPanel({ cveId, onClose }: { cveId: string; onClose: () => void
                   {detail.references.map((ref, i) => (
                     <a
                       key={i}
-                      href={ref}
+                      href={safeHref(ref)}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="flex items-center gap-1 text-xs truncate hover:underline"

@@ -487,7 +487,12 @@ func (c *Controller) QuarantineFile(filePath string) (string, error) {
 // RestoreFile moves a quarantined file back to its original location.
 func (c *Controller) RestoreFile(quarantineName string) error {
 	destPath := filepath.Join(quarantineDir, quarantineName)
-	metaPath := destPath + ".meta.json"
+	// Prevent path traversal: the resolved path must stay inside quarantineDir.
+	cleanDest := filepath.Clean(destPath)
+	if !strings.HasPrefix(cleanDest, filepath.Clean(quarantineDir)+string(os.PathSeparator)) {
+		return fmt.Errorf("invalid quarantine name %q: resolves outside quarantine directory", quarantineName)
+	}
+	metaPath := cleanDest + ".meta.json"
 
 	// Read metadata.
 	metaData, err := os.ReadFile(metaPath)
@@ -501,15 +506,15 @@ func (c *Controller) RestoreFile(quarantineName string) error {
 	}
 
 	// Move file back.
-	if err := os.Rename(destPath, meta.OriginalPath); err != nil {
-		data, readErr := os.ReadFile(destPath)
+	if err := os.Rename(cleanDest, meta.OriginalPath); err != nil {
+		data, readErr := os.ReadFile(cleanDest)
 		if readErr != nil {
 			return fmt.Errorf("read quarantined file: %w", readErr)
 		}
 		if writeErr := os.WriteFile(meta.OriginalPath, data, 0644); writeErr != nil {
 			return fmt.Errorf("restore file: %w", writeErr)
 		}
-		os.Remove(destPath)
+		os.Remove(cleanDest)
 	}
 
 	// Remove metadata.

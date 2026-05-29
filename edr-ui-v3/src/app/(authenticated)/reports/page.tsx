@@ -82,9 +82,7 @@ export default function ReportsPage() {
   }
 
   function downloadUrl(id: string) {
-    const base =
-      process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8080";
-    return `${base}/api/v1/reports/${id}/download`;
+    return `/api/v1/reports/${id}/download`;
   }
 
   return (
