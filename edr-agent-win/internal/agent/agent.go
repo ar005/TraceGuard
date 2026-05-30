@@ -5,6 +5,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -42,6 +43,9 @@ import (
 	"github.com/youredr/edr-agent-win/internal/monitor/usb"
 	"github.com/youredr/edr-agent-win/internal/monitor/vuln"
 	"github.com/youredr/edr-agent-win/internal/monitor/winevent"
+	"github.com/youredr/edr-agent-win/internal/forensics"
+	"github.com/youredr/edr-agent-win/internal/monitor/yarascan"
+	"github.com/youredr/edr-agent-win/internal/selfprotect"
 	"github.com/youredr/edr-agent-win/internal/chainid"
 	"github.com/youredr/edr-agent-win/internal/tasks"
 	"github.com/youredr/edr-agent-win/internal/transport"
@@ -80,6 +84,8 @@ type Agent struct {
 	schtaskMonitor  *schtask.Monitor
 	fimMonitor      *fim.Monitor
 	wineventMonitor *winevent.Monitor
+	yaraMonitor     *yarascan.Monitor
+	selfProtect     *selfprotect.SelfProtect
 }
 
 func New(cfg *config.Config) (*Agent, error) {
@@ -277,6 +283,26 @@ func New(cfg *config.Config) (*Agent, error) {
 		}, bus, log)
 	}
 
+	if cfg.Monitors.YARAScan.Enabled {
+		workerCount := cfg.Monitors.YARAScan.WorkerCount
+		if workerCount <= 0 {
+			workerCount = 2
+		}
+		a.yaraMonitor = yarascan.New(yarascan.Config{
+			Enabled:     true,
+			BackendURL:  cfg.Agent.RESTBackendURL,
+			APIKey:      cfg.Agent.APIKey,
+			WorkerCount: workerCount,
+		}, bus, log)
+	}
+
+	// Self-protection — always created; Start() decides what to activate.
+	a.selfProtect = selfprotect.New(selfprotect.Config{
+		BinPath:      cfg.SelfProtect.BinPath,
+		Watchdog:     cfg.SelfProtect.Watchdog,
+		ImmutableBin: cfg.SelfProtect.ImmutableBin,
+	}, log)
+
 	// Apply any persisted fleet config from a previous push.
 	if persisted := loadPersistedFleetConfig(log); persisted != nil {
 		log.Info().Msg("applying persisted fleet monitor config")
@@ -298,6 +324,42 @@ func (a *Agent) Start(ctx context.Context) error {
 		a.log.Warn().Err(err).Msg("transport start failed; running in offline mode")
 	}
 	go a.transport.StartLiveResponse(ctx)
+
+	// Self-protection (started before monitors so the binary is protected
+	// before we expose any attack surface).
+	if err := a.selfProtect.Start(ctx); err != nil {
+		a.log.Warn().Err(err).Msg("self-protect start failed — continuing unprotected")
+	}
+
+	// Drain tamper notifications from the selfprotect subsystem.
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case n := <-a.selfProtect.TamperCh:
+				a.log.Error().
+					Str("mechanism", n.Mechanism).
+					Str("detail", n.Detail).
+					Msg("AGENT_TAMPER")
+				a.bus.Publish(&agentTamperEvent{
+					BaseEvent: types.BaseEvent{
+						ID:        uuid.New().String(),
+						Type:      types.EventAgentTamper,
+						Timestamp: time.Now(),
+						AgentID:   a.agentID,
+						Hostname:  a.hostname,
+						Severity:  types.SeverityCritical,
+					},
+					Mechanism: n.Mechanism,
+					Detail:    n.Detail,
+				})
+			}
+		}
+	}()
+
+	// Forensics acquisition poll loop — checks for pending jobs every 60s.
+	go a.runForensicsPollLoop(ctx)
 
 	// Wire task executor — receives tasks via heartbeat and reports results back.
 	taskExec := tasks.New(a.transport, a.log)
@@ -326,6 +388,7 @@ func (a *Agent) Start(ctx context.Context) error {
 		{"schtask", a.startMonitor(a.schtaskMonitor), a.schtaskMonitor != nil},
 		{"FIM", a.startMonitor(a.fimMonitor), a.fimMonitor != nil},
 		{"winevent (EventLog)", a.startMonitor(a.wineventMonitor), a.wineventMonitor != nil},
+		{"YARA scanner", a.startMonitor(a.yaraMonitor), a.yaraMonitor != nil},
 	}
 
 	for _, m := range monitors {
@@ -398,7 +461,7 @@ func (a *Agent) shutdown() error {
 
 	// Stop monitors in reverse order.
 	stoppers := []monitor{
-		a.wineventMonitor, a.fimMonitor, a.schtaskMonitor, a.memMonitor, a.shareMonitor,
+		a.yaraMonitor, a.wineventMonitor, a.fimMonitor, a.schtaskMonitor, a.memMonitor, a.shareMonitor,
 		a.pipeMonitor, a.usbMonitor, a.driverMonitor, a.browserMonitor,
 		a.vulnMonitor, a.commandMonitor, a.authMonitor, a.dnsMonitor,
 		a.registryMonitor, a.fileMonitor, a.networkMonitor, a.processMonitor,
@@ -410,6 +473,7 @@ func (a *Agent) shutdown() error {
 	}
 
 	a.chainAssigner.Stop()
+	a.selfProtect.Stop()
 	a.transport.Stop()
 	a.buf.Close()
 
@@ -741,6 +805,30 @@ func (a *Agent) applyFleetConfig(newCfg config.MonitorsConfig) {
 		a.log.Info().Msg("fleet reload: fim monitor stopped")
 	}
 
+	// YARAScan
+	if newCfg.YARAScan.Enabled && a.yaraMonitor == nil {
+		workerCount := newCfg.YARAScan.WorkerCount
+		if workerCount <= 0 {
+			workerCount = 2
+		}
+		a.yaraMonitor = yarascan.New(yarascan.Config{
+			Enabled:     true,
+			BackendURL:  a.cfg.Agent.RESTBackendURL,
+			APIKey:      a.cfg.Agent.APIKey,
+			WorkerCount: workerCount,
+		}, a.bus, a.log)
+		if err := a.yaraMonitor.Start(a.runCtx); err != nil {
+			a.log.Warn().Err(err).Msg("fleet reload: start YARA scanner failed")
+			a.yaraMonitor = nil
+		} else {
+			a.log.Info().Msg("fleet reload: YARA scanner started")
+		}
+	} else if !newCfg.YARAScan.Enabled && a.yaraMonitor != nil {
+		a.yaraMonitor.Stop()
+		a.yaraMonitor = nil
+		a.log.Info().Msg("fleet reload: YARA scanner stopped")
+	}
+
 	a.cfg.Monitors = newCfg
 }
 
@@ -788,3 +876,148 @@ type agentLifecycleEvent struct {
 
 func (e *agentLifecycleEvent) EventType() string { return string(e.Type) }
 func (e *agentLifecycleEvent) EventID() string   { return e.ID }
+
+type agentTamperEvent struct {
+	types.BaseEvent
+	Mechanism string `json:"mechanism"` // "binary_hash" | "debugger"
+	Detail    string `json:"detail,omitempty"`
+}
+
+func (e *agentTamperEvent) EventType() string { return string(e.Type) }
+func (e *agentTamperEvent) EventID() string   { return e.ID }
+
+// ─── Forensics acquisition ────────────────────────────────────────────────────
+
+func (a *Agent) runForensicsPollLoop(ctx context.Context) {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			a.checkAndExecuteForensicsJobs(ctx)
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (a *Agent) forensicsBackendURL() string {
+	u := a.cfg.Agent.RESTBackendURL
+	if u == "" {
+		u = a.cfg.Agent.BackendURL
+	}
+	return u
+}
+
+func (a *Agent) checkAndExecuteForensicsJobs(ctx context.Context) {
+	backendURL := a.forensicsBackendURL()
+	if backendURL == "" {
+		return
+	}
+	pendingURL := strings.TrimRight(backendURL, "/") +
+		"/api/v1/agents/" + a.agentID + "/forensics/pending"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pendingURL, nil)
+	if err != nil {
+		return
+	}
+	if a.cfg.Agent.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+a.cfg.Agent.APIKey)
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Jobs []struct {
+			ID      string          `json:"id"`
+			JobType string          `json:"job_type"`
+			Params  json.RawMessage `json:"params"`
+		} `json:"jobs"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return
+	}
+
+	for _, job := range result.Jobs {
+		if ctx.Err() != nil {
+			return
+		}
+		a.executeForensicsJob(ctx, backendURL, job.ID, job.JobType, job.Params)
+	}
+}
+
+func (a *Agent) executeForensicsJob(
+	ctx context.Context,
+	backendURL, jobID, jobType string,
+	params json.RawMessage,
+) {
+	base := strings.TrimRight(backendURL, "/")
+
+	// Use a generous timeout for full-memory collection.
+	collectCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+
+	bundle, err := forensics.Collect(collectCtx, jobType, params)
+	if err != nil {
+		a.log.Error().Err(err).Str("job", jobID).Msg("forensics collection failed")
+		a.reportForensicsError(ctx, base, jobID, err.Error())
+		return
+	}
+
+	uploadURL := base + "/api/v1/forensics/jobs/" + jobID + "/bundle"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL,
+		bytes.NewReader(bundle))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/gzip")
+	req.Header.Set("X-Agent-ID", a.agentID)
+	if a.cfg.Agent.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+a.cfg.Agent.APIKey)
+	}
+
+	uploadClient := &http.Client{Timeout: 5 * time.Minute}
+	uploadResp, err := uploadClient.Do(req)
+	if err != nil {
+		a.log.Error().Err(err).Str("job", jobID).Msg("forensics bundle upload failed")
+		return
+	}
+	defer uploadResp.Body.Close()
+	io.Copy(io.Discard, uploadResp.Body)
+
+	a.log.Info().
+		Str("job", jobID).
+		Str("type", jobType).
+		Int("bytes", len(bundle)).
+		Msg("forensics bundle uploaded")
+}
+
+func (a *Agent) reportForensicsError(
+	ctx context.Context,
+	baseURL, jobID, errMsg string,
+) {
+	url := strings.TrimRight(baseURL, "/") +
+		"/api/v1/forensics/jobs/" + jobID + "/bundle"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url,
+		bytes.NewReader(nil))
+	if err != nil {
+		return
+	}
+	req.Header.Set("X-Forensics-Error", errMsg)
+	if a.cfg.Agent.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+a.cfg.Agent.APIKey)
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
+}

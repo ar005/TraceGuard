@@ -57,6 +57,7 @@ type MonitorsConfig struct {
 	FIM      FIMConfig             `mapstructure:"fim"`
 	Vuln     VulnMonitorConfig     `mapstructure:"vuln"`
 	WinEvent WinEventMonitorConfig `mapstructure:"winevent"`
+	YARAScan YARAScanMonitorConfig `mapstructure:"yarascan"`
 }
 
 type ProcessMonitorConfig struct {
@@ -152,6 +153,11 @@ type WinEventChannelConfig struct {
 	EventIDs []int  `mapstructure:"event_ids"`
 }
 
+type YARAScanMonitorConfig struct {
+	Enabled     bool `mapstructure:"enabled"`
+	WorkerCount int  `mapstructure:"worker_count"`
+}
+
 type WinEventMonitorConfig struct {
 	Enabled          bool                    `mapstructure:"enabled"`
 	PollIntervalS    int                     `mapstructure:"poll_interval_s"`
@@ -172,8 +178,9 @@ type LogConfig struct {
 }
 
 type SelfProtectConfig struct {
-	BinPath  string `mapstructure:"bin_path"`
-	Watchdog bool   `mapstructure:"watchdog"`
+	BinPath      string `mapstructure:"bin_path"`
+	Watchdog     bool   `mapstructure:"watchdog"`
+	ImmutableBin bool   `mapstructure:"immutable_bin"`
 }
 
 // Load reads configuration from the given YAML file path.
@@ -256,13 +263,17 @@ func Load(path string) (*Config, error) {
 		},
 	})
 
+	v.SetDefault("monitors.yarascan.enabled", true)
+	v.SetDefault("monitors.yarascan.worker_count", 2)
+
 	v.SetDefault("buffer.path", `C:\ProgramData\TraceGuard\events.db`)
 	v.SetDefault("buffer.max_size_mb", 512)
 	v.SetDefault("buffer.flush_interval_s", 5)
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.format", "json")
 	v.SetDefault("log.path", `C:\ProgramData\TraceGuard\Logs\agent.log`)
-	v.SetDefault("self_protect.watchdog", false) // Windows uses service recovery instead
+	v.SetDefault("self_protect.watchdog", false)        // Windows uses service recovery instead
+	v.SetDefault("self_protect.immutable_bin", false) // opt-in; requires SYSTEM privilege
 
 	if path != "" {
 		v.SetConfigFile(path)
