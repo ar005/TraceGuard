@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -91,12 +92,12 @@ type Agent struct {
 func New(cfg *config.Config) (*Agent, error) {
 	hostname, _ := os.Hostname()
 
+	log := logger.New(cfg.Log)
+
 	agentID := cfg.Agent.ID
 	if agentID == "" {
-		agentID = loadOrGenerateAgentID(cfg.Agent.IDFile)
+		agentID = loadOrGenerateAgentID(cfg.Agent.IDFile, log)
 	}
-
-	log := logger.New(cfg.Log)
 
 	buildInfo := version.Get()
 	log.Info().
@@ -459,18 +460,51 @@ func (a *Agent) shutdown() error {
 	})
 	time.Sleep(500 * time.Millisecond)
 
-	// Stop monitors in reverse order.
-	stoppers := []monitor{
-		a.yaraMonitor, a.wineventMonitor, a.fimMonitor, a.schtaskMonitor, a.memMonitor, a.shareMonitor,
-		a.pipeMonitor, a.usbMonitor, a.driverMonitor, a.browserMonitor,
-		a.vulnMonitor, a.commandMonitor, a.authMonitor, a.dnsMonitor,
-		a.registryMonitor, a.fileMonitor, a.networkMonitor, a.processMonitor,
+	// Stop monitors concurrently. Each gets a 3-second deadline so a blocked
+	// ETW/WMI session (kernel call that ignores context cancellation) cannot
+	// hang the whole agent on service stop.
+	type namedStopper struct {
+		name string
+		m    monitor
 	}
-	for _, m := range stoppers {
-		if m != nil {
-			m.Stop()
+	stoppers := []namedStopper{
+		{"yara", a.yaraMonitor},
+		{"winevent", a.wineventMonitor},
+		{"fim", a.fimMonitor},
+		{"schtask", a.schtaskMonitor},
+		{"memmon", a.memMonitor},
+		{"share", a.shareMonitor},
+		{"pipe", a.pipeMonitor},
+		{"usb", a.usbMonitor},
+		{"driver", a.driverMonitor},
+		{"browser", a.browserMonitor},
+		{"vuln", a.vulnMonitor},
+		{"command", a.commandMonitor},
+		{"auth", a.authMonitor},
+		{"dns", a.dnsMonitor},
+		{"registry", a.registryMonitor},
+		{"file", a.fileMonitor},
+		{"network", a.networkMonitor},
+		{"process", a.processMonitor},
+	}
+	var stopWg sync.WaitGroup
+	for _, s := range stoppers {
+		if s.m == nil {
+			continue
 		}
+		stopWg.Add(1)
+		go func(name string, m monitor) {
+			defer stopWg.Done()
+			stopped := make(chan struct{})
+			go func() { m.Stop(); close(stopped) }()
+			select {
+			case <-stopped:
+			case <-time.After(3 * time.Second):
+				a.log.Warn().Str("monitor", name).Msg("monitor stop timed out")
+			}
+		}(s.name, s.m)
 	}
+	stopWg.Wait()
 
 	a.chainAssigner.Stop()
 	a.selfProtect.Stop()
@@ -848,18 +882,30 @@ func loadPersistedFleetConfig(log zerolog.Logger) *config.MonitorsConfig {
 	return &cfg
 }
 
-func loadOrGenerateAgentID(path string) string {
+func loadOrGenerateAgentID(path string, log zerolog.Logger) string {
 	if path == "" {
 		path = `C:\ProgramData\TraceGuard\agent.id`
 	}
 	if raw, err := os.ReadFile(path); err == nil {
-		if id := string(raw); len(id) > 0 {
-			return id
+		candidate := strings.TrimSpace(string(raw))
+		if _, parseErr := uuid.Parse(candidate); parseErr == nil {
+			return candidate
 		}
+		// File exists but content is not a valid UUID (truncated write, tampering).
+		log.Warn().Str("path", path).Msg("agent ID file has invalid content — generating new ID (host continuity broken)")
+	} else if os.IsNotExist(err) {
+		log.Info().Str("path", path).Msg("agent ID file not found — generating new ID (first run or file was deleted)")
+	} else {
+		log.Error().Err(err).Str("path", path).Msg("agent ID file unreadable — generating new ID (host continuity broken)")
 	}
 	id := uuid.New().String()
-	_ = os.MkdirAll(`C:\ProgramData\TraceGuard`, 0700)
-	_ = os.WriteFile(path, []byte(id), 0600)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		log.Error().Err(err).Str("path", path).Msg("failed to create agent ID directory — ID will not persist across restarts")
+		return id
+	}
+	if err := os.WriteFile(path, []byte(id), 0600); err != nil {
+		log.Error().Err(err).Str("path", path).Msg("failed to persist agent ID — ID will not persist across restarts")
+	}
 	return id
 }
 

@@ -58,7 +58,9 @@ func checkForensicsPath(p string) error {
 func Collect(ctx context.Context, jobType string, rawParams json.RawMessage) ([]byte, error) {
 	var params Params
 	if len(rawParams) > 0 {
-		_ = json.Unmarshal(rawParams, &params)
+		if err := json.Unmarshal(rawParams, &params); err != nil {
+			return nil, fmt.Errorf("parse params: %w", err)
+		}
 	}
 
 	var buf bytes.Buffer

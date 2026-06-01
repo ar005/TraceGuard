@@ -120,7 +120,7 @@ func (t *GRPCTransport) runLiveResponseStream(ctx context.Context, conn *grpc.Cl
 		}
 		t.log.Info().Str("command_id", cmd.CommandID).Str("action", cmd.Action).
 			Strs("args", cmd.Args).Msg("received live response command")
-		result := t.executeCommand(cmd)
+		result := t.executeCommand(ctx, cmd)
 		result.AgentID = t.cfg.AgentID
 		if err := stream.SendMsg(result); err != nil {
 			return fmt.Errorf("send result: %w", err)
@@ -128,7 +128,7 @@ func (t *GRPCTransport) runLiveResponseStream(ctx context.Context, conn *grpc.Cl
 	}
 }
 
-func (t *GRPCTransport) executeCommand(cmd *liveCommand) *liveResult {
+func (t *GRPCTransport) executeCommand(ctx context.Context, cmd *liveCommand) *liveResult {
 	result := &liveResult{CommandID: cmd.CommandID, Status: "completed"}
 
 	if !allowedActions[cmd.Action] {
@@ -141,7 +141,7 @@ func (t *GRPCTransport) executeCommand(cmd *liveCommand) *liveResult {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	var cmdName string
