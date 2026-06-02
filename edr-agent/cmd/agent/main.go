@@ -54,6 +54,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
 		os.Exit(1)
 	}
+	if err := cfg.Validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
 
 	// Create agent.
 	a, err := agent.New(cfg)
