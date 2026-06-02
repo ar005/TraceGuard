@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -248,6 +249,15 @@ func (t *GRPCTransport) IsConnected() bool {
 	return t.connected
 }
 
+// jitter adds up to 25% random noise to d to prevent reconnect thundering herd
+// when many agents lose connectivity simultaneously (e.g. backend restart).
+func jitter(d time.Duration) time.Duration {
+	if d <= 0 {
+		return d
+	}
+	return d + time.Duration(rand.Int63n(int64(d)/4))
+}
+
 func (t *GRPCTransport) connect(ctx context.Context) error {
 	creds, err := t.buildCredentials()
 	if err != nil {
@@ -338,7 +348,7 @@ func (t *GRPCTransport) sendLoop(ctx context.Context) {
 		case data := <-t.sendCh:
 			if stream == nil {
 				if err := t.connect(ctx); err != nil {
-					time.Sleep(delay)
+					time.Sleep(jitter(delay))
 					if delay*2 < t.cfg.MaxReconnectDelay {
 						delay *= 2
 					} else {
@@ -371,13 +381,13 @@ func (t *GRPCTransport) heartbeatLoop(ctx context.Context) {
 	defer t.wg.Done()
 	ticker := time.NewTicker(20 * time.Second)
 	defer ticker.Stop()
-	reconnectDelay := 2 * time.Second
+	reconnectDelay := t.cfg.ReconnectDelay
 
 	t.wg.Add(1)
 	go func() {
 		defer t.wg.Done()
 		select {
-		case <-time.After(2 * time.Second):
+		case <-time.After(jitter(t.cfg.ReconnectDelay)):
 		case <-t.stopCh:
 			return
 		}
@@ -399,16 +409,18 @@ func (t *GRPCTransport) heartbeatLoop(ctx context.Context) {
 				t.log.Info().Msg("not connected — attempting reconnect")
 				if err := t.connect(ctx); err != nil {
 					t.log.Warn().Err(err).Dur("retry_in", reconnectDelay).Msg("reconnect failed")
-					time.Sleep(reconnectDelay)
-					if reconnectDelay < 60*time.Second {
+					time.Sleep(jitter(reconnectDelay))
+					if reconnectDelay*2 < t.cfg.MaxReconnectDelay {
 						reconnectDelay *= 2
+					} else {
+						reconnectDelay = t.cfg.MaxReconnectDelay
 					}
 				} else {
-					reconnectDelay = 5 * time.Second
+					reconnectDelay = t.cfg.ReconnectDelay
 				}
 				continue
 			}
-			reconnectDelay = 5 * time.Second
+			reconnectDelay = t.cfg.ReconnectDelay
 			t.mu.RLock()
 			conn := t.conn
 			t.mu.RUnlock()

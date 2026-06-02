@@ -74,6 +74,10 @@ func runInteractive() {
 		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
 		os.Exit(1)
 	}
+	if err := cfg.Validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
 
 	a, err := agent.New(cfg)
 	if err != nil {
@@ -117,6 +121,10 @@ func (s *TraceGuardService) Execute(args []string, r <-chan svc.ChangeRequest, c
 	cfg, err := config.Load(*flagConfig)
 	if err != nil {
 		crashLog(fmt.Sprintf("config load error: %v", err))
+		return true, 1
+	}
+	if err := cfg.Validate(); err != nil {
+		crashLog(fmt.Sprintf("config validation error: %v", err))
 		return true, 1
 	}
 

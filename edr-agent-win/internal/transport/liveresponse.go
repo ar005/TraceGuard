@@ -74,6 +74,7 @@ var allowedActions = map[string]bool{
 }
 
 func (t *GRPCTransport) StartLiveResponse(ctx context.Context) {
+	delay := t.cfg.ReconnectDelay
 	for {
 		select {
 		case <-ctx.Done():
@@ -86,14 +87,21 @@ func (t *GRPCTransport) StartLiveResponse(ctx context.Context) {
 		conn := t.conn
 		t.mu.RUnlock()
 		if conn == nil {
-			time.Sleep(2 * time.Second)
+			time.Sleep(jitter(t.cfg.ReconnectDelay))
 			continue
 		}
 		err := t.runLiveResponseStream(ctx, conn)
 		if err != nil {
-			t.log.Warn().Err(err).Msg("live response stream ended, reconnecting...")
+			t.log.Warn().Err(err).Dur("retry_in", delay).Msg("live response stream ended, reconnecting...")
+			time.Sleep(jitter(delay))
+			if delay*2 < t.cfg.MaxReconnectDelay {
+				delay *= 2
+			} else {
+				delay = t.cfg.MaxReconnectDelay
+			}
+		} else {
+			delay = t.cfg.ReconnectDelay
 		}
-		time.Sleep(5 * time.Second)
 	}
 }
 

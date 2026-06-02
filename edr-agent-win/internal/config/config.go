@@ -6,6 +6,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/viper"
 )
@@ -302,4 +303,46 @@ func Load(path string) (*Config, error) {
 func DefaultConfig() *Config {
 	cfg, _ := Load("")
 	return cfg
+}
+
+// Validate returns an error if the config contains values that would cause
+// silent misbehaviour at runtime. Call immediately after Load().
+func (c *Config) Validate() error {
+	var errs []string
+
+	if c.Agent.BackendURL == "" {
+		errs = append(errs, "agent.backend_url must not be empty")
+	}
+
+	if (c.Agent.TLS.Cert == "") != (c.Agent.TLS.Key == "") {
+		errs = append(errs, "agent.tls.cert and agent.tls.key must both be set or both be empty")
+	}
+
+	if c.Buffer.MaxSizeMB <= 0 {
+		errs = append(errs, fmt.Sprintf("buffer.max_size_mb must be > 0 (got %d)", c.Buffer.MaxSizeMB))
+	}
+	if c.Buffer.FlushIntervalS < 0 {
+		errs = append(errs, fmt.Sprintf("buffer.flush_interval_s must be >= 0 (got %d)", c.Buffer.FlushIntervalS))
+	}
+
+	validLevels := map[string]bool{
+		"trace": true, "debug": true, "info": true,
+		"warn": true, "error": true, "fatal": true, "panic": true,
+	}
+	if l := strings.ToLower(c.Log.Level); l != "" && !validLevels[l] {
+		errs = append(errs, fmt.Sprintf("log.level %q is not valid (want one of: trace debug info warn error fatal panic)", c.Log.Level))
+	}
+
+	if f := strings.ToLower(c.Log.Format); f != "" && f != "json" && f != "text" {
+		errs = append(errs, fmt.Sprintf("log.format %q is not valid (want: json or text)", c.Log.Format))
+	}
+
+	if c.Monitors.YARAScan.Enabled && c.Monitors.YARAScan.WorkerCount <= 0 {
+		errs = append(errs, fmt.Sprintf("monitors.yarascan.worker_count must be > 0 when yarascan is enabled (got %d)", c.Monitors.YARAScan.WorkerCount))
+	}
+
+	if len(errs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("config validation failed:\n  - %s", strings.Join(errs, "\n  - "))
 }
