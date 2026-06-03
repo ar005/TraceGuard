@@ -641,6 +641,7 @@ func main() {
 	apiServer.SetPlaybookRunner(pbRunner)
 	apiServer.SetExportManager(exportMgr)
 	apiServer.SetDisruptionEngine(disruptionEng)
+	apiServer.SetMinAgentVersion(cfg.Server.MinAgentVersion)
 
 	// IOC enrichment pipeline — background goroutine + API hook.
 	iocEnricher := enrichment.NewIOCPipeline(st, cfg.Enrichment.VirusTotalAPIKey, cfg.Enrichment.WhoisEnabled, logger)

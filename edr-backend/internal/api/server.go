@@ -27,6 +27,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 
+	bversion "github.com/youredr/edr-backend/internal/version"
+
 	"github.com/youredr/edr-backend/internal/apikeys"
 	"github.com/youredr/edr-backend/internal/enrichment"
 	"github.com/youredr/edr-backend/internal/compliance"
@@ -66,9 +68,10 @@ type Server struct {
 	log      zerolog.Logger
 	router   *gin.Engine
 	http     *http.Server
-	nodeID     string
-	apiKey     string
-	rateLimit  RateLimitConfig
+	nodeID          string
+	apiKey          string
+	rateLimit       RateLimitConfig
+	minAgentVersion string
 	cveFetcher  *cvecache.Fetcher
 	iocPipeline  IOCEnricher        // optional — nil if enrichment disabled
 	intelGen     IntelTaskGenerator // optional — nil if not configured
@@ -185,8 +188,9 @@ func (s *Server) registerRoutes() {
 	r.Use(prometheusMiddleware())
 
 	// Health / status (no auth)
-	r.GET("/health",  s.handleHealth)
-	r.GET("/healthz", s.handleHealth)
+	r.GET("/health",       s.handleHealth)
+	r.GET("/healthz",      s.handleHealth)
+	r.GET("/api/v1/version", s.handleVersion)
 	r.GET("/metrics", s.handleMetrics)
 	r.GET("/metrics/prometheus", gin.WrapH(promhttp.Handler()))
 	r.GET("/api/v1/metrics/prometheus", gin.WrapH(promhttp.Handler()))
@@ -1318,6 +1322,16 @@ func (s *Server) handleHealth(c *gin.Context) {
 		"sse_clients": s.sse.ClientCount(),
 		"db":          dbOK,
 		"time":        time.Now().UTC(),
+	})
+}
+
+// GET /api/v1/version — returns backend version and minimum required agent version.
+// Public (no auth) so agents can always reach it regardless of API key state.
+func (s *Server) handleVersion(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"backend_version":   bversion.Version,
+		"min_agent_version": s.minAgentVersion,
+		"time":              time.Now().UTC(),
 	})
 }
 
@@ -3313,6 +3327,8 @@ func (s *Server) SetEnricher(e *enrichment.Enricher) { s.enricher = e }
 func (s *Server) SetExportManager(m ExportManager) {
 	s.exportMgr = m
 }
+
+func (s *Server) SetMinAgentVersion(v string) { s.minAgentVersion = v }
 
 // GET /api/v1/cve/:id
 func (s *Server) handleGetCVE(c *gin.Context) {

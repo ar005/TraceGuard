@@ -6,6 +6,8 @@ server:
   # node_id is included in /health and /healthz responses for LB debugging.
   # Defaults to the hostname when unset.
   node_id: ""
+  # min_agent_version: "v1.0.0"   # Agents older than this log a warning; empty = no minimum enforced
+  min_agent_version: ""
   tls:
     enabled:   false          # set true + fill cert/key to enable TLS on gRPC
     cert_file: "/etc/edr/tls/server.crt"
