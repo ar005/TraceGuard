@@ -47,6 +47,7 @@ import (
 	"github.com/youredr/edr-agent/internal/tasks"
 	"github.com/youredr/edr-agent/internal/transport"
 	"github.com/youredr/edr-agent/internal/version"
+	"github.com/youredr/edr-agent/internal/versioncheck"
 	"github.com/youredr/edr-agent/pkg/types"
 )
 
@@ -356,6 +357,12 @@ func (a *Agent) Start(ctx context.Context) error {
 
 	// Start live response client (background goroutine).
 	go a.transport.StartLiveResponse(ctx)
+
+	// Periodic version check — warns if agent is older than backend's minimum.
+	if a.cfg.Agent.RESTBackendURL != "" {
+		vc := versioncheck.New(a.cfg.Agent.RESTBackendURL, a.cfg.Agent.APIKey, a.log)
+		go vc.Run(ctx)
+	}
 
 	// Forensics acquisition poll loop — checks for pending jobs every 60s.
 	go a.runForensicsPollLoop(ctx)
