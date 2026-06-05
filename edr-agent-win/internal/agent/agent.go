@@ -51,6 +51,7 @@ import (
 	"github.com/youredr/edr-agent-win/internal/tasks"
 	"github.com/youredr/edr-agent-win/internal/transport"
 	"github.com/youredr/edr-agent-win/internal/version"
+	"github.com/youredr/edr-agent-win/internal/versioncheck"
 	"github.com/youredr/edr-agent-win/pkg/types"
 )
 
@@ -325,6 +326,12 @@ func (a *Agent) Start(ctx context.Context) error {
 		a.log.Warn().Err(err).Msg("transport start failed; running in offline mode")
 	}
 	go a.transport.StartLiveResponse(ctx)
+
+	// Periodic version check — warns if agent is older than backend's minimum.
+	if a.cfg.Agent.RESTBackendURL != "" {
+		vc := versioncheck.New(a.cfg.Agent.RESTBackendURL, a.cfg.Agent.APIKey, a.log)
+		go vc.Run(ctx)
+	}
 
 	// Self-protection (started before monitors so the binary is protected
 	// before we expose any attack surface).
