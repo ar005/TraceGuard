@@ -108,6 +108,8 @@ func New(cfg *config.Config) (*Agent, error) {
 		Str("platform", "windows/amd64").
 		Msg("TraceGuard Windows agent initializing")
 
+	logConfigAudit(cfg, log)
+
 	bus := events.NewBus(agentID, hostname)
 
 	// Chain stamper: assigns chain_id to every event before fan-out.
@@ -362,6 +364,9 @@ func (a *Agent) Start(ctx context.Context) error {
 					Mechanism: n.Mechanism,
 					Detail:    n.Detail,
 				})
+				if a.cfg.Agent.RESTBackendURL != "" {
+					go a.reportTamper(n.Mechanism, n.Detail)
+				}
 			}
 		}
 	}()
@@ -1073,4 +1078,93 @@ func (a *Agent) reportForensicsError(
 	if err == nil {
 		resp.Body.Close()
 	}
+}
+
+// reportTamper POSTs a tamper alert to the backend REST API.
+// Called as a goroutine from the TamperCh drain so it never blocks detection.
+func (a *Agent) reportTamper(mechanism, description string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	body, _ := json.Marshal(map[string]string{
+		"mechanism":   mechanism,
+		"description": description,
+	})
+	url := strings.TrimRight(a.cfg.Agent.RESTBackendURL, "/") +
+		"/api/v1/agents/" + a.agentID + "/tamper-alert"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		a.log.Warn().Err(err).Msg("tamper-alert: build request failed")
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if a.cfg.Agent.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+a.cfg.Agent.APIKey)
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		a.log.Warn().Err(err).Msg("tamper-alert: POST failed")
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		a.log.Warn().Int("status", resp.StatusCode).Msg("tamper-alert: unexpected response")
+	}
+}
+
+// logConfigAudit emits a single structured INFO log summarising the active
+// configuration so operators can confirm what was actually loaded.
+func logConfigAudit(cfg *config.Config, log zerolog.Logger) {
+	m := cfg.Monitors
+
+	var monitors []string
+	if m.Process.Enabled  { monitors = append(monitors, "process") }
+	if m.Network.Enabled  { monitors = append(monitors, "network") }
+	if m.File.Enabled     { monitors = append(monitors, "file") }
+	if m.Registry.Enabled { monitors = append(monitors, "registry") }
+	if m.DNS.Enabled      { monitors = append(monitors, "dns") }
+	if m.Auth.Enabled     { monitors = append(monitors, "auth") }
+	if m.Command.Enabled  { monitors = append(monitors, "command") }
+	if m.Browser.Enabled  { monitors = append(monitors, "browser") }
+	if m.Driver.Enabled   { monitors = append(monitors, "driver") }
+	if m.USB.Enabled      { monitors = append(monitors, "usb") }
+	if m.Pipe.Enabled     { monitors = append(monitors, "pipe") }
+	if m.Share.Enabled    { monitors = append(monitors, "share") }
+	if m.MemMon.Enabled   { monitors = append(monitors, "memmon") }
+	if m.SchTask.Enabled  { monitors = append(monitors, "schtask") }
+	if m.TLSSNI.Enabled   { monitors = append(monitors, "tlssni") }
+	if m.FIM.Enabled      { monitors = append(monitors, "fim") }
+	if m.Vuln.Enabled     { monitors = append(monitors, "vuln") }
+	if m.WinEvent.Enabled { monitors = append(monitors, "winevent") }
+	if m.YARAScan.Enabled { monitors = append(monitors, "yarascan") }
+
+	tlsMode := "none"
+	if cfg.Agent.TLS.Cert != "" {
+		tlsMode = "mTLS"
+	} else if cfg.Agent.TLS.Insecure {
+		tlsMode = "insecure"
+	}
+
+	apiKeyStatus := "[not set]"
+	if cfg.Agent.APIKey != "" {
+		apiKeyStatus = "[set]"
+	}
+
+	log.Info().
+		Str("backend_url", cfg.Agent.BackendURL).
+		Str("rest_backend_url", cfg.Agent.RESTBackendURL).
+		Str("tls_mode", tlsMode).
+		Str("api_key", apiKeyStatus).
+		Strs("tags", cfg.Agent.Tags).
+		Str("env", cfg.Agent.Env).
+		Strs("monitors", monitors).
+		Str("buffer_path", cfg.Buffer.Path).
+		Int("buffer_max_mb", cfg.Buffer.MaxSizeMB).
+		Int("buffer_flush_s", cfg.Buffer.FlushIntervalS).
+		Str("log_level", cfg.Log.Level).
+		Str("log_path", cfg.Log.Path).
+		Bool("watchdog", cfg.SelfProtect.Watchdog).
+		Bool("immutable_bin", cfg.SelfProtect.ImmutableBin).
+		Msg("agent config audit")
 }
