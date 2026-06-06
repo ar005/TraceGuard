@@ -217,7 +217,8 @@ func (s *Server) registerRoutes() {
 		// Agents
 		v1.GET("/agents",          s.handleListAgents)
 		v1.GET("/agents/:id",      s.handleGetAgent)
-		v1.GET("/agents/:id/winevent-config", s.handleGetAgentWinEventConfig)
+		v1.GET("/agents/:id/winevent-config",  s.handleGetAgentWinEventConfig)
+		v1.POST("/agents/:id/tamper-alert",   s.handleAgentTamperAlert)
 		v1.GET("/agents/:id/fleet-config",         s.handleGetAgentFleetConfig)
 		v1.GET("/agents/:id/fleet-config/history", s.handleListAgentFleetConfigHistory)
 
@@ -1518,6 +1519,64 @@ func (s *Server) handleGetAgent(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, agent)
+}
+
+// POST /api/v1/agents/:id/tamper-alert — agent reports a self-protection tamper event.
+// Authenticated via the standard Bearer API key or JWT. The agent must supply its own
+// ID in the URL; the backend verifies it belongs to the caller's tenant before storing.
+func (s *Server) handleAgentTamperAlert(c *gin.Context) {
+	ctx := c.Request.Context()
+	tid := c.GetString("tenant_id")
+	agentID := c.Param("id")
+
+	ag, err := s.store.GetAgent(ctx, agentID, tid)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "agent not found"})
+			return
+		}
+		s.jsonError(c, err)
+		return
+	}
+
+	var body struct {
+		Mechanism   string `json:"mechanism"`
+		Description string `json:"description"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Description == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "mechanism and description are required"})
+		return
+	}
+
+	alert := &models.Alert{
+		ID:          uuid.New().String(),
+		TenantID:    tid,
+		AgentID:     ag.ID,
+		Hostname:    ag.Hostname,
+		Title:       "Agent Tamper Detected: " + body.Mechanism,
+		Description: body.Description,
+		Severity:    100, // Critical
+		Status:      "OPEN",
+		RuleName:    "agent_tamper",
+		SourceTypes: pq.StringArray{"agent_tamper"},
+		MitreIDs:    pq.StringArray{"T1562.001"},
+		EventIDs:    pq.StringArray{},
+		RiskScore:   100,
+	}
+
+	if err := s.store.InsertAlert(ctx, alert); err != nil {
+		s.log.Error().Err(err).Str("agent_id", agentID).Msg("failed to store tamper alert")
+		s.jsonError(c, err)
+		return
+	}
+
+	s.log.Warn().
+		Str("agent_id", agentID).
+		Str("mechanism", body.Mechanism).
+		Str("description", body.Description).
+		Msg("agent tamper alert received")
+
+	c.JSON(http.StatusCreated, gin.H{"alert_id": alert.ID})
 }
 
 // GET /api/v1/agents/:id/audit — containment audit log for an agent.
