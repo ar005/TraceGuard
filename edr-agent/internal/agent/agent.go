@@ -109,6 +109,8 @@ func New(cfg *config.Config) (*Agent, error) {
 		Str("go", buildInfo.GoVersion).
 		Msg("EDR agent initializing")
 
+	logConfigAudit(cfg, log)
+
 	// Event bus.
 	bus := events.NewBus(agentID, hostname)
 
@@ -325,6 +327,9 @@ func New(cfg *config.Config) (*Agent, error) {
 		AgentBinPath: cfg.SelfProtect.BinPath,
 		WatchdogMode: cfg.SelfProtect.Watchdog,
 	}, bus, log)
+	if cfg.Agent.RESTBackendURL != "" {
+		a.protect.SetTamperReporter(a.reportTamper)
+	}
 
 	// Apply any persisted fleet config from a previous push (survives restarts).
 	if persisted := loadPersistedFleetConfig(log); persisted != nil {
@@ -1184,6 +1189,90 @@ func (a *Agent) executeForensicsJob(ctx context.Context, backendURL, jobID, jobT
 		Str("type", jobType).
 		Int("bytes", len(bundle)).
 		Msg("forensics bundle uploaded")
+}
+
+// reportTamper POSTs a tamper alert to the backend REST API.
+// Called as a goroutine from selfprotect so it never blocks the detection path.
+func (a *Agent) reportTamper(mechanism, description string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	body, _ := json.Marshal(map[string]string{
+		"mechanism":   mechanism,
+		"description": description,
+	})
+	url := strings.TrimRight(a.cfg.Agent.RESTBackendURL, "/") +
+		"/api/v1/agents/" + a.agentID + "/tamper-alert"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		a.log.Warn().Err(err).Msg("tamper-alert: build request failed")
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if a.cfg.Agent.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+a.cfg.Agent.APIKey)
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		a.log.Warn().Err(err).Msg("tamper-alert: POST failed")
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		a.log.Warn().Int("status", resp.StatusCode).Msg("tamper-alert: unexpected response")
+	}
+}
+
+// logConfigAudit emits a single structured INFO log summarising the active
+// configuration so operators can confirm what was actually loaded.
+func logConfigAudit(cfg *config.Config, log zerolog.Logger) {
+	m := cfg.Monitors
+
+	var monitors []string
+	if m.Process.Enabled        { monitors = append(monitors, "process") }
+	if m.Network.Enabled        { monitors = append(monitors, "network") }
+	if m.File.Enabled           { monitors = append(monitors, "file") }
+	if m.Registry.Enabled       { monitors = append(monitors, "registry") }
+	if m.Browser.Enabled        { monitors = append(monitors, "browser") }
+	if m.BrowserHistory.Enabled { monitors = append(monitors, "browser_history") }
+	if m.KMod.Enabled           { monitors = append(monitors, "kmod") }
+	if m.USB.Enabled            { monitors = append(monitors, "usb") }
+	if m.Pipe.Enabled           { monitors = append(monitors, "pipe") }
+	if m.Share.Enabled          { monitors = append(monitors, "share") }
+	if m.MemMon.Enabled         { monitors = append(monitors, "memmon") }
+	if m.CronMon.Enabled        { monitors = append(monitors, "cronmon") }
+	if m.TLSSNI.Enabled         { monitors = append(monitors, "tlssni") }
+	if m.YARA.Enabled           { monitors = append(monitors, "yara") }
+
+	tlsMode := "none"
+	if cfg.Agent.TLS.Cert != "" {
+		tlsMode = "mTLS"
+	} else if cfg.Agent.TLS.Insecure {
+		tlsMode = "insecure"
+	}
+
+	apiKeyStatus := "[not set]"
+	if cfg.Agent.APIKey != "" {
+		apiKeyStatus = "[set]"
+	}
+
+	log.Info().
+		Str("backend_url", cfg.Agent.BackendURL).
+		Str("rest_backend_url", cfg.Agent.RESTBackendURL).
+		Str("tls_mode", tlsMode).
+		Str("api_key", apiKeyStatus).
+		Strs("tags", cfg.Agent.Tags).
+		Str("env", cfg.Agent.Env).
+		Strs("monitors", monitors).
+		Str("buffer_path", cfg.Buffer.Path).
+		Int("buffer_max_mb", cfg.Buffer.MaxSizeMB).
+		Int("buffer_flush_s", cfg.Buffer.FlushIntervalS).
+		Str("log_level", cfg.Log.Level).
+		Str("log_path", cfg.Log.Path).
+		Bool("watchdog", cfg.SelfProtect.Watchdog).
+		Bool("immutable_bin", cfg.SelfProtect.ImmutableBin).
+		Msg("agent config audit")
 }
 
 func (a *Agent) reportForensicsError(ctx context.Context, baseURL, jobID, errMsg string) {

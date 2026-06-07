@@ -45,15 +45,23 @@ type Config struct {
 	ImmutableBin bool
 }
 
+// TamperReporter is called with (mechanism, description) when a tamper event is detected.
+// Used to push the alert to the backend REST API without creating a circular dependency.
+type TamperReporter func(mechanism, description string)
+
 // Provider implements self-protection for the agent.
 type Provider struct {
-	cfg     Config
-	bus     events.Bus
-	log     zerolog.Logger
+	cfg      Config
+	bus      events.Bus
+	log      zerolog.Logger
 	agentPID uint32
-	stopCh  chan struct{}
-	unsub   func()
+	stopCh   chan struct{}
+	unsub    func()
+	reporter TamperReporter // optional; nil = log-only
 }
+
+// SetTamperReporter wires a callback that is invoked whenever a tamper event fires.
+func (p *Provider) SetTamperReporter(r TamperReporter) { p.reporter = r }
 
 func New(cfg Config, bus events.Bus, log zerolog.Logger) *Provider {
 	return &Provider{
@@ -205,6 +213,10 @@ func (p *Provider) handleTamperAttempt(description string) {
 		Description: description,
 		AgentPID:    p.agentPID,
 	})
+
+	if p.reporter != nil {
+		go p.reporter("self_protect", description)
+	}
 }
 
 func runChattr(flag, path string) error {
