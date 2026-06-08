@@ -54,7 +54,10 @@ type User struct {
 	TOTPSecret      string     `db:"totp_secret"      json:"-"`
 	TOTPEnabled     bool       `db:"totp_enabled"     json:"totp_enabled"`
 	TOTPBackupCodes string     `db:"totp_backup_codes" json:"-"`
-	TenantID        string     `db:"tenant_id"        json:"tenant_id"`
+	TenantID        string     `db:"tenant_id"         json:"tenant_id"`
+	SSOProvider     string     `db:"sso_provider"      json:"sso_provider,omitempty"`
+	SSOSubject      string     `db:"sso_subject"       json:"-"`
+	SSOProvisioned  bool       `db:"sso_provisioned"   json:"sso_provisioned,omitempty"`
 }
 
 // Claims is the JWT payload.
@@ -472,4 +475,76 @@ func randomHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// ─── SSO ──────────────────────────────────────────────────────────────────────
+
+// ProvisionSSOUser finds an existing SSO-provisioned user or creates a new one.
+// ssoProvider is the config ID, subject is the IdP-issued stable identifier.
+// Returns the user and a bool indicating whether the user was just created.
+func (m *Manager) ProvisionSSOUser(
+	ctx context.Context,
+	tenantID, ssoProvider, subject, email, displayName, role string,
+) (*User, bool, error) {
+	// Try to find by SSO subject first (stable across email changes).
+	var existing User
+	err := m.db.GetContext(ctx, &existing,
+		`SELECT * FROM users WHERE sso_provider=$1 AND sso_subject=$2 AND tenant_id=$3`,
+		ssoProvider, subject, tenantID)
+	if err == nil {
+		// Existing SSO user — update last_login_at.
+		_, _ = m.db.ExecContext(ctx,
+			`UPDATE users SET last_login_at=NOW() WHERE id=$1`, existing.ID)
+		return &existing, false, nil
+	}
+
+	// Not found — try to find by email within the tenant (account linking).
+	var byEmail User
+	err2 := m.db.GetContext(ctx, &byEmail,
+		`SELECT * FROM users WHERE email=$1 AND tenant_id=$2`, email, tenantID)
+	if err2 == nil {
+		// Link existing account to this SSO provider.
+		_, _ = m.db.ExecContext(ctx,
+			`UPDATE users SET sso_provider=$1, sso_subject=$2, last_login_at=NOW() WHERE id=$3`,
+			ssoProvider, subject, byEmail.ID)
+		byEmail.SSOProvider = ssoProvider
+		byEmail.SSOSubject = subject
+		return &byEmail, false, nil
+	}
+
+	// Auto-provision a new user.
+	if displayName == "" {
+		displayName = email
+	}
+	if role == "" {
+		role = RoleAnalyst
+	}
+	id := randomHex(16)
+	_, err = m.db.ExecContext(ctx, `
+		INSERT INTO users
+			(id, username, email, password_hash, role, enabled, created_by,
+			 sso_provider, sso_subject, sso_provisioned, tenant_id)
+		VALUES ($1,$2,$3,'',$4,TRUE,'sso',$5,$6,TRUE,$7)`,
+		id, displayName, email, role, ssoProvider, subject, tenantID)
+	if err != nil {
+		return nil, false, fmt.Errorf("provision sso user: %w", err)
+	}
+
+	u, err := m.Get(ctx, id)
+	if err != nil {
+		return nil, false, err
+	}
+	return u, true, nil
+}
+
+// GetBySSOSubject looks up a user by their IdP subject identifier.
+func (m *Manager) GetBySSOSubject(ctx context.Context, provider, subject, tenantID string) (*User, error) {
+	var u User
+	err := m.db.GetContext(ctx, &u,
+		`SELECT * FROM users WHERE sso_provider=$1 AND sso_subject=$2 AND tenant_id=$3`,
+		provider, subject, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
 }

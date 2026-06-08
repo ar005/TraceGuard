@@ -8,6 +8,9 @@ server:
   node_id: ""
   # min_agent_version: "v1.0.0"   # Agents older than this log a warning; empty = no minimum enforced
   min_agent_version: ""
+  # public_base_url is the externally reachable URL of this backend, used to build
+  # SAML ACS/metadata URLs and OIDC redirect URIs. e.g. https://soc.example.com
+  public_base_url: ""
   tls:
     enabled:   false          # set true + fill cert/key to enable TLS on gRPC
     cert_file: "/etc/edr/tls/server.crt"

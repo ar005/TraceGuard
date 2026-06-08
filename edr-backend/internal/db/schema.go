@@ -2440,6 +2440,52 @@ CREATE INDEX IF NOT EXISTS idx_tw_lookup
     ON threshold_windows(rule_id, group_val, event_ts);
 `,
 	},
+	{
+		name: "add_sso_user_columns",
+		sql: `
+ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+ALTER TABLE users ALTER COLUMN password_hash SET DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS sso_provider    TEXT    NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS sso_subject     TEXT    NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS sso_provisioned BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE UNIQUE INDEX IF NOT EXISTS users_sso_subject_idx
+    ON users(sso_provider, sso_subject) WHERE sso_subject <> '';
+`,
+	},
+	{
+		name: "create_sso_configs",
+		sql: `
+CREATE TABLE IF NOT EXISTS sso_configs (
+    id             TEXT    PRIMARY KEY,
+    tenant_id      TEXT    NOT NULL,
+    provider_name  TEXT    NOT NULL,
+    provider_type  TEXT    NOT NULL CHECK (provider_type IN ('saml','oidc')),
+    enabled        BOOLEAN NOT NULL DEFAULT TRUE,
+    auto_provision BOOLEAN NOT NULL DEFAULT TRUE,
+    default_role   TEXT    NOT NULL DEFAULT 'analyst',
+    domains        TEXT[]  NOT NULL DEFAULT '{}',
+
+    saml_idp_metadata_xml TEXT NOT NULL DEFAULT '',
+    saml_sp_key_pem       TEXT NOT NULL DEFAULT '',
+    saml_sp_cert_pem      TEXT NOT NULL DEFAULT '',
+    saml_attribute_email  TEXT NOT NULL DEFAULT 'email',
+    saml_attribute_name   TEXT NOT NULL DEFAULT 'name',
+    saml_attribute_role   TEXT NOT NULL DEFAULT '',
+
+    oidc_issuer_url    TEXT NOT NULL DEFAULT '',
+    oidc_client_id     TEXT NOT NULL DEFAULT '',
+    oidc_client_secret TEXT NOT NULL DEFAULT '',
+    oidc_claim_email   TEXT NOT NULL DEFAULT 'email',
+    oidc_claim_name    TEXT NOT NULL DEFAULT 'preferred_username',
+    oidc_claim_role    TEXT NOT NULL DEFAULT '',
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_sso_configs_tenant  ON sso_configs(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_sso_configs_domains ON sso_configs USING GIN(domains);
+`,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.

@@ -35,6 +35,9 @@ type ServerConfig struct {
 	TLS             TLSConfig `mapstructure:"tls"`
 	ForensicsDir    string    `mapstructure:"forensics_dir"`
 	MinAgentVersion string    `mapstructure:"min_agent_version"` // e.g. "v1.2.0"; empty = no minimum
+	// PublicBaseURL is the externally reachable URL of this backend, used to build
+	// SAML ACS/metadata URLs and OIDC redirect URIs. e.g. "https://soc.example.com"
+	PublicBaseURL string `mapstructure:"public_base_url"`
 }
 
 type TLSConfig struct {

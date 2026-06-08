@@ -72,6 +72,7 @@ type Server struct {
 	apiKey          string
 	rateLimit       RateLimitConfig
 	minAgentVersion string
+	publicBaseURL   string
 	cveFetcher  *cvecache.Fetcher
 	iocPipeline  IOCEnricher        // optional — nil if enrichment disabled
 	intelGen     IntelTaskGenerator // optional — nil if not configured
@@ -199,6 +200,17 @@ func (s *Server) registerRoutes() {
 	{
 		setupGrp.GET("/status",  s.handleSetupStatus)
 		setupGrp.POST("",        s.handleSetup)
+	}
+
+	// SSO — public endpoints (called by IdP / browser during auth flow)
+	ssoPublic := r.Group("/api/v1/sso")
+	{
+		ssoPublic.POST("/lookup",           s.handleSSOLookup)
+		ssoPublic.GET("/saml/metadata",     s.handleSAMLMetadata)
+		ssoPublic.GET("/saml/login",        s.handleSAMLLogin)
+		ssoPublic.POST("/saml/acs",         s.handleSAMLACS)
+		ssoPublic.GET("/oidc/login",        s.handleOIDCLogin)
+		ssoPublic.GET("/oidc/callback",     s.handleOIDCCallback)
 	}
 
 	auth := r.Group("/api/v1/auth")
@@ -643,6 +655,13 @@ func (s *Server) registerRoutes() {
 		adm.DELETE("/keys/:id",      s.handleDeleteKey)
 
 		adm.GET("/audit", s.handleAuditLog)
+
+		// SSO config management
+		adm.GET("/sso/configs",     s.handleListSSOConfigs)
+		adm.POST("/sso/configs",    s.handleCreateSSOConfig)
+		adm.GET("/sso/configs/:id", s.handleGetSSOConfig)
+		adm.PUT("/sso/configs/:id", s.handleUpdateSSOConfig)
+		adm.DELETE("/sso/configs/:id", s.handleDeleteSSOConfig)
 	}
 }
 
@@ -4676,3 +4695,6 @@ func (s *Server) handleGetCompiledBrowserPolicy(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, policy)
 }
+
+
+func (s *Server) SetPublicBaseURL(v string) { s.publicBaseURL = v }
