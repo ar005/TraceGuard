@@ -148,6 +148,46 @@ func (c *Client) SummariseCase(ctx context.Context, cs *models.Case, alerts []mo
 	return p.Complete(ctx, system, sb.String())
 }
 
+// SummariseIncident generates a narrative summary from an incident and its linked alerts.
+func (c *Client) SummariseIncident(ctx context.Context, inc *models.Incident, alerts []models.Alert) (string, error) {
+	c.mu.RLock()
+	p := c.provider
+	enabled := c.cfg.Enabled
+	c.mu.RUnlock()
+	if !enabled || p == nil {
+		return "", fmt.Errorf("LLM not enabled")
+	}
+
+	type alertSum struct {
+		Title    string `json:"title"`
+		Severity string `json:"severity"`
+		Host     string `json:"host"`
+		Rule     string `json:"rule"`
+	}
+	max := 10
+	if len(alerts) < max {
+		max = len(alerts)
+	}
+	sums := make([]alertSum, max)
+	for i, a := range alerts[:max] {
+		sums[i] = alertSum{Title: a.Title, Severity: models.SeverityLabel(a.Severity), Host: a.Hostname, Rule: a.RuleName}
+	}
+	data := map[string]interface{}{
+		"title":       inc.Title,
+		"severity":    models.SeverityLabel(inc.Severity),
+		"status":      inc.Status,
+		"hosts":       []string(inc.Hostnames),
+		"mitre_ids":   []string(inc.MitreIDs),
+		"alert_count": inc.AlertCount,
+		"first_seen":  inc.FirstSeen.Format("2006-01-02 15:04:05 UTC"),
+		"last_seen":   inc.LastSeen.Format("2006-01-02 15:04:05 UTC"),
+		"alerts":      sums,
+	}
+	b, _ := json.Marshal(data)
+	system := "You are a senior SOC analyst. Write a concise incident narrative (3-5 sentences) covering: what happened, affected assets and users, likely attack stage and MITRE techniques, and recommended containment or investigation steps. Be technical and specific."
+	return p.Complete(ctx, system, "Incident data (JSON):\n"+string(b))
+}
+
 // ChatMessage is a single turn in a multi-turn chat session.
 type ChatMessage struct {
 	Role    string `json:"role"`    // "user" or "assistant"

@@ -134,6 +134,8 @@ type Alert struct {
 	Enrichments   json.RawMessage `db:"enrichments"    json:"enrichments,omitempty"`
 	RiskScore     int16           `db:"risk_score"     json:"risk_score"`
 	ChainID       string          `db:"chain_id"       json:"chain_id,omitempty"`
+	AISummary     string          `db:"ai_summary"     json:"ai_summary,omitempty"`
+	AISummaryAt   *time.Time      `db:"ai_summary_at"  json:"ai_summary_at,omitempty"`
 }
 
 // Rule represents a detection rule.
@@ -201,6 +203,8 @@ type Incident struct {
 	UserUIDs    pq.StringArray `db:"user_uids"    json:"user_uids"`
 	SrcIPs      pq.StringArray `db:"src_ips"      json:"src_ips"`
 	SourceTypes pq.StringArray `db:"source_types" json:"source_types"`
+	AISummary   string         `db:"ai_summary"   json:"ai_summary,omitempty"`
+	AISummaryAt *time.Time     `db:"ai_summary_at" json:"ai_summary_at,omitempty"`
 }
 
 // AgentPackage represents an installed package on an endpoint.

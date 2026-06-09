@@ -2486,6 +2486,17 @@ CREATE INDEX IF NOT EXISTS idx_sso_configs_tenant  ON sso_configs(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_sso_configs_domains ON sso_configs USING GIN(domains);
 `,
 	},
+	{
+		name: "add_ai_summary_columns",
+		sql: `
+ALTER TABLE alerts
+    ADD COLUMN IF NOT EXISTS ai_summary    TEXT        NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS ai_summary_at TIMESTAMPTZ;
+ALTER TABLE incidents
+    ADD COLUMN IF NOT EXISTS ai_summary    TEXT        NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS ai_summary_at TIMESTAMPTZ;
+`,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.

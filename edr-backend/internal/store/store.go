@@ -505,6 +505,22 @@ func (s *Store) UpdateAlertTriage(ctx context.Context, id, tenantID, verdict str
 	return err
 }
 
+func (s *Store) UpdateAlertAISummary(ctx context.Context, id, tenantID, summary string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE alerts SET ai_summary=$3, ai_summary_at=NOW()
+		 WHERE id=$1 AND (tenant_id=$2 OR tenant_id='default' OR $2='default')`,
+		id, tenantID, summary)
+	return err
+}
+
+func (s *Store) UpdateIncidentAISummary(ctx context.Context, id, tenantID, summary string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE incidents SET ai_summary=$3, ai_summary_at=NOW()
+		 WHERE id=$1 AND (tenant_id=$2 OR tenant_id='default' OR $2='default')`,
+		id, tenantID, summary)
+	return err
+}
+
 func (s *Store) AlertStats(ctx context.Context) (map[string]int64, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT status, COUNT(*) FROM alerts GROUP BY status

@@ -10,6 +10,100 @@ import (
 	"github.com/youredr/edr-backend/internal/llm"
 )
 
+// handleSummariseAlert generates and caches a plain-language AI summary for an alert.
+// Accepts an optional ?force=1 query param to regenerate even if a cached summary exists.
+func (s *Server) handleSummariseAlert(c *gin.Context) {
+	if s.llm == nil || !s.llm.Enabled() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI not enabled — configure a provider in Settings"})
+		return
+	}
+	ctx := c.Request.Context()
+	tid := c.GetString("tenant_id")
+	alert, err := s.store.GetAlert(ctx, c.Param("id"), tid)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+
+	// Return cached summary unless caller forces regeneration.
+	if alert.AISummary != "" && c.Query("force") != "1" {
+		c.JSON(http.StatusOK, gin.H{
+			"alert_id": alert.ID,
+			"summary":  alert.AISummary,
+			"cached":   true,
+			"model":    s.llm.ModelName(),
+			"provider": s.llm.ProviderName(),
+		})
+		return
+	}
+
+	events, _ := s.store.GetAlertEvents(ctx, alert.ID, tid)
+	summary, err := s.llm.ExplainAlert(ctx, alert, events)
+	if err != nil {
+		s.log.Warn().Err(err).Str("alert", alert.ID).Msg("LLM summarise alert failed")
+		c.JSON(http.StatusBadGateway, gin.H{"error": "LLM request failed: " + err.Error()})
+		return
+	}
+
+	if err := s.store.UpdateAlertAISummary(ctx, alert.ID, tid, summary); err != nil {
+		s.log.Warn().Err(err).Str("alert", alert.ID).Msg("persist AI summary failed")
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"alert_id": alert.ID,
+		"summary":  summary,
+		"cached":   false,
+		"model":    s.llm.ModelName(),
+		"provider": s.llm.ProviderName(),
+	})
+}
+
+// handleSummariseIncident generates and caches a plain-language AI summary for an incident.
+func (s *Server) handleSummariseIncident(c *gin.Context) {
+	if s.llm == nil || !s.llm.Enabled() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI not enabled — configure a provider in Settings"})
+		return
+	}
+	ctx := c.Request.Context()
+	tid := c.GetString("tenant_id")
+	inc, err := s.store.GetIncident(ctx, c.Param("id"), tid)
+	if err != nil {
+		s.jsonError(c, err)
+		return
+	}
+
+	if inc.AISummary != "" && c.Query("force") != "1" {
+		c.JSON(http.StatusOK, gin.H{
+			"incident_id": inc.ID,
+			"summary":     inc.AISummary,
+			"cached":      true,
+			"model":       s.llm.ModelName(),
+			"provider":    s.llm.ProviderName(),
+		})
+		return
+	}
+
+	alerts, _ := s.store.GetIncidentAlerts(ctx, inc.ID)
+	summary, err := s.llm.SummariseIncident(ctx, inc, alerts)
+	if err != nil {
+		s.log.Warn().Err(err).Str("incident", inc.ID).Msg("LLM summarise incident failed")
+		c.JSON(http.StatusBadGateway, gin.H{"error": "LLM request failed: " + err.Error()})
+		return
+	}
+
+	if err := s.store.UpdateIncidentAISummary(ctx, inc.ID, tid, summary); err != nil {
+		s.log.Warn().Err(err).Str("incident", inc.ID).Msg("persist AI summary failed")
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"incident_id": inc.ID,
+		"summary":     summary,
+		"cached":      false,
+		"model":       s.llm.ModelName(),
+		"provider":    s.llm.ProviderName(),
+	})
+}
+
 // handleTriageAlert runs AI triage on a specific alert and persists the result.
 func (s *Server) handleTriageAlert(c *gin.Context) {
 	if s.llm == nil || !s.llm.Enabled() {
