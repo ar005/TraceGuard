@@ -133,9 +133,9 @@ func TestRateLimitStoreCleanup(t *testing.T) {
 	// Create a limiter.
 	store.getLimiter("192.168.1.1")
 
-	store.mu.RLock()
+	store.mu.Lock()
 	count := len(store.limiters)
-	store.mu.RUnlock()
+	store.mu.Unlock()
 	if count != 1 {
 		t.Fatalf("expected 1 limiter, got %d", count)
 	}
@@ -144,9 +144,9 @@ func TestRateLimitStoreCleanup(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	store.cleanup(50 * time.Millisecond)
 
-	store.mu.RLock()
+	store.mu.Lock()
 	count = len(store.limiters)
-	store.mu.RUnlock()
+	store.mu.Unlock()
 	if count != 0 {
 		t.Fatalf("expected 0 limiters after cleanup, got %d", count)
 	}

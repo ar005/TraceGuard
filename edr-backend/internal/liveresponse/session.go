@@ -59,6 +59,7 @@ func NewManager(log zerolog.Logger) *Manager {
 
 // allowedActions is the set of commands agents are allowed to execute.
 var allowedActions = map[string]bool{
+	"exec":    true,
 	"ps":      true,
 	"ls":      true,
 	"cat":     true,
