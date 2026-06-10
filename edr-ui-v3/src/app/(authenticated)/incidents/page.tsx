@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Sparkles, RefreshCw } from "lucide-react";
 import { useApi } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
 import {
@@ -163,6 +164,38 @@ function IncidentDetail({
   const [showStatusMenu, setShowStatusMenu] = useState(false);
   const [notes, setNotes] = useState(incident.notes ?? "");
   const [savingNotes, setSavingNotes] = useState(false);
+
+  // AI summary state
+  const [aiSummary, setAiSummary] = useState<string>(incident.ai_summary ?? "");
+  const [aiSummaryLoading, setAiSummaryLoading] = useState(false);
+  const [aiSummaryProvider, setAiSummaryProvider] = useState("");
+  const [aiSummaryModel, setAiSummaryModel] = useState("");
+
+  useEffect(() => {
+    if (aiSummary) return;
+    setAiSummaryLoading(true);
+    api.post<{ summary: string; provider?: string; model?: string }>(
+      `/api/v1/incidents/${incident.id}/summarise`, {}
+    ).then(r => {
+      setAiSummary(r.summary ?? "");
+      setAiSummaryProvider(r.provider ?? "");
+      setAiSummaryModel(r.model ?? "");
+    }).catch(() => {}).finally(() => setAiSummaryLoading(false));
+  }, [incident.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const regenerateSummary = async () => {
+    setAiSummaryLoading(true);
+    try {
+      const r = await api.post<{ summary: string; provider?: string; model?: string }>(
+        `/api/v1/incidents/${incident.id}/summarise?force=1`, {}
+      );
+      setAiSummary(r.summary ?? "");
+      setAiSummaryProvider(r.provider ?? "");
+      setAiSummaryModel(r.model ?? "");
+    } catch {/* ignore */} finally {
+      setAiSummaryLoading(false);
+    }
+  };
 
   /* Fetch related alerts */
   const fetchAlerts = useCallback(
@@ -413,6 +446,46 @@ function IncidentDetail({
               </div>
             )}
           </div>
+        </div>
+
+        {/* AI Summary */}
+        <div
+          className="rounded-lg border p-3 space-y-2"
+          style={{ borderColor: "var(--border)", background: "var(--surface-1)" }}
+        >
+          <div className="flex items-center justify-between">
+            <span className="flex items-center gap-1.5 text-xs font-semibold" style={{ color: "oklch(0.65 0.14 265)" }}>
+              <Sparkles size={12} />
+              AI Summary
+            </span>
+            <button
+              onClick={regenerateSummary}
+              disabled={aiSummaryLoading}
+              title="Regenerate"
+              className="transition-colors hover:text-[var(--fg-2)] disabled:opacity-40"
+              style={{ background: "none", border: "none", cursor: "pointer", color: "var(--fg-4)", padding: "2px" }}
+            >
+              <RefreshCw size={11} className={aiSummaryLoading ? "animate-spin" : ""} />
+            </button>
+          </div>
+          {aiSummaryLoading ? (
+            <div className="space-y-1.5">
+              <div className="animate-shimmer h-3 rounded w-full" />
+              <div className="animate-shimmer h-3 rounded w-4/5" />
+              <div className="animate-shimmer h-3 rounded w-3/5" />
+            </div>
+          ) : aiSummary ? (
+            <>
+              <p className="text-xs leading-relaxed" style={{ color: "var(--fg-2)", whiteSpace: "pre-wrap", margin: 0 }}>{aiSummary}</p>
+              {(aiSummaryProvider || aiSummaryModel) && (
+                <p style={{ fontSize: "10px", color: "var(--fg-4)", margin: 0 }}>
+                  {[aiSummaryProvider, aiSummaryModel].filter(Boolean).join(" · ")}
+                </p>
+              )}
+            </>
+          ) : (
+            <p className="text-xs" style={{ color: "var(--muted)", margin: 0 }}>AI summary unavailable</p>
+          )}
         </div>
 
         {/* Notes */}

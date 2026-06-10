@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useApi } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
@@ -140,11 +140,44 @@ function AlertExpanded({ alert, onClose }: { alert: Alert; onClose: () => void }
   );
   const [triageLoading, setTriageLoading] = useState(false);
 
+  // AI summary state
+  const [aiSummary, setAiSummary] = useState<string>(alert.ai_summary ?? "");
+  const [aiSummaryLoading, setAiSummaryLoading] = useState(false);
+  const [aiSummaryProvider, setAiSummaryProvider] = useState("");
+  const [aiSummaryModel, setAiSummaryModel] = useState("");
+
   const fetchEvents = useCallback(
     () => api.get<Event[]>(`/api/v1/alerts/${alert.id}/events`).catch(() => []),
     [alert.id]
   );
   const { data: events, loading: eventsLoading } = useApi(fetchEvents);
+
+  // Auto-fetch summary on mount (uses cache if available)
+  useEffect(() => {
+    if (aiSummary) return;
+    setAiSummaryLoading(true);
+    api.post<{ summary: string; provider?: string; model?: string }>(
+      `/api/v1/alerts/${alert.id}/summarise`, {}
+    ).then(r => {
+      setAiSummary(r.summary ?? "");
+      setAiSummaryProvider(r.provider ?? "");
+      setAiSummaryModel(r.model ?? "");
+    }).catch(() => {}).finally(() => setAiSummaryLoading(false));
+  }, [alert.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const regenerateSummary = async () => {
+    setAiSummaryLoading(true);
+    try {
+      const r = await api.post<{ summary: string; provider?: string; model?: string }>(
+        `/api/v1/alerts/${alert.id}/summarise?force=1`, {}
+      );
+      setAiSummary(r.summary ?? "");
+      setAiSummaryProvider(r.provider ?? "");
+      setAiSummaryModel(r.model ?? "");
+    } catch {/* ignore */} finally {
+      setAiSummaryLoading(false);
+    }
+  };
 
   const handleAiExplain = async () => {
     if (aiText) { setAiOpen(o => !o); return; }
@@ -241,6 +274,51 @@ function AlertExpanded({ alert, onClose }: { alert: Alert; onClose: () => void }
             </div>
           </div>
         )}
+
+        {/* AI Summary panel */}
+        <div
+          style={{
+            background: "var(--surface-0)",
+            border: "1px solid var(--border)",
+            borderRadius: "8px",
+            padding: "var(--space-3)",
+            marginBottom: "var(--space-4)",
+          }}
+        >
+          <div className="flex items-center justify-between" style={{ marginBottom: aiSummaryLoading || aiSummary ? "var(--space-2)" : 0 }}>
+            <span className="flex items-center gap-1" style={{ fontSize: "var(--text-xs)", color: "oklch(0.65 0.14 265)", fontWeight: 600 }}>
+              <Sparkles size={11} />
+              AI Summary
+              {triage && <TriageBadge verdict={triage.verdict} score={triage.confidence} />}
+            </span>
+            <button
+              onClick={regenerateSummary}
+              disabled={aiSummaryLoading}
+              title="Regenerate"
+              style={{ background: "none", border: "none", cursor: "pointer", color: "var(--fg-4)", padding: "2px" }}
+            >
+              <RefreshCw size={11} className={aiSummaryLoading ? "animate-spin" : ""} />
+            </button>
+          </div>
+          {aiSummaryLoading ? (
+            <div className="space-y-1.5">
+              <div className="animate-shimmer h-3 rounded w-full" />
+              <div className="animate-shimmer h-3 rounded w-4/5" />
+              <div className="animate-shimmer h-3 rounded w-3/5" />
+            </div>
+          ) : aiSummary ? (
+            <>
+              <p style={{ fontSize: "var(--text-xs)", color: "var(--fg-2)", lineHeight: 1.65, margin: 0, whiteSpace: "pre-wrap" }}>{aiSummary}</p>
+              {(aiSummaryProvider || aiSummaryModel) && (
+                <p style={{ fontSize: "10px", color: "var(--fg-4)", marginTop: "var(--space-1)" }}>
+                  {[aiSummaryProvider, aiSummaryModel].filter(Boolean).join(" · ")}
+                </p>
+              )}
+            </>
+          ) : (
+            <p style={{ fontSize: "var(--text-xs)", color: "var(--fg-4)" }}>AI summary unavailable</p>
+          )}
+        </div>
 
         {/* AI Explain */}
         <div>
@@ -416,6 +494,7 @@ function AlertExpanded({ alert, onClose }: { alert: Alert; onClose: () => void }
   );
 }
 
+// ── Alert row placeholder to prevent merge conflict below ────────────────────
 // ── Alert row ─────────────────────────────────────────────────────────────────
 
 function AlertRow({
