@@ -200,20 +200,16 @@ func collectArtifacts(ctx context.Context, tw *tar.Writer) error {
 
 func collectProcMemory(ctx context.Context, tw *tar.Writer, pid int) error {
 	base := fmt.Sprintf("/proc/%d", pid)
-	files := []string{
-		"maps", "smaps", "smaps_rollup", "status", "cmdline",
-		"environ", "io", "wchan", "syscall", "stack",
-	}
 
-	for _, f := range files {
+	// Metadata pseudo-files from /proc/{pid}/
+	for _, f := range []string{"maps", "smaps", "smaps_rollup", "status", "cmdline", "environ", "io", "wchan", "syscall", "stack"} {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		full := filepath.Join(base, f)
-		_ = addFileToTar(tw, full, fmt.Sprintf("proc/%d/%s", pid, f))
+		_ = addFileToTar(tw, filepath.Join(base, f), fmt.Sprintf("proc/%d/%s", pid, f))
 	}
 
-	// /proc/<pid>/fd — list symlinks only (don't open FDs).
+	// FD listing — symlink targets only, no file opens.
 	fdDir := filepath.Join(base, "fd")
 	if fds, err := os.ReadDir(fdDir); err == nil {
 		var sb strings.Builder
@@ -222,6 +218,15 @@ func collectProcMemory(ctx context.Context, tw *tar.Writer, pid int) error {
 			fmt.Fprintf(&sb, "%s -> %s\n", e.Name(), link)
 		}
 		addBytesToTar(tw, fmt.Sprintf("proc/%d/fd_listing.txt", pid), []byte(sb.String()))
+	}
+
+	// Binary memory dump via /proc/{pid}/mem.
+	manifest, dumpErr := dumpProcMem(ctx, tw, pid)
+	manifestBytes, _ := json.MarshalIndent(manifest, "", "  ")
+	addBytesToTar(tw, "memory/manifest.json", manifestBytes)
+
+	if dumpErr != nil {
+		addBytesToTar(tw, "memory/dump_error.txt", []byte(dumpErr.Error()))
 	}
 	return nil
 }
@@ -242,6 +247,123 @@ func collectAllProcMemory(ctx context.Context, tw *tar.Writer) error {
 		_ = collectProcMemory(ctx, tw, pid)
 	}
 	return nil
+}
+
+// ─── Memory dump types and helpers ───────────────────────────────────────────
+
+// memRegion describes a single virtual memory region from /proc/{pid}/maps.
+type memRegion struct {
+	Start    uint64 `json:"start"`
+	End      uint64 `json:"end"`
+	Perms    string `json:"perms"`
+	Name     string `json:"name"`
+	Captured bool   `json:"captured"`
+	ErrMsg   string `json:"error,omitempty"`
+}
+
+// memManifest is written as memory/manifest.json inside every process_memory bundle.
+type memManifest struct {
+	PID        int         `json:"pid"`
+	Cmdline    string      `json:"cmdline"`
+	CapturedAt time.Time   `json:"captured_at"`
+	TotalBytes int64       `json:"total_bytes"`
+	Capped     bool        `json:"capped"`
+	Regions    []memRegion `json:"regions"`
+}
+
+const maxMemDumpBytes = 256 * 1024 * 1024 // 256 MB total cap across all regions
+
+// dumpProcMem reads actual memory contents from /proc/{pid}/mem guided by
+// /proc/{pid}/maps and writes each captured region as
+// memory/region_{start}-{end}.bin inside tw.
+// The agent runs as root (required for eBPF), so /proc/{pid}/mem is
+// readable without ptrace on Linux 3.2+.
+func dumpProcMem(ctx context.Context, tw *tar.Writer, pid int) (memManifest, error) {
+	manifest := memManifest{PID: pid, CapturedAt: time.Now().UTC()}
+
+	if raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)); err == nil {
+		manifest.Cmdline = strings.ReplaceAll(string(raw), "\x00", " ")
+	}
+
+	mapsData, err := os.ReadFile(fmt.Sprintf("/proc/%d/maps", pid))
+	if err != nil {
+		return manifest, fmt.Errorf("read maps: %w", err)
+	}
+	var regions []memRegion
+	for _, line := range strings.Split(strings.TrimSpace(string(mapsData)), "\n") {
+		if r, ok := parseMapsLine(line); ok {
+			regions = append(regions, r)
+		}
+	}
+
+	memFile, err := os.Open(fmt.Sprintf("/proc/%d/mem", pid))
+	if err != nil {
+		return manifest, fmt.Errorf("open mem: %w", err)
+	}
+	defer memFile.Close()
+
+	var totalBytes int64
+	for i := range regions {
+		if ctx.Err() != nil {
+			break
+		}
+		r := &regions[i]
+
+		if len(r.Perms) == 0 || r.Perms[0] != 'r' {
+			continue
+		}
+		if r.Name == "[vvar]" || r.Name == "[vsyscall]" {
+			continue
+		}
+
+		size := int64(r.End - r.Start)
+		if size <= 0 || size > 128*1024*1024 {
+			r.ErrMsg = "skipped: single region exceeds 128 MB"
+			continue
+		}
+		if totalBytes+size > maxMemDumpBytes {
+			r.ErrMsg = "skipped: total cap reached"
+			manifest.Capped = true
+			continue
+		}
+
+		buf := make([]byte, size)
+		n, readErr := memFile.ReadAt(buf, int64(r.Start))
+		if n == 0 {
+			r.ErrMsg = fmt.Sprintf("read error: %v", readErr)
+			continue
+		}
+		addBytesToTar(tw, fmt.Sprintf("memory/region_%016x-%016x.bin", r.Start, r.End), buf[:n])
+		r.Captured = true
+		totalBytes += int64(n)
+	}
+
+	manifest.Regions = regions
+	manifest.TotalBytes = totalBytes
+	return manifest, nil
+}
+
+// parseMapsLine parses one line from /proc/{pid}/maps.
+// Format: start-end perms offset dev inode [name]
+func parseMapsLine(line string) (memRegion, bool) {
+	fields := strings.Fields(line)
+	if len(fields) < 5 {
+		return memRegion{}, false
+	}
+	parts := strings.SplitN(fields[0], "-", 2)
+	if len(parts) != 2 {
+		return memRegion{}, false
+	}
+	start, err1 := strconv.ParseUint(parts[0], 16, 64)
+	end, err2 := strconv.ParseUint(parts[1], 16, 64)
+	if err1 != nil || err2 != nil {
+		return memRegion{}, false
+	}
+	name := ""
+	if len(fields) >= 6 {
+		name = fields[5]
+	}
+	return memRegion{Start: start, End: end, Perms: fields[1], Name: name}, true
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

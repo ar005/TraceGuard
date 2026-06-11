@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -105,6 +106,7 @@ var allowedActions = map[string]bool{
 	"block_domain": true, "unblock_domain": true,
 	"list_blocked": true, "list_blocked_domains": true, "list_quarantined": true,
 	"scan_packages": true,
+	"memdump":       true, // /proc/{pid}/mem metadata snapshot; binary via forensics job
 }
 
 // StartLiveResponse connects to the backend's LiveResponse bidi stream.
@@ -517,6 +519,35 @@ func (t *GRPCTransport) executeCommand(cmd *liveCommand) *liveResult {
 		}
 		cmdName = "sha256sum"
 		cmdArgs = cmd.Args
+	case "memdump":
+		// Returns /proc/{pid}/ metadata as text.  For full binary memory dump
+		// use a forensics job with job_type=process_memory.
+		if len(cmd.Args) == 0 {
+			result.Status = "error"
+			result.Error = "memdump requires a PID argument"
+			return result
+		}
+		if !validPID.MatchString(cmd.Args[0]) {
+			result.Status = "error"
+			result.Error = "memdump: invalid PID"
+			return result
+		}
+		pid := cmd.Args[0]
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "=== Process Memory Snapshot: PID %s ===\n\n", pid)
+		for _, f := range []string{"cmdline", "status", "smaps_rollup", "maps"} {
+			data, err := os.ReadFile(fmt.Sprintf("/proc/%s/%s", pid, f))
+			if err != nil {
+				continue
+			}
+			if f == "cmdline" {
+				data = bytes.ReplaceAll(data, []byte{0}, []byte{' '})
+			}
+			fmt.Fprintf(&sb, "--- /proc/%s/%s ---\n%s\n\n", pid, f, strings.TrimRight(string(data), "\n"))
+		}
+		fmt.Fprintf(&sb, "[For full binary dump: POST /api/v1/agents/{id}/forensics/collect with job_type=process_memory&params={\"pid\":%s}]\n", pid)
+		result.Stdout = truncate(sb.String(), 1<<20)
+		return result
 	default:
 		result.Status = "error"
 		result.Error = fmt.Sprintf("unknown action: %s", cmd.Action)
