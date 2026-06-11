@@ -83,6 +83,7 @@ var allowedActions = map[string]bool{
 	"list_blocked":     true,
 	"list_quarantined": true,
 	"scan_packages":    true,
+	"memdump":          true, // triggers /proc/{pid}/mem snapshot; full binary dump via forensics job
 }
 
 // RegisterAgent registers an agent's live response session.

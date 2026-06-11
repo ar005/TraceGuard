@@ -11,6 +11,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,9 +22,17 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/rs/zerolog"
 
 	"github.com/youredr/edr-backend/internal/models"
 )
+
+// forensicsUploadStore is the narrow store interface needed by the bundle upload handler.
+type forensicsUploadStore interface {
+	GetForensicsJobByID(ctx context.Context, id string) (*models.ForensicsJob, error)
+	UpdateForensicsJobFailed(ctx context.Context, id, errMsg string) error
+	UpdateForensicsJobDone(ctx context.Context, id, bundlePath string, bundleSize int64) error
+}
 
 func forensicsBundleDir() string {
 	if d := os.Getenv("EDR_FORENSICS_DIR"); d != "" {
@@ -120,9 +129,13 @@ func (s *Server) handleForensicsPending(c *gin.Context) {
 // handleForensicsUploadBundle accepts the tar.gz bundle from the agent.
 // Auth: agent API key + X-Agent-ID header must match the job's assigned agent.
 func (s *Server) handleForensicsUploadBundle(c *gin.Context) {
+	forensicsUploadBundleFrom(c, s.store, s.log)
+}
+
+func forensicsUploadBundleFrom(c *gin.Context, st forensicsUploadStore, log zerolog.Logger) {
 	jobID := c.Param("id")
 
-	job, err := s.store.GetForensicsJobByID(c.Request.Context(), jobID)
+	job, err := st.GetForensicsJobByID(c.Request.Context(), jobID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
 		return
@@ -135,6 +148,15 @@ func (s *Server) handleForensicsUploadBundle(c *gin.Context) {
 	}
 	if job.Status != "collecting" {
 		c.JSON(http.StatusConflict, gin.H{"error": "job not in collecting state"})
+		return
+	}
+
+	// Agent signals a collection failure via this header instead of uploading a bundle.
+	if errMsg := c.GetHeader("X-Forensics-Error"); errMsg != "" {
+		if err := st.UpdateForensicsJobFailed(c.Request.Context(), jobID, errMsg); err != nil {
+			log.Error().Err(err).Str("job_id", jobID).Msg("failed to mark forensics job failed")
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "recorded_failure"})
 		return
 	}
 
@@ -159,12 +181,12 @@ func (s *Server) handleForensicsUploadBundle(c *gin.Context) {
 	written, err := io.Copy(f, io.LimitReader(c.Request.Body, maxBundleSize))
 	if err != nil {
 		os.Remove(bundlePath)
-		_ = s.store.UpdateForensicsJobFailed(c.Request.Context(), jobID, "upload error: "+err.Error())
+		_ = st.UpdateForensicsJobFailed(c.Request.Context(), jobID, "upload error: "+err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "upload failed"})
 		return
 	}
 
-	if err := s.store.UpdateForensicsJobDone(c.Request.Context(), jobID, bundlePath, written); err != nil {
+	if err := st.UpdateForensicsJobDone(c.Request.Context(), jobID, bundlePath, written); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
