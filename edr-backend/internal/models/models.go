@@ -122,20 +122,22 @@ type Alert struct {
 	Notes       string         `db:"notes"        json:"notes"`
 	HitCount    int64          `db:"hit_count"    json:"hit_count"`
 	IncidentID  string         `db:"incident_id"  json:"incident_id"`
-	// XDR Phase 2 — cross-source identity correlation
 	UserUID     string         `db:"user_uid"     json:"user_uid"`
 	SourceTypes pq.StringArray `db:"source_types" json:"source_types"`
 	SrcIP       string         `db:"src_ip"       json:"src_ip,omitempty"`
-	// Phase 5 — AI triage
-	TriageVerdict string     `db:"triage_verdict" json:"triage_verdict,omitempty"`
-	TriageScore   int16      `db:"triage_score"   json:"triage_score,omitempty"`
-	TriageNotes   string          `db:"triage_notes"   json:"triage_notes,omitempty"`
-	TriageAt      *time.Time      `db:"triage_at"      json:"triage_at,omitempty"`
-	Enrichments   json.RawMessage `db:"enrichments"    json:"enrichments,omitempty"`
-	RiskScore     int16           `db:"risk_score"     json:"risk_score"`
-	ChainID       string          `db:"chain_id"       json:"chain_id,omitempty"`
-	AISummary     string          `db:"ai_summary"     json:"ai_summary,omitempty"`
-	AISummaryAt   *time.Time      `db:"ai_summary_at"  json:"ai_summary_at,omitempty"`
+	TriageVerdict string        `db:"triage_verdict" json:"triage_verdict,omitempty"`
+	TriageScore   int16         `db:"triage_score"   json:"triage_score,omitempty"`
+	TriageNotes   string        `db:"triage_notes"   json:"triage_notes,omitempty"`
+	TriageAt      *time.Time    `db:"triage_at"      json:"triage_at,omitempty"`
+	Enrichments   json.RawMessage `db:"enrichments"  json:"enrichments,omitempty"`
+	RiskScore     int16         `db:"risk_score"     json:"risk_score"`
+	ChainID       string        `db:"chain_id"       json:"chain_id,omitempty"`
+	AISummary     string        `db:"ai_summary"     json:"ai_summary,omitempty"`
+	AISummaryAt   *time.Time    `db:"ai_summary_at"  json:"ai_summary_at,omitempty"`
+	// SLA lifecycle timestamps — set automatically on status transitions
+	AcknowledgedAt *time.Time `db:"acknowledged_at" json:"acknowledged_at,omitempty"`
+	AssignedAt     *time.Time `db:"assigned_at"     json:"assigned_at,omitempty"`
+	ResolvedAt     *time.Time `db:"resolved_at"     json:"resolved_at,omitempty"`
 }
 
 // Rule represents a detection rule.
@@ -199,12 +201,16 @@ type Incident struct {
 	Notes       string         `db:"notes"        json:"notes"`
 	CreatedAt   time.Time      `db:"created_at"   json:"created_at"`
 	UpdatedAt   time.Time      `db:"updated_at"   json:"updated_at"`
-	// XDR Phase 2 — cross-source identity correlation
 	UserUIDs    pq.StringArray `db:"user_uids"    json:"user_uids"`
 	SrcIPs      pq.StringArray `db:"src_ips"      json:"src_ips"`
 	SourceTypes pq.StringArray `db:"source_types" json:"source_types"`
 	AISummary   string         `db:"ai_summary"   json:"ai_summary,omitempty"`
 	AISummaryAt *time.Time     `db:"ai_summary_at" json:"ai_summary_at,omitempty"`
+	// SLA lifecycle timestamps
+	AcknowledgedAt *time.Time `db:"acknowledged_at" json:"acknowledged_at,omitempty"`
+	AssignedAt     *time.Time `db:"assigned_at"     json:"assigned_at,omitempty"`
+	ResolvedAt     *time.Time `db:"resolved_at"     json:"resolved_at,omitempty"`
+	ContainedAt    *time.Time `db:"contained_at"    json:"contained_at,omitempty"`
 }
 
 // AgentPackage represents an installed package on an endpoint.
@@ -1001,21 +1007,66 @@ type RuleFireCount struct {
 }
 
 type AnalystLoad struct {
-	Assignee  string `json:"assignee"`
-	OpenCount int64  `json:"open_count"`
-	Total7d   int64  `json:"total_7d"`
+	Assignee   string  `json:"assignee"`
+	OpenCount  int64   `json:"open_count"`
+	Total7d    int64   `json:"total_7d"`
+	AvgAgeH    float64 `json:"avg_age_hours"`
+	MTTRHours  float64 `json:"mttr_hours"`
+	FPRate     float64 `json:"fp_rate"`
 }
 
 type SOCMetrics struct {
-	MTTRHours      float64            `json:"mttr_hours"`
-	OpenAlertAgeH  float64            `json:"open_alert_age_hours"`
-	ResolutionRate float64            `json:"resolution_rate"`
-	FPRate         float64            `json:"fp_rate"`
-	TotalAlerts7d  int64              `json:"total_alerts_7d"`
-	AlertTrend     []AlertTrendDay    `json:"alert_trend"`
-	TopRules       []RuleFireCount    `json:"top_rules"`
-	AnalystWorkload []AnalystLoad     `json:"analyst_workload"`
-	StatusFunnel   map[string]int64   `json:"status_funnel"`
+	// Time-to-X metrics (30-day rolling window)
+	MTTDMinutes    float64 `json:"mttd_minutes"`
+	MTTAMinutes    float64 `json:"mtta_minutes"`
+	MTTRHours      float64 `json:"mttr_hours"`
+	MTTCHours      float64 `json:"mttc_hours"`
+	// Open alert health
+	OpenAlertAgeH  float64 `json:"open_alert_age_hours"`
+	AlertAgeP50H   float64 `json:"alert_age_p50h"`
+	AlertAgeP95H   float64 `json:"alert_age_p95h"`
+	// Rates
+	ResolutionRate float64 `json:"resolution_rate"`
+	FPRate         float64 `json:"fp_rate"`
+	// Volume
+	TotalAlerts7d  int64   `json:"total_alerts_7d"`
+	// SLA
+	SLABreaches7d  int64   `json:"sla_breaches_7d"`
+	BreachRate     float64 `json:"breach_rate"`
+	// Breakdowns
+	SeverityMTTR    map[string]float64 `json:"severity_mttr"`
+	AlertTrend      []AlertTrendDay    `json:"alert_trend"`
+	TopRules        []RuleFireCount    `json:"top_rules"`
+	AnalystWorkload []AnalystLoad      `json:"analyst_workload"`
+	StatusFunnel    map[string]int64   `json:"status_funnel"`
+}
+
+// SLAPolicy defines time-based response targets for alerts.
+type SLAPolicy struct {
+	ID                 string    `db:"id"                   json:"id"`
+	TenantID           string    `db:"tenant_id"            json:"-"`
+	Name               string    `db:"name"                 json:"name"`
+	Severity           *int16    `db:"severity"             json:"severity"`
+	TargetMTTDMinutes  *int      `db:"target_mttd_minutes"  json:"target_mttd_minutes"`
+	TargetMTTAMinutes  *int      `db:"target_mtta_minutes"  json:"target_mtta_minutes"`
+	TargetMTTRHours    *float64  `db:"target_mttr_hours"    json:"target_mttr_hours"`
+	Enabled            bool      `db:"enabled"              json:"enabled"`
+	CreatedAt          time.Time `db:"created_at"           json:"created_at"`
+	UpdatedAt          time.Time `db:"updated_at"           json:"updated_at"`
+}
+
+// SLABreach records when an alert exceeded a policy's target.
+type SLABreach struct {
+	ID          string    `db:"id"           json:"id"`
+	TenantID    string    `db:"tenant_id"    json:"-"`
+	PolicyID    string    `db:"policy_id"    json:"policy_id"`
+	PolicyName  string    `db:"-"            json:"policy_name"`
+	AlertID     string    `db:"alert_id"     json:"alert_id,omitempty"`
+	IncidentID  string    `db:"incident_id"  json:"incident_id,omitempty"`
+	MetricType  string    `db:"metric_type"  json:"metric_type"`
+	TargetValue float64   `db:"target_value" json:"target_value"`
+	ActualValue float64   `db:"actual_value" json:"actual_value"`
+	BreachedAt  time.Time `db:"breached_at"  json:"breached_at"`
 }
 
 // ── TIP Integration ──────────────────────────────────────────────────────────

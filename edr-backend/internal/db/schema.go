@@ -2497,6 +2497,47 @@ ALTER TABLE incidents
     ADD COLUMN IF NOT EXISTS ai_summary_at TIMESTAMPTZ;
 `,
 	},
+	{
+		name: "sla_lifecycle_timestamps",
+		sql: `
+ALTER TABLE alerts
+    ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS assigned_at     TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS resolved_at     TIMESTAMPTZ;
+ALTER TABLE incidents
+    ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS assigned_at     TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS resolved_at     TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS contained_at    TIMESTAMPTZ;
+CREATE TABLE IF NOT EXISTS sla_policies (
+    id                   TEXT PRIMARY KEY,
+    tenant_id            TEXT NOT NULL,
+    name                 TEXT NOT NULL,
+    severity             SMALLINT,
+    target_mttd_minutes  INT,
+    target_mtta_minutes  INT,
+    target_mttr_hours    FLOAT,
+    enabled              BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS sla_policies_tenant ON sla_policies(tenant_id);
+CREATE TABLE IF NOT EXISTS sla_breaches (
+    id            TEXT PRIMARY KEY,
+    tenant_id     TEXT NOT NULL,
+    policy_id     TEXT REFERENCES sla_policies(id) ON DELETE CASCADE,
+    alert_id      TEXT,
+    incident_id   TEXT,
+    metric_type   TEXT NOT NULL,
+    target_value  FLOAT NOT NULL,
+    actual_value  FLOAT NOT NULL,
+    breached_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS sla_breaches_tenant ON sla_breaches(tenant_id, breached_at DESC);
+CREATE INDEX IF NOT EXISTS sla_breaches_alert  ON sla_breaches(alert_id) WHERE alert_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS sla_breaches_dedup ON sla_breaches(alert_id, metric_type) WHERE alert_id IS NOT NULL;
+`,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.

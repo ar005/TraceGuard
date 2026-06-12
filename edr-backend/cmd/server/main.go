@@ -750,6 +750,11 @@ func main() {
 	flowRetention := workers.NewFlowRetentionWorker(st.DB(), cfg.Retention.FlowDays, logger)
 	go flowRetention.Start(context.Background())
 
+	// ── SLA breach checker ────────────────────────────────────────────────────
+	slaChecker := workers.NewSLAChecker(st, logger, 5*time.Minute)
+	slaChecker.Start(context.Background())
+	defer slaChecker.Stop()
+
 	// ── XDR Phase 4: Behavioral analytics ─────────────────────────────────────
 	behavioralAnalyzer := detection.NewBehavioralAnalyzer(st.DB(), st, fireAlert, logger)
 	go behavioralAnalyzer.Start(context.Background())

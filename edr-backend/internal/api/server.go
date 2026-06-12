@@ -318,6 +318,13 @@ func (s *Server) registerRoutes() {
 		v1.GET("/metrics/soc", s.handleSOCMetrics)
 		v1.GET("/metrics/rules", s.handleRuleEffectiveness)
 
+		// SLA policies + breach log
+		v1.GET("/sla/policies", s.handleListSLAPolicies)
+		v1.POST("/sla/policies", s.handleCreateSLAPolicy)
+		v1.PUT("/sla/policies/:id", s.handleUpdateSLAPolicy)
+		v1.DELETE("/sla/policies/:id", s.handleDeleteSLAPolicy)
+		v1.GET("/sla/breaches", s.handleListSLABreaches)
+
 		// Admin-only live-response & pending-command routes
 		v1.POST("/liveresponse/command",      s.adminOnly(), s.handleLRCommand)
 		v1.POST("/pending-commands",          s.adminOnly(), s.handleCreatePendingCommand)
@@ -1406,11 +1413,12 @@ func (s *Server) handleSOCMetrics(c *gin.Context) {
 
 // socMetricsQuerier is satisfied by *store.Store. Extracted for unit testing.
 type socMetricsQuerier interface {
-	GetSOCMetrics(ctx context.Context) (*models.SOCMetrics, error)
+	GetSOCMetrics(ctx context.Context, tenantID ...string) (*models.SOCMetrics, error)
 }
 
 func handleSOCMetricsFrom(c *gin.Context, q socMetricsQuerier) {
-	m, err := q.GetSOCMetrics(c.Request.Context())
+	tid := getTenantID(c)
+	m, err := q.GetSOCMetrics(c.Request.Context(), tid)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

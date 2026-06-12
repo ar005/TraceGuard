@@ -484,9 +484,22 @@ func (s *Store) GetAlertEvents(ctx context.Context, alertID, tenantID string) ([
 }
 
 func (s *Store) UpdateAlertStatus(ctx context.Context, id, tenantID, status, assignee, notes string) error {
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE alerts SET status=$3, assignee=$4, notes=$5
-		 WHERE id=$1 AND (tenant_id=$2 OR tenant_id='default' OR $2='default')`,
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE alerts SET
+		  status     = $3,
+		  assignee   = $4,
+		  notes      = $5,
+		  updated_at = NOW(),
+		  acknowledged_at = CASE
+		    WHEN $3 = 'ACKNOWLEDGED' AND acknowledged_at IS NULL THEN NOW()
+		    ELSE acknowledged_at END,
+		  assigned_at = CASE
+		    WHEN $4 != '' AND assigned_at IS NULL THEN NOW()
+		    ELSE assigned_at END,
+		  resolved_at = CASE
+		    WHEN $3 IN ('RESOLVED','CLOSED','FALSE_POSITIVE') AND resolved_at IS NULL THEN NOW()
+		    ELSE resolved_at END
+		WHERE id=$1 AND (tenant_id=$2 OR tenant_id='default' OR $2='default')`,
 		id, tenantID, status, assignee, notes)
 	if err != nil {
 		return err
@@ -1790,7 +1803,23 @@ func (s *Store) UpdateIncident(ctx context.Context, id, tenantID, status, assign
 		tenantID = "default"
 	}
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE incidents SET status=$3, assignee=$4, notes=$5, updated_at=NOW()
+		UPDATE incidents SET
+		  status     = $3,
+		  assignee   = $4,
+		  notes      = $5,
+		  updated_at = NOW(),
+		  acknowledged_at = CASE
+		    WHEN $3 = 'INVESTIGATING' AND acknowledged_at IS NULL THEN NOW()
+		    ELSE acknowledged_at END,
+		  assigned_at = CASE
+		    WHEN $4 != '' AND assigned_at IS NULL THEN NOW()
+		    ELSE assigned_at END,
+		  contained_at = CASE
+		    WHEN $3 = 'CONTAINED' AND contained_at IS NULL THEN NOW()
+		    ELSE contained_at END,
+		  resolved_at = CASE
+		    WHEN $3 IN ('RESOLVED','CLOSED') AND resolved_at IS NULL THEN NOW()
+		    ELSE resolved_at END
 		WHERE id=$1 AND (tenant_id=$2 OR tenant_id='default' OR $2='default')`,
 		id, tenantID, status, assignee, notes)
 	return err
@@ -5810,33 +5839,71 @@ func (s *Store) IncrChainAlertCount(ctx context.Context, chainID string) error {
 }
 
 // GetSOCMetrics returns analyst-facing SOC performance KPIs and trend data.
-func (s *Store) GetSOCMetrics(ctx context.Context) (*models.SOCMetrics, error) {
+func (s *Store) GetSOCMetrics(ctx context.Context, tenantID ...string) (*models.SOCMetrics, error) {
+	tid := "default"
+	if len(tenantID) > 0 && tenantID[0] != "" {
+		tid = tenantID[0]
+	}
+	tenantFilter := `(tenant_id = $1 OR tenant_id = 'default' OR $1 = 'default')`
+
 	m := &models.SOCMetrics{
 		AlertTrend:      []models.AlertTrendDay{},
 		TopRules:        []models.RuleFireCount{},
 		AnalystWorkload: []models.AnalystLoad{},
 		StatusFunnel:    map[string]int64{},
+		SeverityMTTR:    map[string]float64{},
 	}
 
-	// MTTR: avg duration of closed/resolved alerts in last 30 days.
-	var mttr float64
+	// MTTD: avg(acknowledged_at - first_seen) as detection-to-acknowledge proxy, last 30 days.
+	// Using triage_at as the "detected by analyst" signal when acknowledged_at is unavailable.
 	_ = s.db.QueryRowContext(ctx, `
-		SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (last_seen - first_seen))/3600), 0)
+		SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (
+		  COALESCE(acknowledged_at, triage_at) - first_seen
+		))/60), 0)
 		FROM alerts
-		WHERE status IN ('CLOSED','RESOLVED')
-		  AND last_seen >= NOW() - INTERVAL '30 days'
-	`).Scan(&mttr)
-	m.MTTRHours = mttr
+		WHERE `+tenantFilter+`
+		  AND COALESCE(acknowledged_at, triage_at) IS NOT NULL
+		  AND first_seen >= NOW() - INTERVAL '30 days'
+	`, tid).Scan(&m.MTTDMinutes)
 
-	// Open alert age: avg age of currently OPEN alerts.
-	var openAge float64
+	// MTTA: avg(acknowledged_at - first_seen), last 30 days.
 	_ = s.db.QueryRowContext(ctx, `
-		SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (NOW() - first_seen))/3600), 0)
-		FROM alerts WHERE status = 'OPEN'
-	`).Scan(&openAge)
-	m.OpenAlertAgeH = openAge
+		SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (acknowledged_at - first_seen))/60), 0)
+		FROM alerts
+		WHERE `+tenantFilter+`
+		  AND acknowledged_at IS NOT NULL
+		  AND first_seen >= NOW() - INTERVAL '30 days'
+	`, tid).Scan(&m.MTTAMinutes)
 
-	// Resolution rate and FP rate for last 7 days.
+	// MTTR (corrected): avg(resolved_at - first_seen), last 30 days.
+	_ = s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (resolved_at - first_seen))/3600), 0)
+		FROM alerts
+		WHERE `+tenantFilter+`
+		  AND resolved_at IS NOT NULL
+		  AND first_seen >= NOW() - INTERVAL '30 days'
+	`, tid).Scan(&m.MTTRHours)
+
+	// MTTC (mean time to contain): from incidents, last 30 days.
+	_ = s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (contained_at - first_seen))/3600), 0)
+		FROM incidents
+		WHERE `+tenantFilter+`
+		  AND contained_at IS NOT NULL
+		  AND first_seen >= NOW() - INTERVAL '30 days'
+	`, tid).Scan(&m.MTTCHours)
+
+	// Open alert age: avg + percentiles.
+	_ = s.db.QueryRowContext(ctx, `
+		SELECT
+		  COALESCE(AVG(EXTRACT(EPOCH FROM (NOW() - first_seen))/3600), 0),
+		  COALESCE(percentile_cont(0.50) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (NOW()-first_seen))/3600), 0),
+		  COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (NOW()-first_seen))/3600), 0)
+		FROM alerts
+		WHERE `+tenantFilter+` AND status = 'OPEN'
+	`, tid).Scan(&m.OpenAlertAgeH, &m.AlertAgeP50H, &m.AlertAgeP95H)
+
+	// Resolution + FP rates.
 	var total7d, closed7d, fp7d int64
 	_ = s.db.QueryRowContext(ctx, `
 		SELECT
@@ -5844,14 +5911,47 @@ func (s *Store) GetSOCMetrics(ctx context.Context) (*models.SOCMetrics, error) {
 		  COUNT(*) FILTER (WHERE status IN ('CLOSED','RESOLVED')),
 		  COUNT(*) FILTER (WHERE triage_verdict = 'false_positive')
 		FROM alerts
-		WHERE first_seen >= NOW() - INTERVAL '7 days'
-	`).Scan(&total7d, &closed7d, &fp7d)
+		WHERE `+tenantFilter+` AND first_seen >= NOW() - INTERVAL '7 days'
+	`, tid).Scan(&total7d, &closed7d, &fp7d)
 	m.TotalAlerts7d = total7d
 	if total7d > 0 {
 		m.ResolutionRate = float64(closed7d) / float64(total7d) * 100
 	}
 	if closed7d > 0 {
 		m.FPRate = float64(fp7d) / float64(closed7d) * 100
+	}
+
+	// SLA breaches last 7 days.
+	_ = s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM sla_breaches
+		WHERE tenant_id = $1 AND breached_at >= NOW() - INTERVAL '7 days'
+	`, tid).Scan(&m.SLABreaches7d)
+	if total7d > 0 {
+		m.BreachRate = float64(m.SLABreaches7d) / float64(total7d) * 100
+	}
+
+	// Per-severity MTTR.
+	sevRows, err := s.db.QueryContext(ctx, `
+		SELECT severity,
+		  COALESCE(AVG(EXTRACT(EPOCH FROM (resolved_at - first_seen))/3600), 0) AS mttr
+		FROM alerts
+		WHERE `+tenantFilter+`
+		  AND resolved_at IS NOT NULL
+		  AND first_seen >= NOW() - INTERVAL '30 days'
+		GROUP BY severity
+	`, tid)
+	if err == nil {
+		defer sevRows.Close()
+		sevNames := map[int16]string{1: "low", 2: "medium", 3: "high", 4: "critical"}
+		for sevRows.Next() {
+			var sev int16
+			var mttr float64
+			if sevRows.Scan(&sev, &mttr) == nil {
+				if name, ok := sevNames[sev]; ok {
+					m.SeverityMTTR[name] = mttr
+				}
+			}
+		}
 	}
 
 	// Alert trend: last 7 days by day + severity bucket.
@@ -5861,10 +5961,10 @@ func (s *Store) GetSOCMetrics(ctx context.Context) (*models.SOCMetrics, error) {
 		  severity,
 		  COUNT(*) AS cnt
 		FROM alerts
-		WHERE first_seen >= NOW() - INTERVAL '7 days'
+		WHERE `+tenantFilter+` AND first_seen >= NOW() - INTERVAL '7 days'
 		GROUP BY day, severity
 		ORDER BY day
-	`)
+	`, tid)
 	if err == nil {
 		defer trendRows.Close()
 		dayMap := map[string]*models.AlertTrendDay{}
@@ -5872,7 +5972,7 @@ func (s *Store) GetSOCMetrics(ctx context.Context) (*models.SOCMetrics, error) {
 			var day string
 			var sev int16
 			var cnt int64
-			if err := trendRows.Scan(&day, &sev, &cnt); err != nil {
+			if trendRows.Scan(&day, &sev, &cnt) != nil {
 				continue
 			}
 			if dayMap[day] == nil {
@@ -5892,7 +5992,6 @@ func (s *Store) GetSOCMetrics(ctx context.Context) (*models.SOCMetrics, error) {
 				d.Info += cnt
 			}
 		}
-		// Build ordered slice (7 days).
 		for i := 6; i >= 0; i-- {
 			day := time.Now().UTC().AddDate(0, 0, -i).Format("2006-01-02")
 			if d, ok := dayMap[day]; ok {
@@ -5907,38 +6006,45 @@ func (s *Store) GetSOCMetrics(ctx context.Context) (*models.SOCMetrics, error) {
 	ruleRows, err := s.db.QueryContext(ctx, `
 		SELECT rule_name, COUNT(*) AS cnt
 		FROM alerts
-		WHERE first_seen >= NOW() - INTERVAL '7 days' AND rule_name != ''
+		WHERE `+tenantFilter+` AND first_seen >= NOW() - INTERVAL '7 days' AND rule_name != ''
 		GROUP BY rule_name
 		ORDER BY cnt DESC
 		LIMIT 10
-	`)
+	`, tid)
 	if err == nil {
 		defer ruleRows.Close()
 		for ruleRows.Next() {
 			var r models.RuleFireCount
-			if err := ruleRows.Scan(&r.RuleName, &r.Count); err == nil {
+			if ruleRows.Scan(&r.RuleName, &r.Count) == nil {
 				m.TopRules = append(m.TopRules, r)
 			}
 		}
 	}
 
-	// Analyst workload: open count + total assigned last 7d.
+	// Analyst workload with MTTR and FP rate.
 	wlRows, err := s.db.QueryContext(ctx, `
 		SELECT
 		  assignee,
-		  COUNT(*) FILTER (WHERE status = 'OPEN') AS open_count,
-		  COUNT(*) FILTER (WHERE first_seen >= NOW() - INTERVAL '7 days') AS total_7d
+		  COUNT(*) FILTER (WHERE status = 'OPEN')                                        AS open_count,
+		  COUNT(*) FILTER (WHERE first_seen >= NOW() - INTERVAL '7 days')                AS total_7d,
+		  COALESCE(AVG(EXTRACT(EPOCH FROM (NOW()-first_seen))/3600)
+		    FILTER (WHERE status = 'OPEN'), 0)                                            AS avg_age_h,
+		  COALESCE(AVG(EXTRACT(EPOCH FROM (resolved_at - first_seen))/3600)
+		    FILTER (WHERE resolved_at IS NOT NULL
+		            AND first_seen >= NOW() - INTERVAL '30 days'), 0)                     AS mttr_h,
+		  COALESCE(COUNT(*) FILTER (WHERE triage_verdict = 'false_positive') * 1.0 /
+		    NULLIF(COUNT(*) FILTER (WHERE triage_verdict IS NOT NULL AND triage_verdict != ''), 0), 0) * 100 AS fp_rate
 		FROM alerts
-		WHERE assignee != ''
+		WHERE `+tenantFilter+` AND assignee != ''
 		GROUP BY assignee
 		ORDER BY open_count DESC
 		LIMIT 20
-	`)
+	`, tid)
 	if err == nil {
 		defer wlRows.Close()
 		for wlRows.Next() {
 			var a models.AnalystLoad
-			if err := wlRows.Scan(&a.Assignee, &a.OpenCount, &a.Total7d); err == nil {
+			if wlRows.Scan(&a.Assignee, &a.OpenCount, &a.Total7d, &a.AvgAgeH, &a.MTTRHours, &a.FPRate) == nil {
 				m.AnalystWorkload = append(m.AnalystWorkload, a)
 			}
 		}
@@ -5946,14 +6052,14 @@ func (s *Store) GetSOCMetrics(ctx context.Context) (*models.SOCMetrics, error) {
 
 	// Status funnel.
 	funnelRows, err := s.db.QueryContext(ctx, `
-		SELECT status, COUNT(*) FROM alerts GROUP BY status
-	`)
+		SELECT status, COUNT(*) FROM alerts WHERE `+tenantFilter+` GROUP BY status
+	`, tid)
 	if err == nil {
 		defer funnelRows.Close()
 		for funnelRows.Next() {
 			var status string
 			var cnt int64
-			if err := funnelRows.Scan(&status, &cnt); err == nil {
+			if funnelRows.Scan(&status, &cnt) == nil {
 				m.StatusFunnel[status] = cnt
 			}
 		}
@@ -5989,8 +6095,8 @@ func (s *Store) GetRuleEffectiveness(ctx context.Context) ([]models.RuleEffectiv
 		    COUNT(*) FILTER (WHERE status IN ('CLOSED','RESOLVED'))         AS closed_count,
 		    COUNT(*) FILTER (WHERE triage_verdict = 'false_positive')       AS fp_count,
 		    COALESCE(
-		      AVG(EXTRACT(EPOCH FROM (last_seen - first_seen))/3600)
-		        FILTER (WHERE status IN ('CLOSED','RESOLVED')),
+		      AVG(EXTRACT(EPOCH FROM (resolved_at - first_seen))/3600)
+		        FILTER (WHERE resolved_at IS NOT NULL),
 		    0) AS avg_mttr_hours,
 		    MAX(first_seen) AS last_fired_at
 		  FROM alerts WHERE rule_id != ''
@@ -6021,6 +6127,161 @@ func (s *Store) GetRuleEffectiveness(ctx context.Context) ([]models.RuleEffectiv
 		}
 		r.Label = ruleEffectivenessLabel(r)
 		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ── SLA Policy CRUD ───────────────────────────────────────────────────────────
+
+func (s *Store) ListSLAPolicies(ctx context.Context, tenantID string) ([]models.SLAPolicy, error) {
+	var out []models.SLAPolicy
+	err := s.db.SelectContext(ctx, &out, `
+		SELECT id, tenant_id, name, severity,
+		       target_mttd_minutes, target_mtta_minutes, target_mttr_hours,
+		       enabled, created_at, updated_at
+		FROM sla_policies
+		WHERE tenant_id = $1
+		ORDER BY created_at DESC
+	`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *Store) CreateSLAPolicy(ctx context.Context, p *models.SLAPolicy) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO sla_policies
+		  (id, tenant_id, name, severity, target_mttd_minutes, target_mtta_minutes,
+		   target_mttr_hours, enabled, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),NOW())
+	`, p.ID, p.TenantID, p.Name, p.Severity,
+		p.TargetMTTDMinutes, p.TargetMTTAMinutes, p.TargetMTTRHours, p.Enabled)
+	return err
+}
+
+func (s *Store) UpdateSLAPolicy(ctx context.Context, p *models.SLAPolicy) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE sla_policies SET
+		  name = $3, severity = $4,
+		  target_mttd_minutes = $5, target_mtta_minutes = $6, target_mttr_hours = $7,
+		  enabled = $8, updated_at = NOW()
+		WHERE id = $1 AND tenant_id = $2
+	`, p.ID, p.TenantID, p.Name, p.Severity,
+		p.TargetMTTDMinutes, p.TargetMTTAMinutes, p.TargetMTTRHours, p.Enabled)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) DeleteSLAPolicy(ctx context.Context, id, tenantID string) error {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM sla_policies WHERE id=$1 AND tenant_id=$2`, id, tenantID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// ── SLA Breach log ────────────────────────────────────────────────────────────
+
+func (s *Store) ListSLABreaches(ctx context.Context, tenantID string, limit int) ([]models.SLABreach, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT b.id, b.tenant_id, b.policy_id, COALESCE(p.name,'') AS policy_name,
+		       COALESCE(b.alert_id,''), COALESCE(b.incident_id,''),
+		       b.metric_type, b.target_value, b.actual_value, b.breached_at
+		FROM sla_breaches b
+		LEFT JOIN sla_policies p ON p.id = b.policy_id
+		WHERE b.tenant_id = $1
+		ORDER BY b.breached_at DESC
+		LIMIT $2
+	`, tenantID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.SLABreach
+	for rows.Next() {
+		var b models.SLABreach
+		if err := rows.Scan(&b.ID, &b.TenantID, &b.PolicyID, &b.PolicyName,
+			&b.AlertID, &b.IncidentID,
+			&b.MetricType, &b.TargetValue, &b.ActualValue, &b.BreachedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) RecordSLABreach(ctx context.Context, b *models.SLABreach) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO sla_breaches
+		  (id, tenant_id, policy_id, alert_id, incident_id,
+		   metric_type, target_value, actual_value, breached_at)
+		VALUES ($1,$2,$3,NULLIF($4,''),NULLIF($5,''),$6,$7,$8,NOW())
+		ON CONFLICT DO NOTHING
+	`, b.ID, b.TenantID, b.PolicyID, b.AlertID, b.IncidentID,
+		b.MetricType, b.TargetValue, b.ActualValue)
+	return err
+}
+
+// ListTenantsWithSLAPolicies returns distinct tenant IDs that have at least one enabled SLA policy.
+func (s *Store) ListTenantsWithSLAPolicies(ctx context.Context) ([]string, error) {
+	var tenants []string
+	err := s.db.SelectContext(ctx, &tenants,
+		`SELECT DISTINCT tenant_id FROM sla_policies WHERE enabled = TRUE`)
+	return tenants, err
+}
+
+// GetEnabledSLAPolicies returns all enabled policies for a tenant.
+func (s *Store) GetEnabledSLAPolicies(ctx context.Context, tenantID string) ([]models.SLAPolicy, error) {
+	var out []models.SLAPolicy
+	err := s.db.SelectContext(ctx, &out, `
+		SELECT id, tenant_id, name, severity,
+		       target_mttd_minutes, target_mtta_minutes, target_mttr_hours,
+		       enabled, created_at, updated_at
+		FROM sla_policies
+		WHERE tenant_id = $1 AND enabled = TRUE
+	`, tenantID)
+	return out, err
+}
+
+// FindOpenAlertsBreachingSLA returns open alerts that exceed the given age thresholds (in minutes).
+func (s *Store) FindOpenAlertsBreachingSLA(ctx context.Context, tenantID string, mttaMinutes, mttrMinutes int) ([]models.Alert, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, tenant_id, severity, status, first_seen,
+		       acknowledged_at, resolved_at, assignee
+		FROM alerts
+		WHERE (tenant_id = $1 OR tenant_id = 'default' OR $1 = 'default')
+		  AND status NOT IN ('CLOSED','RESOLVED','FALSE_POSITIVE')
+		  AND (
+		    ($2 > 0 AND acknowledged_at IS NULL AND EXTRACT(EPOCH FROM (NOW()-first_seen))/60 > $2)
+		    OR
+		    ($3 > 0 AND resolved_at IS NULL AND EXTRACT(EPOCH FROM (NOW()-first_seen))/60 > $3)
+		  )
+	`, tenantID, mttaMinutes, mttrMinutes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.Alert
+	for rows.Next() {
+		var a models.Alert
+		if err := rows.Scan(&a.ID, &a.TenantID, &a.Severity, &a.Status, &a.FirstSeen,
+			&a.AcknowledgedAt, &a.ResolvedAt, &a.Assignee); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
 	}
 	return out, rows.Err()
 }

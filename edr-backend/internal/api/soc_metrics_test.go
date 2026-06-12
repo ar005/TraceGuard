@@ -21,7 +21,7 @@ type mockSOCQuerier struct {
 	err     error
 }
 
-func (m *mockSOCQuerier) GetSOCMetrics(_ context.Context) (*models.SOCMetrics, error) {
+func (m *mockSOCQuerier) GetSOCMetrics(_ context.Context, _ ...string) (*models.SOCMetrics, error) {
 	return m.metrics, m.err
 }
 
