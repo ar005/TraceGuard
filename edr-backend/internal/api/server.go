@@ -196,6 +196,13 @@ func (s *Server) registerRoutes() {
 	r.GET("/metrics/prometheus", gin.WrapH(promhttp.Handler()))
 	r.GET("/api/v1/metrics/prometheus", gin.WrapH(promhttp.Handler()))
 
+	// OpenAPI spec + Swagger UI (no auth — spec is public)
+	r.GET("/openapi.yaml",       s.handleOpenAPIYAML)
+	r.GET("/api/v1/openapi.yaml", s.handleOpenAPIYAML)
+	r.GET("/api/v1/openapi.json", s.handleOpenAPIJSON)
+	r.GET("/swagger/",           s.handleSwaggerUI)
+	r.GET("/swagger",            func(c *gin.Context) { c.Redirect(http.StatusMovedPermanently, "/swagger/") })
+
 	setupGrp := r.Group("/api/v1/setup")
 	{
 		setupGrp.GET("/status",  s.handleSetupStatus)

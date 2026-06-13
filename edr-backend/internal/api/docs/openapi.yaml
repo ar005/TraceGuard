@@ -1,0 +1,3205 @@
+openapi: "3.0.3"
+info:
+  title: TraceGuard EDR API
+  version: "1.0"
+  description: |
+    REST API for TraceGuard — a self-hosted Linux/Windows XDR platform.
+
+    **Authentication**: All endpoints (except `/auth/login`, `/health`, `/metrics/prometheus`, `/api/canary/trigger/:token`) require a Bearer token:
+    - **JWT**: obtained from `POST /api/v1/auth/login`
+    - **API Key**: created via `POST /api/v1/apikeys`
+
+    Pass as `Authorization: Bearer <token>`.
+
+    **Roles**: Endpoints marked **(admin)** require the `admin` role. Analyst-role tokens can read most resources but cannot create/modify detection rules, suppressions, user accounts, or system settings.
+
+    **Rate limiting**: Default 20 req/s burst 40 per IP. Hunt and inject endpoints are stricter.
+
+    **Multi-tenancy**: The `tenant_id` is derived from the authenticated token. Pass `?tenant=<id>` (admin only) to query a specific tenant.
+  contact:
+    name: TraceGuard
+  license:
+    name: Proprietary
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Local development
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Auth
+    description: Authentication and session management
+  - name: Agents
+    description: Endpoint agent inventory and management
+  - name: Events
+    description: Raw telemetry events from agents
+  - name: Alerts
+    description: Detection alerts and AI triage
+  - name: Incidents
+    description: Correlated incident groups
+  - name: Cases
+    description: Investigation case management
+  - name: Rules
+    description: Detection rules (match, threshold, sequence)
+  - name: YARA
+    description: YARA rule management
+  - name: Suppressions
+    description: Alert suppression filters
+  - name: IOCs
+    description: Indicators of Compromise
+  - name: IOC Feeds
+    description: Custom IOC feed sources
+  - name: Hunt
+    description: Threat hunting queries
+  - name: SLA
+    description: SLA policies and breach tracking
+  - name: Playbooks
+    description: SOAR playbooks and response actions
+  - name: Live Response
+    description: Remote agent command execution
+  - name: Metrics
+    description: SOC performance metrics and DB stats
+  - name: Vulnerabilities
+    description: Package inventory and CVE matching
+  - name: Identity
+    description: User identity, sessions, and UEBA
+  - name: Intel
+    description: Threat intelligence — actors, campaigns, TAXII, replay
+  - name: Forensics
+    description: Remote memory/artifact acquisition
+  - name: Containers
+    description: Container inventory
+  - name: Assets
+    description: Asset inventory (XDR sources)
+  - name: XDR
+    description: Cross-source threat scoring and lateral graph
+  - name: DNS
+    description: DNS intelligence
+  - name: DLP
+    description: Data loss prevention signals
+  - name: Deception
+    description: Honeypots and lure files
+  - name: Canary
+    description: Canary tokens
+  - name: Compliance
+    description: MITRE ATT&CK coverage
+  - name: Reports
+    description: Generated reports
+  - name: Disruption
+    description: Autonomous containment policies
+  - name: Remediation
+    description: Auto-remediation rules
+  - name: AutoCase
+    description: Automatic case-creation policies
+  - name: TIP
+    description: Threat Intelligence Platform (MISP) sync
+  - name: Sources
+    description: XDR connector sources
+  - name: Agent Groups
+    description: Agent group management and fleet config
+  - name: Tasks
+    description: Scheduled agent tasks
+  - name: Chains
+    description: Attack chain / kill-chain tracking
+  - name: Admin
+    description: User management, API keys, settings, audit
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          example: "record not found"
+
+    Agent:
+      type: object
+      properties:
+        id:           { type: string, format: uuid }
+        hostname:     { type: string }
+        os:           { type: string, example: linux }
+        arch:         { type: string, example: amd64 }
+        agent_ver:    { type: string }
+        ip:           { type: string }
+        status:       { type: string, enum: [online, offline, isolated] }
+        risk_score:   { type: number, format: float }
+        last_seen:    { type: string, format: date-time }
+        tenant_id:    { type: string }
+
+    Event:
+      type: object
+      properties:
+        id:           { type: string, format: uuid }
+        agent_id:     { type: string, format: uuid }
+        hostname:     { type: string }
+        event_type:   { type: string, example: PROCESS_START }
+        timestamp:    { type: string, format: date-time }
+        payload:      { type: object, description: "Event-type-specific fields" }
+        chain_id:     { type: string }
+        tenant_id:    { type: string }
+
+    Alert:
+      type: object
+      properties:
+        id:              { type: string, format: uuid }
+        rule_id:         { type: string, format: uuid }
+        rule_name:       { type: string }
+        agent_id:        { type: string, format: uuid }
+        hostname:        { type: string }
+        severity:        { type: integer, minimum: 1, maximum: 5 }
+        status:          { type: string, enum: [open, acknowledged, resolved, false_positive] }
+        mitre_ids:       { type: array, items: { type: string } }
+        first_seen:      { type: string, format: date-time }
+        last_seen:       { type: string, format: date-time }
+        acknowledged_at: { type: string, format: date-time, nullable: true }
+        resolved_at:     { type: string, format: date-time, nullable: true }
+        triage_verdict:  { type: string, nullable: true }
+        triage_score:    { type: number, nullable: true }
+        tenant_id:       { type: string }
+
+    Incident:
+      type: object
+      properties:
+        id:           { type: string, format: uuid }
+        title:        { type: string }
+        status:       { type: string, enum: [OPEN, INVESTIGATING, CONTAINED, RESOLVED, CLOSED] }
+        severity:     { type: integer }
+        agent_id:     { type: string, format: uuid }
+        assignee:     { type: string, nullable: true }
+        mitre_ids:    { type: array, items: { type: string } }
+        alert_count:  { type: integer }
+        created_at:   { type: string, format: date-time }
+        updated_at:   { type: string, format: date-time }
+        acknowledged_at: { type: string, format: date-time, nullable: true }
+        resolved_at:     { type: string, format: date-time, nullable: true }
+
+    Case:
+      type: object
+      properties:
+        id:          { type: string, format: uuid }
+        title:       { type: string }
+        description: { type: string }
+        status:      { type: string, enum: [open, in_progress, resolved, closed] }
+        severity:    { type: integer }
+        assignee:    { type: string, nullable: true }
+        created_at:  { type: string, format: date-time }
+        updated_at:  { type: string, format: date-time }
+
+    Rule:
+      type: object
+      properties:
+        id:          { type: string, format: uuid }
+        name:        { type: string }
+        description: { type: string }
+        rule_type:   { type: string, enum: [match, threshold, sequence] }
+        severity:    { type: integer }
+        enabled:     { type: boolean }
+        mitre_ids:   { type: array, items: { type: string } }
+        conditions:  { type: array, items: { type: object } }
+        created_at:  { type: string, format: date-time }
+
+    IOC:
+      type: object
+      properties:
+        id:          { type: string, format: uuid }
+        type:        { type: string, enum: [ip, domain, hash, url, email] }
+        value:       { type: string }
+        severity:    { type: integer }
+        source:      { type: string }
+        tags:        { type: array, items: { type: string } }
+        active:      { type: boolean }
+        created_at:  { type: string, format: date-time }
+
+    SLAPolicy:
+      type: object
+      properties:
+        id:                   { type: string, format: uuid }
+        name:                 { type: string }
+        severity:             { type: integer, nullable: true, description: "If null, applies to all severities" }
+        target_mttd_minutes:  { type: integer, nullable: true }
+        target_mtta_minutes:  { type: integer, nullable: true }
+        target_mttr_hours:    { type: number, nullable: true }
+        enabled:              { type: boolean }
+        created_at:           { type: string, format: date-time }
+
+    SLABreach:
+      type: object
+      properties:
+        id:           { type: string, format: uuid }
+        policy_id:    { type: string, format: uuid }
+        policy_name:  { type: string }
+        alert_id:     { type: string, format: uuid, nullable: true }
+        metric_type:  { type: string, enum: [mtta, mttr, mttd] }
+        target_value: { type: number }
+        actual_value: { type: number }
+        breached_at:  { type: string, format: date-time }
+
+    ForensicsJob:
+      type: object
+      properties:
+        id:          { type: string, format: uuid }
+        agent_id:    { type: string, format: uuid }
+        job_type:    { type: string, enum: [process_memory, artifacts, disk_image] }
+        status:      { type: string, enum: [pending, collecting, ready, failed] }
+        params:      { type: object }
+        bundle_size: { type: integer, nullable: true, description: "bytes" }
+        error_msg:   { type: string, nullable: true }
+        created_at:  { type: string, format: date-time }
+
+    Playbook:
+      type: object
+      properties:
+        id:          { type: string, format: uuid }
+        name:        { type: string }
+        description: { type: string }
+        enabled:     { type: boolean }
+        trigger:     { type: object, description: "Trigger condition" }
+        actions:     { type: array, items: { type: object } }
+
+    YARARule:
+      type: object
+      properties:
+        id:       { type: string, format: uuid }
+        name:     { type: string }
+        content:  { type: string, description: "Raw YARA rule text" }
+        enabled:  { type: boolean }
+        tags:     { type: array, items: { type: string } }
+
+    Package:
+      type: object
+      properties:
+        name:     { type: string }
+        version:  { type: string }
+        arch:     { type: string }
+        manager:  { type: string, enum: [dpkg, rpm, unknown] }
+
+    Vulnerability:
+      type: object
+      properties:
+        cve_id:      { type: string, example: "CVE-2024-1234" }
+        agent_id:    { type: string, format: uuid }
+        package:     { type: string }
+        version:     { type: string }
+        severity:    { type: string, enum: [CRITICAL, HIGH, MEDIUM, LOW] }
+        cvss_score:  { type: number }
+        description: { type: string }
+
+    ThreatActor:
+      type: object
+      properties:
+        id:          { type: string, format: uuid }
+        name:        { type: string }
+        aliases:     { type: array, items: { type: string } }
+        origin:      { type: string }
+        motivation:  { type: string }
+        description: { type: string }
+        mitre_ids:   { type: array, items: { type: string } }
+
+    SOCMetrics:
+      type: object
+      properties:
+        mttd_minutes:     { type: number }
+        mtta_minutes:     { type: number }
+        mttr_hours:       { type: number }
+        mttc_hours:       { type: number }
+        open_alert_age_hours: { type: number }
+        alert_age_p50h:   { type: number }
+        alert_age_p95h:   { type: number }
+        resolution_rate:  { type: number }
+        fp_rate:          { type: number }
+        total_alerts_7d:  { type: integer }
+        sla_breaches_7d:  { type: integer }
+        breach_rate:      { type: number }
+        severity_mttr:    { type: object, additionalProperties: { type: number } }
+        status_funnel:    { type: object, additionalProperties: { type: integer } }
+
+paths:
+  # ─── AUTH ──────────────────────────────────────────────────────────────────
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in and get a JWT
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password }
+                totp_code: { type: string, description: "Required if TOTP is enabled for this user" }
+      responses:
+        "200":
+          description: JWT token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  role:  { type: string, enum: [admin, analyst] }
+        "401": { description: Invalid credentials }
+        "429": { description: Rate limited / account locked }
+
+  /auth/sse-ticket:
+    post:
+      tags: [Auth]
+      summary: Issue a short-lived SSE ticket (used before opening EventSource)
+      responses:
+        "200":
+          description: Ticket
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ticket: { type: string }
+
+  /me:
+    get:
+      tags: [Auth]
+      summary: Get current authenticated user profile
+      responses:
+        "200":
+          description: User profile
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:       { type: string }
+                  username: { type: string }
+                  role:     { type: string }
+                  totp_enabled: { type: boolean }
+
+  /dashboard:
+    get:
+      tags: [Auth]
+      summary: Dashboard summary (alert counts, top agents, recent incidents)
+      responses:
+        "200": { description: Dashboard data }
+
+  # ─── AGENTS ────────────────────────────────────────────────────────────────
+
+  /agents:
+    get:
+      tags: [Agents]
+      summary: List all agents
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [online, offline, isolated] } }
+        - { name: q, in: query, schema: { type: string }, description: "Search by hostname/IP" }
+      responses:
+        "200":
+          description: Agent list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agents: { type: array, items: { $ref: '#/components/schemas/Agent' } }
+
+  /agents/top-risk:
+    get:
+      tags: [Agents]
+      summary: List agents ordered by risk score (descending)
+      responses:
+        "200": { description: Top-risk agents }
+
+  /agents/{id}:
+    get:
+      tags: [Agents]
+      summary: Get a single agent
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Agent
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Agent' }
+        "404": { description: Not found }
+    patch:
+      tags: [Agents]
+      summary: Update agent metadata (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                hostname: { type: string }
+                tags:     { type: array, items: { type: string } }
+      responses:
+        "200": { description: Updated agent }
+
+  /agents/{id}/packages:
+    get:
+      tags: [Agents]
+      summary: List installed packages on an agent
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Package list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  packages: { type: array, items: { $ref: '#/components/schemas/Package' } }
+
+  /agents/{id}/vulnerabilities:
+    get:
+      tags: [Agents]
+      summary: List CVEs matched to packages on an agent
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Vulnerability list
+
+  /agents/{id}/scan-packages:
+    post:
+      tags: [Agents]
+      summary: Trigger on-demand package scan on agent (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Scan triggered }
+
+  /agents/{id}/audit:
+    get:
+      tags: [Agents]
+      summary: Audit log of actions taken on this agent
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Audit entries }
+
+  /agents/{id}/attack-surface:
+    get:
+      tags: [Agents]
+      summary: Attack surface snapshot for a specific agent
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Attack surface data }
+
+  /agents/{id}/forensic-timeline:
+    get:
+      tags: [Agents]
+      summary: Forensic event timeline for an agent
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Timeline events }
+
+  /agents/{id}/fleet-config:
+    get:
+      tags: [Agents]
+      summary: Get current fleet configuration for an agent
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Fleet config }
+    put:
+      tags: [Agents]
+      summary: Push fleet config to an agent (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Monitor enable/disable map and config overrides
+      responses:
+        "200": { description: Config applied }
+
+  /agents/{id}/fleet-config/history:
+    get:
+      tags: [Agents]
+      summary: Fleet config change history for an agent
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Config history }
+
+  /agents/{id}/fleet-config/rollback/{sid}:
+    post:
+      tags: [Agents]
+      summary: Roll back to a previous fleet config snapshot (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: sid, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Rollback applied }
+
+  /agents/{id}/winevent-config:
+    get:
+      tags: [Agents]
+      summary: Get Windows Event Log channel config for an agent
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: WinEvent config }
+    patch:
+      tags: [Agents]
+      summary: Update Windows Event Log channel config (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Updated }
+
+  /agents/{id}/tamper-alert:
+    post:
+      tags: [Agents]
+      summary: Agent-reported tamper alert (called by agent, not analyst)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Recorded }
+
+  # ─── EVENTS ────────────────────────────────────────────────────────────────
+
+  /events:
+    get:
+      tags: [Events]
+      summary: List events with filters
+      parameters:
+        - { name: agent_id, in: query, schema: { type: string } }
+        - { name: event_type, in: query, schema: { type: string } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: limit, in: query, schema: { type: integer, default: 100 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0 } }
+      responses:
+        "200":
+          description: Event list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events: { type: array, items: { $ref: '#/components/schemas/Event' } }
+                  total:  { type: integer }
+
+  /events/{id}:
+    get:
+      tags: [Events]
+      summary: Get a single event by ID
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Event
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Event' }
+
+  /events/stream:
+    get:
+      tags: [Events]
+      summary: Server-sent event stream of live events
+      description: |
+        Returns a `text/event-stream`. Authenticate via `?ticket=<sse-ticket>` (from `POST /auth/sse-ticket`).
+      parameters:
+        - { name: ticket, in: query, required: true, schema: { type: string } }
+        - { name: event_type, in: query, schema: { type: string } }
+      responses:
+        "200": { description: SSE stream }
+
+  /events/inject:
+    post:
+      tags: [Events]
+      summary: Inject a synthetic event (admin, testing)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Event' }
+      responses:
+        "201": { description: Event injected }
+
+  /events/{id}/chain:
+    get:
+      tags: [Events]
+      summary: Get the attack chain an event belongs to
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Chain record }
+
+  /processes/{pid}/tree:
+    get:
+      tags: [Events]
+      summary: Get process tree rooted at a PID
+      parameters:
+        - { name: pid, in: path, required: true, schema: { type: integer } }
+        - { name: agent_id, in: query, schema: { type: string } }
+      responses:
+        "200": { description: Process tree }
+
+  # ─── ALERTS ────────────────────────────────────────────────────────────────
+
+  /alerts:
+    get:
+      tags: [Alerts]
+      summary: List alerts
+      parameters:
+        - { name: status, in: query, schema: { type: string } }
+        - { name: severity, in: query, schema: { type: integer } }
+        - { name: agent_id, in: query, schema: { type: string } }
+        - { name: rule_id, in: query, schema: { type: string } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: limit, in: query, schema: { type: integer, default: 50 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0 } }
+      responses:
+        "200":
+          description: Alert list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  alerts: { type: array, items: { $ref: '#/components/schemas/Alert' } }
+                  total:  { type: integer }
+
+  /alerts/{id}:
+    get:
+      tags: [Alerts]
+      summary: Get a single alert
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Alert
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Alert' }
+    patch:
+      tags: [Alerts]
+      summary: Update alert status or assignment
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:   { type: string, enum: [open, acknowledged, resolved, false_positive] }
+                assignee: { type: string }
+                notes:    { type: string }
+      responses:
+        "200": { description: Updated alert }
+
+  /alerts/{id}/events:
+    get:
+      tags: [Alerts]
+      summary: List events that triggered this alert
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Events }
+
+  /alerts/{id}/timeline:
+    get:
+      tags: [Alerts]
+      summary: Chronological event timeline for an alert
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Timeline }
+
+  /alerts/{id}/explain:
+    post:
+      tags: [Alerts]
+      summary: AI explanation of why this alert fired
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: AI explanation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  explanation: { type: string }
+
+  /alerts/{id}/triage:
+    post:
+      tags: [Alerts]
+      summary: AI-powered triage verdict (true positive / false positive / suspicious)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Triage result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  verdict: { type: string }
+                  score:   { type: number }
+                  notes:   { type: string }
+
+  /alerts/{id}/summarise:
+    post:
+      tags: [Alerts]
+      summary: Generate AI narrative summary of an alert
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Summary text }
+
+  /alerts/{id}/chat:
+    post:
+      tags: [Alerts]
+      summary: Conversational AI Q&A about an alert
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message: { type: string }
+      responses:
+        "200": { description: AI response }
+
+  /alerts/{id}/enrichments:
+    get:
+      tags: [Alerts]
+      summary: Get enrichment data attached to an alert (IOC hits, GeoIP, etc.)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Enrichments }
+
+  /alerts/{id}/enrich:
+    post:
+      tags: [Alerts]
+      summary: Trigger on-demand enrichment for an alert (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Enrichment triggered }
+
+  # ─── INCIDENTS ─────────────────────────────────────────────────────────────
+
+  /incidents:
+    get:
+      tags: [Incidents]
+      summary: List incidents
+      parameters:
+        - { name: status, in: query, schema: { type: string } }
+        - { name: severity, in: query, schema: { type: integer } }
+        - { name: agent_id, in: query, schema: { type: string } }
+        - { name: assignee, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 50 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0 } }
+      responses:
+        "200":
+          description: Incident list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  incidents: { type: array, items: { $ref: '#/components/schemas/Incident' } }
+                  total:     { type: integer }
+
+  /incidents/{id}:
+    get:
+      tags: [Incidents]
+      summary: Get a single incident
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Incident
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Incident' }
+    patch:
+      tags: [Incidents]
+      summary: Update incident status, assignee, or notes
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:   { type: string, enum: [OPEN, INVESTIGATING, CONTAINED, RESOLVED, CLOSED] }
+                assignee: { type: string }
+                notes:    { type: string }
+      responses:
+        "200": { description: Updated incident }
+
+  /incidents/{id}/alerts:
+    get:
+      tags: [Incidents]
+      summary: List alerts grouped into this incident
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Alert list }
+
+  /incidents/{id}/graph:
+    get:
+      tags: [Incidents]
+      summary: Entity relationship graph for an incident
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Graph nodes/edges }
+
+  /incidents/{id}/timeline:
+    get:
+      tags: [Incidents]
+      summary: Chronological event timeline for an incident
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Timeline events }
+
+  /incidents/{id}/attack-graph:
+    get:
+      tags: [Incidents]
+      summary: MITRE ATT&CK-mapped attack graph for an incident
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Attack graph }
+
+  /incidents/{id}/forensic-timeline:
+    get:
+      tags: [Incidents]
+      summary: Forensic artifact timeline associated with an incident
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Forensic timeline }
+
+  /incidents/{id}/summarise:
+    post:
+      tags: [Incidents]
+      summary: Generate AI narrative summary of an incident
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Summary }
+
+  /incidents/{id}/chat:
+    post:
+      tags: [Incidents]
+      summary: Conversational AI Q&A about an incident
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message: { type: string }
+      responses:
+        "200": { description: AI response }
+
+  # ─── CASES ─────────────────────────────────────────────────────────────────
+
+  /cases:
+    get:
+      tags: [Cases]
+      summary: List investigation cases
+      responses:
+        "200":
+          description: Cases
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cases: { type: array, items: { $ref: '#/components/schemas/Case' } }
+    post:
+      tags: [Cases]
+      summary: Create a new case
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title:       { type: string }
+                description: { type: string }
+                severity:    { type: integer }
+                assignee:    { type: string }
+      responses:
+        "201":
+          description: Created case
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Case' }
+
+  /cases/{id}:
+    get:
+      tags: [Cases]
+      summary: Get a case
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Case
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Case' }
+    put:
+      tags: [Cases]
+      summary: Update a case
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:    { type: string }
+                status:   { type: string }
+                assignee: { type: string }
+                notes:    { type: string }
+      responses:
+        "200": { description: Updated case }
+    delete:
+      tags: [Cases]
+      summary: Delete a case (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Deleted }
+
+  /cases/{id}/alerts:
+    get:
+      tags: [Cases]
+      summary: List alerts linked to a case
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Alert list }
+    post:
+      tags: [Cases]
+      summary: Link an alert to a case
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [alert_id]
+              properties:
+                alert_id: { type: string, format: uuid }
+      responses:
+        "200": { description: Linked }
+
+  /cases/{id}/alerts/{alert_id}:
+    delete:
+      tags: [Cases]
+      summary: Unlink an alert from a case (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: alert_id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Unlinked }
+
+  /cases/{id}/notes:
+    get:
+      tags: [Cases]
+      summary: List notes on a case
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Notes }
+    post:
+      tags: [Cases]
+      summary: Add a note to a case
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                body: { type: string }
+      responses:
+        "201": { description: Created note }
+
+  /cases/{id}/notes/{note_id}:
+    put:
+      tags: [Cases]
+      summary: Update a case note
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: note_id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                body: { type: string }
+      responses:
+        "200": { description: Updated note }
+    delete:
+      tags: [Cases]
+      summary: Delete a case note (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: note_id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Deleted }
+
+  /cases/{id}/summarise:
+    post:
+      tags: [Cases]
+      summary: Generate AI summary of a case
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Summary }
+
+  # ─── RULES ─────────────────────────────────────────────────────────────────
+
+  /rules:
+    get:
+      tags: [Rules]
+      summary: List detection rules
+      parameters:
+        - { name: enabled, in: query, schema: { type: boolean } }
+        - { name: rule_type, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: Rules
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rules: { type: array, items: { $ref: '#/components/schemas/Rule' } }
+    post:
+      tags: [Rules]
+      summary: Create a detection rule (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Rule' }
+      responses:
+        "201":
+          description: Created rule
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Rule' }
+
+  /rules/{id}:
+    get:
+      tags: [Rules]
+      summary: Get a rule
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Rule
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Rule' }
+    put:
+      tags: [Rules]
+      summary: Update a rule (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Rule' }
+      responses:
+        "200": { description: Updated }
+    delete:
+      tags: [Rules]
+      summary: Delete a rule (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Deleted }
+
+  /rules/reload:
+    post:
+      tags: [Rules]
+      summary: Hot-reload detection engine rules from DB (admin)
+      responses:
+        "200": { description: Reloaded }
+
+  /rules/{id}/backtest:
+    post:
+      tags: [Rules]
+      summary: Backtest a rule against historical events (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                from: { type: string, format: date-time }
+                to:   { type: string, format: date-time }
+      responses:
+        "200": { description: Backtest results }
+
+  /rules/import/sigma:
+    post:
+      tags: [Rules]
+      summary: Import Sigma YAML rules (admin)
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema:
+              type: string
+              description: Sigma YAML rule content
+      responses:
+        "200":
+          description: Import result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  imported: { type: integer }
+                  skipped:  { type: integer }
+                  errors:   { type: array, items: { type: string } }
+
+  # ─── YARA ──────────────────────────────────────────────────────────────────
+
+  /yara/rules:
+    get:
+      tags: [YARA]
+      summary: List YARA rules
+      responses:
+        "200":
+          description: YARA rules
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rules: { type: array, items: { $ref: '#/components/schemas/YARARule' } }
+    post:
+      tags: [YARA]
+      summary: Create a YARA rule (admin)
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/YARARule' }
+      responses:
+        "201":
+          description: Created YARA rule
+
+  /yara/rules/enabled:
+    get:
+      tags: [YARA]
+      summary: List enabled YARA rules (used by agent heartbeat)
+      responses:
+        "200": { description: Enabled YARA rules }
+
+  /yara/rules/{id}:
+    get:
+      tags: [YARA]
+      summary: Get a YARA rule
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: YARA rule
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/YARARule' }
+    put:
+      tags: [YARA]
+      summary: Update a YARA rule (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/YARARule' }
+      responses:
+        "200": { description: Updated }
+    delete:
+      tags: [YARA]
+      summary: Delete a YARA rule (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Deleted }
+
+  # ─── SUPPRESSIONS ──────────────────────────────────────────────────────────
+
+  /suppressions:
+    get:
+      tags: [Suppressions]
+      summary: List alert suppressions
+      responses:
+        "200": { description: Suppression list }
+    post:
+      tags: [Suppressions]
+      summary: Create a suppression (admin)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:       { type: string }
+                rule_id:    { type: string }
+                conditions: { type: array, items: { type: object } }
+                expires_at: { type: string, format: date-time, nullable: true }
+      responses:
+        "201": { description: Created }
+
+  /suppressions/{id}:
+    put:
+      tags: [Suppressions]
+      summary: Update a suppression (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Updated }
+    delete:
+      tags: [Suppressions]
+      summary: Delete a suppression (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Deleted }
+
+  # ─── IOCs ──────────────────────────────────────────────────────────────────
+
+  /iocs:
+    get:
+      tags: [IOCs]
+      summary: List IOCs
+      parameters:
+        - { name: type, in: query, schema: { type: string } }
+        - { name: source, in: query, schema: { type: string } }
+        - { name: active, in: query, schema: { type: boolean } }
+        - { name: q, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 100 } }
+      responses:
+        "200":
+          description: IOC list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  iocs:  { type: array, items: { $ref: '#/components/schemas/IOC' } }
+                  total: { type: integer }
+    post:
+      tags: [IOCs]
+      summary: Create an IOC (admin)
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IOC' }
+      responses:
+        "201": { description: Created IOC }
+
+  /iocs/stats:
+    get:
+      tags: [IOCs]
+      summary: IOC count statistics by type and source
+      responses:
+        "200": { description: Stats }
+
+  /iocs/sources:
+    get:
+      tags: [IOCs]
+      summary: List IOC source statistics
+      responses:
+        "200": { description: Source stats }
+
+  /iocs/feeds:
+    get:
+      tags: [IOCs]
+      summary: List built-in IOC feed sources
+      responses:
+        "200": { description: Feed list }
+
+  /iocs/feeds/sync:
+    post:
+      tags: [IOCs]
+      summary: Trigger sync of all enabled IOC feeds (admin)
+      responses:
+        "200": { description: Sync triggered }
+
+  /iocs/bulk:
+    post:
+      tags: [IOCs]
+      summary: Bulk import IOCs (admin)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [iocs]
+              properties:
+                iocs:   { type: array, items: { $ref: '#/components/schemas/IOC' } }
+                source: { type: string }
+      responses:
+        "200":
+          description: Import result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  imported: { type: integer }
+                  skipped:  { type: integer }
+
+  /iocs/bulk-retire:
+    post:
+      tags: [IOCs]
+      summary: Bulk retire (deactivate) IOCs by source (admin)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                source: { type: string }
+                ids:    { type: array, items: { type: string } }
+      responses:
+        "200": { description: Retired }
+
+  /iocs/{id}:
+    get:
+      tags: [IOCs]
+      summary: Get a single IOC
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: IOC
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IOC' }
+    delete:
+      tags: [IOCs]
+      summary: Delete an IOC (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Deleted }
+
+  /iocs/source/{source}:
+    delete:
+      tags: [IOCs]
+      summary: Delete all IOCs from a source (admin)
+      parameters:
+        - { name: source, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Deleted }
+
+  /iocs/{id}/enrich:
+    post:
+      tags: [IOCs]
+      summary: Trigger enrichment for an IOC (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Enriched }
+
+  /iocs/{id}/actor:
+    post:
+      tags: [IOCs]
+      summary: Link an IOC to a threat actor (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [actor_id]
+              properties:
+                actor_id: { type: string }
+      responses:
+        "200": { description: Linked }
+
+  /iocs/{id}/campaign:
+    post:
+      tags: [IOCs]
+      summary: Link an IOC to a campaign (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [campaign_id]
+              properties:
+                campaign_id: { type: string }
+      responses:
+        "200": { description: Linked }
+
+  # ─── IOC FEEDS ─────────────────────────────────────────────────────────────
+
+  /ioc-feeds:
+    get:
+      tags: [IOC Feeds]
+      summary: List custom IOC feed sources
+      responses:
+        "200": { description: Feed list }
+
+  /ioc-feeds/{id}:
+    put:
+      tags: [IOC Feeds]
+      summary: Create or update a custom IOC feed (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, url, format]
+              properties:
+                name:            { type: string }
+                url:             { type: string, format: uri }
+                format:          { type: string, enum: [csv, json, txt, stix] }
+                enabled:         { type: boolean }
+                sync_interval_h: { type: integer }
+      responses:
+        "200": { description: Saved }
+    delete:
+      tags: [IOC Feeds]
+      summary: Delete a custom IOC feed (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Deleted }
+
+  /ioc-feeds/{id}/sync:
+    post:
+      tags: [IOC Feeds]
+      summary: Trigger manual sync of a custom feed (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Sync started }
+
+  /ioc-feeds/{id}/log:
+    get:
+      tags: [IOC Feeds]
+      summary: Get sync log for a custom feed
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Sync log entries }
+
+  /ioc-feeds/{id}/test:
+    post:
+      tags: [IOC Feeds]
+      summary: Test connectivity to a feed URL (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Connectivity result }
+
+  # ─── HUNT ──────────────────────────────────────────────────────────────────
+
+  /hunt:
+    post:
+      tags: [Hunt]
+      summary: Execute a threat hunting query
+      description: |
+        Runs a SQL-like query against the events table. Blocked keywords: `DROP`, `DELETE`, `UPDATE`, `INSERT`, `CREATE`, `ALTER`, `TRUNCATE`, `EXEC`, `EXECUTE`. Max 10,000 results.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query:     { type: string, description: "SQL SELECT statement against events" }
+                save_as:   { type: string, description: "Optional name to save this query" }
+      responses:
+        "200":
+          description: Query results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results: { type: array, items: { type: object } }
+                  count:   { type: integer }
+                  elapsed_ms: { type: integer }
+        "400": { description: Invalid or blocked query }
+
+  /hunt/generate:
+    post:
+      tags: [Hunt]
+      summary: Generate a hunt query from a natural language prompt (AI)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prompt]
+              properties:
+                prompt: { type: string, description: "Natural language description of what to hunt for" }
+      responses:
+        "200":
+          description: Generated SQL query
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  query:       { type: string }
+                  explanation: { type: string }
+
+  # ─── SLA ───────────────────────────────────────────────────────────────────
+
+  /sla/policies:
+    get:
+      tags: [SLA]
+      summary: List SLA policies
+      responses:
+        "200":
+          description: Policies
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policies: { type: array, items: { $ref: '#/components/schemas/SLAPolicy' } }
+    post:
+      tags: [SLA]
+      summary: Create an SLA policy (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SLAPolicy' }
+      responses:
+        "201":
+          description: Created policy
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SLAPolicy' }
+
+  /sla/policies/{id}:
+    put:
+      tags: [SLA]
+      summary: Update an SLA policy (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SLAPolicy' }
+      responses:
+        "200": { description: Updated }
+    delete:
+      tags: [SLA]
+      summary: Delete an SLA policy (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Deleted }
+
+  /sla/breaches:
+    get:
+      tags: [SLA]
+      summary: List SLA breach records
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 500 } }
+      responses:
+        "200":
+          description: Breach log
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  breaches: { type: array, items: { $ref: '#/components/schemas/SLABreach' } }
+
+  # ─── PLAYBOOKS ─────────────────────────────────────────────────────────────
+
+  /playbooks:
+    get:
+      tags: [Playbooks]
+      summary: List SOAR playbooks
+      responses:
+        "200":
+          description: Playbook list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  playbooks: { type: array, items: { $ref: '#/components/schemas/Playbook' } }
+    post:
+      tags: [Playbooks]
+      summary: Create a playbook (admin)
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Playbook' }
+      responses:
+        "201": { description: Created }
+
+  /playbooks/runs:
+    get:
+      tags: [Playbooks]
+      summary: List all playbook run history
+      responses:
+        "200": { description: Run list }
+
+  /playbooks/{id}:
+    get:
+      tags: [Playbooks]
+      summary: Get a playbook
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Playbook
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Playbook' }
+    put:
+      tags: [Playbooks]
+      summary: Update a playbook (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Playbook' }
+      responses:
+        "200": { description: Updated }
+    delete:
+      tags: [Playbooks]
+      summary: Delete a playbook (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Deleted }
+
+  /playbooks/{id}/runs:
+    get:
+      tags: [Playbooks]
+      summary: List runs for a specific playbook
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Runs }
+
+  /playbooks/{id}/test:
+    post:
+      tags: [Playbooks]
+      summary: Test a playbook with a synthetic trigger (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Test result }
+
+  /response/actions:
+    get:
+      tags: [Playbooks]
+      summary: List available response action types
+      responses:
+        "200": { description: Action catalogue }
+
+  # ─── LIVE RESPONSE ─────────────────────────────────────────────────────────
+
+  /liveresponse/agents:
+    get:
+      tags: [Live Response]
+      summary: List agents with active live-response sessions
+      responses:
+        "200": { description: Active session list }
+
+  /liveresponse/command:
+    post:
+      tags: [Live Response]
+      summary: Send a command to an agent live-response session (admin)
+      description: |
+        Allowed actions: `shell`, `isolate`, `release`, `block_ip`, `unblock_ip`, `kill_process`, `memdump`.
+        Blocked: `rm -rf`, `mkfs`, `dd if=`, `shutdown`, `reboot`.
+        Output capped at 1 MB stdout / 64 KB stderr.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id, action]
+              properties:
+                agent_id: { type: string, format: uuid }
+                action:   { type: string }
+                args:     { type: array, items: { type: string } }
+      responses:
+        "200":
+          description: Command result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stdout:    { type: string }
+                  stderr:    { type: string }
+                  exit_code: { type: integer }
+
+  /pending-commands:
+    post:
+      tags: [Live Response]
+      summary: Enqueue a command for delivery on next agent heartbeat (admin)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id, action]
+              properties:
+                agent_id: { type: string }
+                action:   { type: string }
+                args:     { type: array, items: { type: string } }
+      responses:
+        "201": { description: Enqueued }
+
+  /pending-commands/{agent_id}:
+    get:
+      tags: [Live Response]
+      summary: List pending commands for an agent (admin)
+      parameters:
+        - { name: agent_id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Pending commands }
+
+  /pending-commands/{id}:
+    delete:
+      tags: [Live Response]
+      summary: Cancel a pending command (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Cancelled }
+
+  # ─── METRICS ───────────────────────────────────────────────────────────────
+
+  /metrics/soc:
+    get:
+      tags: [Metrics]
+      summary: SOC performance metrics (MTTD, MTTA, MTTR, analyst workload, breach rate)
+      responses:
+        "200":
+          description: SOC metrics
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SOCMetrics' }
+
+  /metrics/rules:
+    get:
+      tags: [Metrics]
+      summary: Rule effectiveness (fire count, FP rate, avg MTTR per rule)
+      responses:
+        "200": { description: Rule effectiveness data }
+
+  /metrics/db-size:
+    get:
+      tags: [Metrics]
+      summary: Database table size breakdown
+      responses:
+        "200": { description: DB sizes }
+
+  # ─── VULNERABILITIES ───────────────────────────────────────────────────────
+
+  /vulnerabilities:
+    get:
+      tags: [Vulnerabilities]
+      summary: List all vulnerabilities across all agents
+      parameters:
+        - { name: severity, in: query, schema: { type: string } }
+        - { name: agent_id, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: Vulnerability list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vulnerabilities: { type: array, items: { $ref: '#/components/schemas/Vulnerability' } }
+
+  /cve/{id}:
+    get:
+      tags: [Vulnerabilities]
+      summary: Get CVE details from local cache
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: "CVE-2024-1234" } }
+      responses:
+        "200": { description: CVE details }
+        "404": { description: Not cached }
+
+  # ─── IDENTITY ──────────────────────────────────────────────────────────────
+
+  /identity:
+    get:
+      tags: [Identity]
+      summary: List tracked identities
+      responses:
+        "200": { description: Identity list }
+
+  /identity/top-risk:
+    get:
+      tags: [Identity]
+      summary: Top risky identities ordered by risk score
+      responses:
+        "200": { description: Top-risk identities }
+
+  /identity/{uid}:
+    get:
+      tags: [Identity]
+      summary: Get identity profile
+      parameters:
+        - { name: uid, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Identity }
+
+  /identity/{uid}/sessions:
+    get:
+      tags: [Identity]
+      summary: Login sessions for an identity
+      parameters:
+        - { name: uid, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Sessions }
+
+  /identity/{uid}/timeline:
+    get:
+      tags: [Identity]
+      summary: UEBA timeline for an identity
+      parameters:
+        - { name: uid, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: UEBA timeline }
+
+  /identity/{uid}/anomalies:
+    get:
+      tags: [Identity]
+      summary: Behavioral anomalies detected for an identity
+      parameters:
+        - { name: uid, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Anomalies }
+
+  # ─── INTEL ─────────────────────────────────────────────────────────────────
+
+  /intel/dashboard:
+    get:
+      tags: [Intel]
+      summary: Threat intelligence summary dashboard
+      responses:
+        "200": { description: Intel dashboard data }
+
+  /intel/actors:
+    get:
+      tags: [Intel]
+      summary: List threat actors
+      responses:
+        "200":
+          description: Actor list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  actors: { type: array, items: { $ref: '#/components/schemas/ThreatActor' } }
+    post:
+      tags: [Intel]
+      summary: Create a threat actor (admin)
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ThreatActor' }
+      responses:
+        "201": { description: Created }
+
+  /intel/actors/{id}:
+    get:
+      tags: [Intel]
+      summary: Get a threat actor
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Actor
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ThreatActor' }
+    put:
+      tags: [Intel]
+      summary: Update a threat actor (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Updated }
+    delete:
+      tags: [Intel]
+      summary: Delete a threat actor (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Deleted }
+
+  /intel/campaigns:
+    get:
+      tags: [Intel]
+      summary: List threat campaigns
+      responses:
+        "200": { description: Campaign list }
+    post:
+      tags: [Intel]
+      summary: Create a campaign (admin)
+      responses:
+        "201": { description: Created }
+
+  /intel/campaigns/{id}:
+    get:
+      tags: [Intel]
+      summary: Get a campaign
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Campaign }
+    put:
+      tags: [Intel]
+      summary: Update a campaign (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Updated }
+    delete:
+      tags: [Intel]
+      summary: Delete a campaign (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Deleted }
+
+  /intel/replay:
+    get:
+      tags: [Intel]
+      summary: List intel replay jobs
+      responses:
+        "200": { description: Replay jobs }
+    post:
+      tags: [Intel]
+      summary: Create an intel replay job (re-scan historical events against new IOCs)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                from: { type: string, format: date-time }
+                to:   { type: string, format: date-time }
+                ioc_source: { type: string }
+      responses:
+        "201": { description: Replay started }
+
+  /intel/replay/{id}:
+    get:
+      tags: [Intel]
+      summary: Get replay job status
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Job status }
+
+  /intel/sharing-groups:
+    get:
+      tags: [Intel]
+      summary: List intel sharing groups
+      responses:
+        "200": { description: Sharing groups }
+    post:
+      tags: [Intel]
+      summary: Create a sharing group (admin)
+      responses:
+        "201": { description: Created }
+
+  /intel/sharing-groups/{id}:
+    put:
+      tags: [Intel]
+      summary: Update a sharing group (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Updated }
+    delete:
+      tags: [Intel]
+      summary: Delete a sharing group (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Deleted }
+
+  /intel/sharing-groups/{id}/runs:
+    get:
+      tags: [Intel]
+      summary: List sharing push runs for a group
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Push runs }
+
+  /intel/sharing-groups/{id}/push:
+    post:
+      tags: [Intel]
+      summary: Push IOCs to a sharing group (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Pushed }
+
+  /intel/export/stix:
+    get:
+      tags: [Intel]
+      summary: Export IOCs as a STIX 2.1 bundle
+      responses:
+        "200":
+          description: STIX bundle
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  type:    { type: string, example: bundle }
+                  objects: { type: array, items: { type: object } }
+
+  /threat-intel/stix:
+    post:
+      tags: [Intel]
+      summary: Import a STIX 2.1 bundle (admin)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: STIX 2.1 bundle
+      responses:
+        "200":
+          description: Import result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  imported: { type: integer }
+
+  /intel/tasks:
+    get:
+      tags: [Intel]
+      summary: List auto-generated intel enrichment tasks
+      responses:
+        "200": { description: Task list }
+    post:
+      tags: [Intel]
+      summary: Create an intel task (admin)
+      responses:
+        "201": { description: Created }
+
+  /intel/tasks/{id}:
+    get:
+      tags: [Intel]
+      summary: Get an intel task
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Task }
+
+  /intel/saved-hunts:
+    get:
+      tags: [Intel]
+      summary: List saved hunt queries
+      responses:
+        "200": { description: Saved hunts }
+
+  /intel/saved-hunts/{id}:
+    get:
+      tags: [Intel]
+      summary: Get a saved hunt
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Saved hunt }
+    delete:
+      tags: [Intel]
+      summary: Delete a saved hunt (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Deleted }
+
+  /intel/hunt-schedules:
+    get:
+      tags: [Intel]
+      summary: List scheduled hunt jobs
+      responses:
+        "200": { description: Hunt schedules }
+    post:
+      tags: [Intel]
+      summary: Create a hunt schedule (admin)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, query, cron]
+              properties:
+                name:    { type: string }
+                query:   { type: string }
+                cron:    { type: string, description: "Cron expression" }
+                enabled: { type: boolean }
+      responses:
+        "201": { description: Created }
+
+  /intel/hunt-schedules/{id}:
+    get:
+      tags: [Intel]
+      summary: Get a hunt schedule
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Schedule }
+    put:
+      tags: [Intel]
+      summary: Update a hunt schedule (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Updated }
+    delete:
+      tags: [Intel]
+      summary: Delete a hunt schedule (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Deleted }
+
+  /intel/hunt-schedules/{id}/runs:
+    get:
+      tags: [Intel]
+      summary: List run history for a hunt schedule
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Run history }
+
+  /intel/taxii-feeds:
+    get:
+      tags: [Intel]
+      summary: List TAXII 2.1 feed sources
+      responses:
+        "200": { description: TAXII feeds }
+    post:
+      tags: [Intel]
+      summary: Add a TAXII feed (admin)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, url]
+              properties:
+                name:     { type: string }
+                url:      { type: string, format: uri }
+                username: { type: string }
+                password: { type: string, format: password }
+                enabled:  { type: boolean }
+      responses:
+        "201": { description: Created }
+
+  /intel/taxii-feeds/{id}:
+    get:
+      tags: [Intel]
+      summary: Get a TAXII feed
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: TAXII feed }
+    put:
+      tags: [Intel]
+      summary: Update a TAXII feed (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Updated }
+    delete:
+      tags: [Intel]
+      summary: Delete a TAXII feed (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Deleted }
+
+  /intel/taxii-feeds/{id}/poll:
+    post:
+      tags: [Intel]
+      summary: Manually poll a TAXII feed (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Poll triggered }
+
+  /intel/taxii-feeds/{id}/runs:
+    get:
+      tags: [Intel]
+      summary: List poll run history for a TAXII feed
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Runs }
+
+  /intel/taxii-feeds/{id}/collections:
+    get:
+      tags: [Intel]
+      summary: List available TAXII collections for a feed
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Collections }
+
+  # ─── FORENSICS ─────────────────────────────────────────────────────────────
+
+  /forensics/jobs:
+    get:
+      tags: [Forensics]
+      summary: List forensics acquisition jobs
+      responses:
+        "200":
+          description: Job list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobs: { type: array, items: { $ref: '#/components/schemas/ForensicsJob' } }
+
+  /forensics/jobs/{id}:
+    get:
+      tags: [Forensics]
+      summary: Get a forensics job
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Job
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ForensicsJob' }
+
+  /forensics/jobs/{id}/download:
+    get:
+      tags: [Forensics]
+      summary: Download completed forensics bundle (tar.gz)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Tar bundle
+          content:
+            application/gzip:
+              schema:
+                type: string
+                format: binary
+        "404": { description: Job not ready or not found }
+
+  /agents/{id}/forensics/collect:
+    post:
+      tags: [Forensics]
+      summary: Create a forensics acquisition job for an agent
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [job_type]
+              properties:
+                job_type: { type: string, enum: [process_memory, artifacts, disk_image] }
+                params:
+                  type: object
+                  properties:
+                    pid: { type: integer, description: "Required for process_memory" }
+      responses:
+        "201":
+          description: Job created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ForensicsJob' }
+
+  # ─── CONTAINERS ────────────────────────────────────────────────────────────
+
+  /containers:
+    get:
+      tags: [Containers]
+      summary: List containers across all agents
+      parameters:
+        - { name: agent_id, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string } }
+      responses:
+        "200": { description: Container list }
+
+  /containers/stats:
+    get:
+      tags: [Containers]
+      summary: Container count statistics
+      responses:
+        "200": { description: Stats }
+
+  /containers/{id}/events:
+    get:
+      tags: [Containers]
+      summary: Events from inside a container
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Events }
+
+  # ─── ASSETS ────────────────────────────────────────────────────────────────
+
+  /assets:
+    get:
+      tags: [Assets]
+      summary: List assets from XDR sources (identity graph, cloud resources)
+      responses:
+        "200": { description: Asset list }
+
+  /assets/{id}:
+    get:
+      tags: [Assets]
+      summary: Get asset details
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Asset }
+
+  # ─── XDR ───────────────────────────────────────────────────────────────────
+
+  /xdr/events:
+    get:
+      tags: [XDR]
+      summary: List normalized XDR events (OCSF schema)
+      responses:
+        "200": { description: XDR events }
+
+  /xdr/lateral-graph:
+    get:
+      tags: [XDR]
+      summary: Lateral movement relationship graph
+      responses:
+        "200": { description: Graph nodes/edges }
+
+  /xdr/threat-score:
+    get:
+      tags: [XDR]
+      summary: Organisation-wide threat score
+      responses:
+        "200":
+          description: Threat score
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  score:       { type: number }
+                  risk_level:  { type: string }
+                  trend:       { type: string }
+
+  /xdr/threat-score/history:
+    get:
+      tags: [XDR]
+      summary: Historical risk score for an entity
+      parameters:
+        - { name: entity_id, in: query, schema: { type: string } }
+        - { name: entity_type, in: query, schema: { type: string } }
+      responses:
+        "200": { description: Score history }
+
+  /xdr/posture:
+    get:
+      tags: [XDR]
+      summary: Security posture score and breakdown
+      responses:
+        "200": { description: Posture score }
+
+  /xdr/attack-surface:
+    get:
+      tags: [XDR]
+      summary: Organisation-wide attack surface snapshot
+      responses:
+        "200": { description: Attack surface data }
+
+  /xdr/anomalies:
+    get:
+      tags: [XDR]
+      summary: Behavioural anomalies across all entities
+      responses:
+        "200": { description: Anomaly list }
+
+  # ─── DNS ───────────────────────────────────────────────────────────────────
+
+  /dns/events:
+    get:
+      tags: [DNS]
+      summary: List DNS query events
+      parameters:
+        - { name: agent_id, in: query, schema: { type: string } }
+        - { name: domain, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 100 } }
+      responses:
+        "200": { description: DNS events }
+
+  /dns/stats:
+    get:
+      tags: [DNS]
+      summary: DNS query statistics (top domains, query rate)
+      responses:
+        "200": { description: DNS stats }
+
+  # ─── DLP ───────────────────────────────────────────────────────────────────
+
+  /dlp/events:
+    get:
+      tags: [DLP]
+      summary: List data exfiltration signals
+      responses:
+        "200": { description: DLP events }
+
+  /dlp/stats:
+    get:
+      tags: [DLP]
+      summary: DLP signal statistics
+      responses:
+        "200": { description: DLP stats }
+
+  # ─── DECEPTION ─────────────────────────────────────────────────────────────
+
+  /deception/honeypots:
+    get:
+      tags: [Deception]
+      summary: List honeypot deployments
+      responses:
+        "200": { description: Honeypot list }
+    post:
+      tags: [Deception]
+      summary: Create a honeypot deployment (admin)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, agent_id, service_type]
+              properties:
+                name:         { type: string }
+                agent_id:     { type: string }
+                service_type: { type: string, enum: [ssh, smb, http, ftp] }
+                port:         { type: integer }
+      responses:
+        "201": { description: Created }
+
+  /deception/honeypots/{id}:
+    delete:
+      tags: [Deception]
+      summary: Remove a honeypot (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Deleted }
+
+  /deception/lures:
+    get:
+      tags: [Deception]
+      summary: List lure files
+      responses:
+        "200": { description: Lure list }
+    post:
+      tags: [Deception]
+      summary: Create a lure file (admin)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, agent_id, path]
+              properties:
+                name:     { type: string }
+                agent_id: { type: string }
+                path:     { type: string }
+                content:  { type: string }
+      responses:
+        "201": { description: Created }
+
+  /deception/lures/{id}/download:
+    get:
+      tags: [Deception]
+      summary: Download a lure file
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Lure file content }
+
+  /deception/lures/{id}:
+    delete:
+      tags: [Deception]
+      summary: Delete a lure (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Deleted }
+
+  # ─── CANARY ────────────────────────────────────────────────────────────────
+
+  /canary/tokens:
+    get:
+      tags: [Canary]
+      summary: List canary tokens
+      responses:
+        "200": { description: Token list }
+    post:
+      tags: [Canary]
+      summary: Create a canary token (admin)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:        { type: string }
+                description: { type: string }
+                alert_on_trigger: { type: boolean, default: true }
+      responses:
+        "201": { description: Created token with trigger URL }
+
+  /canary/tokens/{id}:
+    delete:
+      tags: [Canary]
+      summary: Delete a canary token (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Deleted }
+
+  # ─── COMPLIANCE ────────────────────────────────────────────────────────────
+
+  /compliance/coverage:
+    get:
+      tags: [Compliance]
+      summary: MITRE ATT&CK coverage by enabled detection rules
+      responses:
+        "200":
+          description: Coverage map
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_techniques:   { type: integer }
+                  covered_techniques: { type: integer }
+                  coverage_pct:       { type: number }
+                  techniques:         { type: object, additionalProperties: { type: array, items: { type: string } } }
+
+  # ─── REPORTS ───────────────────────────────────────────────────────────────
+
+  /reports:
+    get:
+      tags: [Reports]
+      summary: List generated reports
+      responses:
+        "200": { description: Report list }
+    post:
+      tags: [Reports]
+      summary: Generate a new report
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [report_type]
+              properties:
+                report_type: { type: string, enum: [executive_summary, incident_detail, compliance, threat_intel] }
+                from:        { type: string, format: date-time }
+                to:          { type: string, format: date-time }
+                incident_id: { type: string, nullable: true }
+      responses:
+        "202": { description: Report generation started }
+
+  /reports/{id}/download:
+    get:
+      tags: [Reports]
+      summary: Download a generated report (PDF or JSON)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: format, in: query, schema: { type: string, enum: [pdf, json], default: pdf } }
+      responses:
+        "200": { description: Report file }
+        "404": { description: Not found or not ready }
+
+  # ─── DISRUPTION ────────────────────────────────────────────────────────────
+
+  /disruption/policies:
+    get:
+      tags: [Disruption]
+      summary: List autonomous disruption policies
+      responses:
+        "200": { description: Policy list }
+    post:
+      tags: [Disruption]
+      summary: Create a disruption policy (admin)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, trigger_severity, action]
+              properties:
+                name:             { type: string }
+                trigger_severity: { type: integer }
+                action:           { type: string, enum: [isolate, block_ip, kill_process] }
+                enabled:          { type: boolean }
+      responses:
+        "201": { description: Created }
+
+  /disruption/policies/{id}:
+    put:
+      tags: [Disruption]
+      summary: Update a disruption policy (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Updated }
+    delete:
+      tags: [Disruption]
+      summary: Delete a disruption policy (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Deleted }
+
+  /disruption/containments:
+    get:
+      tags: [Disruption]
+      summary: List currently active containments
+      responses:
+        "200": { description: Active containments }
+
+  /disruption/containments/{id}/release:
+    post:
+      tags: [Disruption]
+      summary: Release an active containment (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Released }
+
+  # ─── REMEDIATION ───────────────────────────────────────────────────────────
+
+  /remediation/rules:
+    get:
+      tags: [Remediation]
+      summary: List auto-remediation rules
+      responses:
+        "200": { description: Rule list }
+
+  /remediation/rules/{id}:
+    put:
+      tags: [Remediation]
+      summary: Create or update a remediation rule (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Saved }
+    delete:
+      tags: [Remediation]
+      summary: Delete a remediation rule (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Deleted }
+
+  # ─── AUTO CASE ─────────────────────────────────────────────────────────────
+
+  /autocase/policies:
+    get:
+      tags: [AutoCase]
+      summary: List automatic case-creation policies
+      responses:
+        "200": { description: Policy list }
+
+  /autocase/policies/{id}:
+    put:
+      tags: [AutoCase]
+      summary: Create or update an auto-case policy (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Saved }
+
+  # ─── TIP ───────────────────────────────────────────────────────────────────
+
+  /tip/settings:
+    get:
+      tags: [TIP]
+      summary: Get MISP/TIP sync settings
+      responses:
+        "200": { description: TIP settings }
+    put:
+      tags: [TIP]
+      summary: Update TIP sync settings (admin)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url:      { type: string, format: uri }
+                api_key:  { type: string }
+                enabled:  { type: boolean }
+                interval_h: { type: integer }
+      responses:
+        "200": { description: Updated }
+
+  /tip/pull:
+    post:
+      tags: [TIP]
+      summary: Manually pull IOCs from TIP/MISP (admin)
+      responses:
+        "200":
+          description: Pull result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  imported: { type: integer }
+
+  /tip/push:
+    post:
+      tags: [TIP]
+      summary: Push matched IOCs back to MISP (admin)
+      responses:
+        "200":
+          description: Push result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pushed: { type: integer }
+
+  /tip/status:
+    get:
+      tags: [TIP]
+      summary: TIP sync status and last run timestamps
+      responses:
+        "200": { description: TIP status }
+
+  # ─── SOURCES ───────────────────────────────────────────────────────────────
+
+  /sources:
+    get:
+      tags: [Sources]
+      summary: List XDR connector sources
+      responses:
+        "200": { description: Source list }
+
+  /sources/{id}:
+    get:
+      tags: [Sources]
+      summary: Get a source
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Source }
+
+  /sources/{id}/health:
+    get:
+      tags: [Sources]
+      summary: Health and connectivity status for a source
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Health status }
+
+  # ─── AGENT GROUPS ──────────────────────────────────────────────────────────
+
+  /agent-groups:
+    get:
+      tags: [Agent Groups]
+      summary: List agent groups
+      responses:
+        "200": { description: Group list }
+    post:
+      tags: [Agent Groups]
+      summary: Create an agent group (admin)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:        { type: string }
+                description: { type: string }
+      responses:
+        "201": { description: Created }
+
+  /agent-groups/{id}:
+    get:
+      tags: [Agent Groups]
+      summary: Get an agent group
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Group }
+    put:
+      tags: [Agent Groups]
+      summary: Update an agent group (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Updated }
+    delete:
+      tags: [Agent Groups]
+      summary: Delete an agent group (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Deleted }
+
+  /agent-groups/{id}/members:
+    get:
+      tags: [Agent Groups]
+      summary: List agents in a group
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Agent list }
+
+  /agent-groups/{id}/fleet-config:
+    post:
+      tags: [Agent Groups]
+      summary: Push fleet config to all agents in a group (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Fleet config to push
+      responses:
+        "200": { description: Pushed }
+
+  # ─── TASKS ─────────────────────────────────────────────────────────────────
+
+  /tasks:
+    get:
+      tags: [Tasks]
+      summary: List all scheduled agent tasks
+      responses:
+        "200": { description: Task list }
+
+  /tasks/history:
+    get:
+      tags: [Tasks]
+      summary: List task execution history across all agents
+      responses:
+        "200": { description: History }
+
+  /agents/{id}/tasks:
+    get:
+      tags: [Tasks]
+      summary: List tasks for a specific agent
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Tasks }
+    post:
+      tags: [Tasks]
+      summary: Create a task for an agent (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, action]
+              properties:
+                name:     { type: string }
+                action:   { type: string }
+                args:     { type: array, items: { type: string } }
+                cron:     { type: string, description: "Cron expression for scheduled tasks" }
+                enabled:  { type: boolean }
+      responses:
+        "201": { description: Created }
+
+  /agents/{id}/tasks/history:
+    get:
+      tags: [Tasks]
+      summary: Task execution history for a specific agent
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: History }
+
+  /agents/{id}/tasks/{tid}:
+    put:
+      tags: [Tasks]
+      summary: Update a task (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: tid, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Updated }
+    delete:
+      tags: [Tasks]
+      summary: Delete a task (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: tid, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Deleted }
+
+  /agents/{id}/tasks/{tid}/run:
+    post:
+      tags: [Tasks]
+      summary: Run a task immediately (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: tid, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Run triggered }
+
+  # ─── CHAINS ────────────────────────────────────────────────────────────────
+
+  /chains:
+    get:
+      tags: [Chains]
+      summary: List attack chains
+      responses:
+        "200": { description: Chain list }
+
+  /chains/{id}:
+    get:
+      tags: [Chains]
+      summary: Get an attack chain
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Chain }
+
+  /chains/{id}/events:
+    get:
+      tags: [Chains]
+      summary: Events in an attack chain
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Events }
+
+  # ─── SETTINGS ──────────────────────────────────────────────────────────────
+
+  /settings/retention:
+    get:
+      tags: [Admin]
+      summary: Get data retention settings
+      responses:
+        "200": { description: Retention config }
+    post:
+      tags: [Admin]
+      summary: Update retention settings (admin)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                events_days:  { type: integer }
+                alerts_days:  { type: integer }
+                breaches_days: { type: integer }
+      responses:
+        "200": { description: Updated }
+
+  /settings/llm:
+    get:
+      tags: [Admin]
+      summary: Get LLM provider settings (admin)
+      responses:
+        "200": { description: LLM settings }
+    post:
+      tags: [Admin]
+      summary: Update LLM settings (admin)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                provider:  { type: string, enum: [anthropic, openai, gemini, ollama] }
+                api_key:   { type: string }
+                model:     { type: string }
+                base_url:  { type: string, description: "For Ollama/self-hosted" }
+      responses:
+        "200": { description: Updated }
+
+  /settings/llm/test:
+    post:
+      tags: [Admin]
+      summary: Test LLM connectivity (admin)
+      responses:
+        "200": { description: Test result }
+
+  /settings/enrichment:
+    get:
+      tags: [Admin]
+      summary: Get enrichment API settings
+      responses:
+        "200": { description: Enrichment settings }
+    post:
+      tags: [Admin]
+      summary: Update enrichment settings (VirusTotal key, etc.) (admin)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                virustotal_key: { type: string }
+                shodan_key:     { type: string }
+                enabled:        { type: boolean }
+      responses:
+        "200": { description: Updated }
+
+  # ─── ADMIN — USERS & API KEYS ──────────────────────────────────────────────
+
+  /apikeys:
+    get:
+      tags: [Admin]
+      summary: List API keys for the current user
+      responses:
+        "200": { description: Key list }
+    post:
+      tags: [Admin]
+      summary: Create an API key
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:       { type: string }
+                expires_at: { type: string, format: date-time, nullable: true }
+      responses:
+        "201":
+          description: Created key (secret shown once)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:     { type: string }
+                  name:   { type: string }
+                  key:    { type: string, description: "Full API key — shown once" }
+                  expires_at: { type: string, format: date-time, nullable: true }
+
+  /apikeys/{id}/revoke:
+    post:
+      tags: [Admin]
+      summary: Revoke an API key
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Revoked }
+
+  /apikeys/{id}:
+    delete:
+      tags: [Admin]
+      summary: Delete an API key
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Deleted }
+
+  /migrate/export:
+    post:
+      tags: [Admin]
+      summary: Export tenant data for migration (admin)
+      responses:
+        "200": { description: Export bundle }
+
+  /migrate/import:
+    post:
+      tags: [Admin]
+      summary: Import tenant data from migration bundle (admin)
+      requestBody:
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "200": { description: Import result }
