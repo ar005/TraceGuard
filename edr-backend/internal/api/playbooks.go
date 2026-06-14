@@ -63,6 +63,8 @@ func (s *Server) handleCreatePlaybook(c *gin.Context) {
 		s.jsonError(c, err)
 		return
 	}
+	uid, uname := currentUser(c)
+	s.al.Log(c.Request.Context(), uid, uname, "create_playbook", "playbook", pb.ID, pb.Name, c.ClientIP(), "trigger="+pb.TriggerType)
 	c.JSON(http.StatusCreated, pb)
 }
 
@@ -82,15 +84,20 @@ func (s *Server) handleUpdatePlaybook(c *gin.Context) {
 		s.jsonError(c, err)
 		return
 	}
+	uid, uname := currentUser(c)
+	s.al.Log(c.Request.Context(), uid, uname, "update_playbook", "playbook", pb.ID, pb.Name, c.ClientIP(), "")
 	c.JSON(http.StatusOK, pb)
 }
 
 func (s *Server) handleDeletePlaybook(c *gin.Context) {
 	tid := c.GetString("tenant_id")
-	if err := s.store.DeletePlaybook(c.Request.Context(), c.Param("id"), tid); err != nil {
+	id := c.Param("id")
+	if err := s.store.DeletePlaybook(c.Request.Context(), id, tid); err != nil {
 		s.jsonError(c, err)
 		return
 	}
+	uid, uname := currentUser(c)
+	s.al.Log(c.Request.Context(), uid, uname, "delete_playbook", "playbook", id, "", c.ClientIP(), "")
 	c.Status(http.StatusNoContent)
 }
 
@@ -176,6 +183,8 @@ func (s *Server) handleCreateAgentGroup(c *gin.Context) {
 		s.jsonError(c, err)
 		return
 	}
+	uid, uname := currentUser(c)
+	s.al.Log(c.Request.Context(), uid, uname, "create_agent_group", "agent_group", created.ID, created.Name, c.ClientIP(), "")
 	c.JSON(http.StatusCreated, created)
 }
 
@@ -196,15 +205,20 @@ func (s *Server) handleUpdateAgentGroup(c *gin.Context) {
 		s.jsonError(c, err)
 		return
 	}
+	uid, uname := currentUser(c)
+	s.al.Log(c.Request.Context(), uid, uname, "update_agent_group", "agent_group", existing.ID, existing.Name, c.ClientIP(), "")
 	c.JSON(http.StatusOK, existing)
 }
 
 func (s *Server) handleDeleteAgentGroup(c *gin.Context) {
 	tid := c.GetString("tenant_id")
-	if err := s.store.DeleteAgentGroup(c.Request.Context(), c.Param("id"), tid); err != nil {
+	id := c.Param("id")
+	if err := s.store.DeleteAgentGroup(c.Request.Context(), id, tid); err != nil {
 		s.jsonError(c, err)
 		return
 	}
+	uid, uname := currentUser(c)
+	s.al.Log(c.Request.Context(), uid, uname, "delete_agent_group", "agent_group", id, "", c.ClientIP(), "")
 	c.Status(http.StatusNoContent)
 }
 

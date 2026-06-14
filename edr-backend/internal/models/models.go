@@ -325,10 +325,15 @@ type BacktestResult struct {
 }
 
 // RuleCondition is a single condition in a rule's condition list.
+//
+// A leaf condition uses Field/Op/Value. To express OR semantics (e.g. Sigma
+// "1 of them" or "selectionA or selectionB"), set Any to a list of AND-groups;
+// the condition matches if ANY group matches, and Field/Op/Value are ignored.
 type RuleCondition struct {
-	Field string      `json:"field"` // e.g. "process.comm", "dst_port"
-	Op    string      `json:"op"`    // eq, ne, in, gt, lt, startswith, contains, regex
-	Value interface{} `json:"value"`
+	Field string            `json:"field,omitempty"` // e.g. "process.comm", "dst_port"
+	Op    string            `json:"op,omitempty"`    // eq, ne, in, gt, lt, startswith, endswith, contains, regex
+	Value interface{}       `json:"value,omitempty"`
+	Any   [][]RuleCondition `json:"any,omitempty"`   // OR-of-AND groups; if set, Field/Op/Value are ignored
 }
 
 // CVEDetail represents a cached CVE record from NVD or other source.

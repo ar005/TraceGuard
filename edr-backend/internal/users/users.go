@@ -76,7 +76,18 @@ type Manager struct {
 	// usedSSETickets tracks consumed SSE ticket JTIs to enforce single-use.
 	sseTicketMu   sync.Mutex
 	usedSSETickets map[string]time.Time
+
+	// allowSSOEmailLink controls whether an SSO login can auto-link to an
+	// existing local user with a matching email + tenant. OFF by default —
+	// if an IdP is misconfigured (or claims an admin's email), enabling this
+	// would silently hand over the local account to the IdP. Operators must
+	// opt in explicitly via SetSSOEmailLink.
+	allowSSOEmailLink bool
 }
+
+// SetSSOEmailLink toggles email-based linking of SSO logins to existing
+// local accounts. Default false.
+func (m *Manager) SetSSOEmailLink(allow bool) { m.allowSSOEmailLink = allow }
 
 func New(db *sqlx.DB, jwtSecret []byte) *Manager {
 	m := &Manager{db: db, jwtSecret: jwtSecret, usedSSETickets: make(map[string]time.Time)}
@@ -498,18 +509,25 @@ func (m *Manager) ProvisionSSOUser(
 		return &existing, false, nil
 	}
 
-	// Not found — try to find by email within the tenant (account linking).
-	var byEmail User
-	err2 := m.db.GetContext(ctx, &byEmail,
-		`SELECT * FROM users WHERE email=$1 AND tenant_id=$2`, email, tenantID)
-	if err2 == nil {
-		// Link existing account to this SSO provider.
-		_, _ = m.db.ExecContext(ctx,
-			`UPDATE users SET sso_provider=$1, sso_subject=$2, last_login_at=NOW() WHERE id=$3`,
-			ssoProvider, subject, byEmail.ID)
-		byEmail.SSOProvider = ssoProvider
-		byEmail.SSOSubject = subject
-		return &byEmail, false, nil
+	// Optional: link to an existing local user with a matching email +
+	// tenant. Gated behind allowSSOEmailLink because a misconfigured (or
+	// hostile) IdP claiming an admin's email would otherwise silently take
+	// over the local account. Off by default — enable per-deployment via
+	// Manager.SetSSOEmailLink. Existing SSO-provisioned users are still
+	// matched by subject above and unaffected.
+	if m.allowSSOEmailLink {
+		var byEmail User
+		err2 := m.db.GetContext(ctx, &byEmail,
+			`SELECT * FROM users WHERE email=$1 AND tenant_id=$2 AND (sso_provider='' OR sso_provider IS NULL)`,
+			email, tenantID)
+		if err2 == nil {
+			_, _ = m.db.ExecContext(ctx,
+				`UPDATE users SET sso_provider=$1, sso_subject=$2, last_login_at=NOW() WHERE id=$3`,
+				ssoProvider, subject, byEmail.ID)
+			byEmail.SSOProvider = ssoProvider
+			byEmail.SSOSubject = subject
+			return &byEmail, false, nil
+		}
 	}
 
 	// Auto-provision a new user.

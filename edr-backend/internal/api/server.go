@@ -723,13 +723,14 @@ func sanitizeFilename(name string) string {
 // setAuthCookie writes the JWT as an httpOnly, SameSite=Strict cookie.
 func setAuthCookie(c *gin.Context, token string) {
 	secure := c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https"
-	c.SetCookie(authCookieName, token, 24*60*60, "/", "", secure, true) // httpOnly=true
 	c.SetSameSite(http.SameSiteStrictMode)
+	c.SetCookie(authCookieName, token, 24*60*60, "/", "", secure, true) // httpOnly=true
 }
 
 // clearAuthCookie removes the session cookie.
 func clearAuthCookie(c *gin.Context) {
 	secure := c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https"
+	c.SetSameSite(http.SameSiteStrictMode)
 	c.SetCookie(authCookieName, "", -1, "/", "", secure, true)
 }
 
@@ -2130,6 +2131,8 @@ func (s *Server) handleCreateSuppression(c *gin.Context) {
 	}
 	_ = s.engine.Reload(c.Request.Context())
 	configver.Bump()
+	uid, uname := currentUser(c)
+	s.al.Log(c.Request.Context(), uid, uname, "create_suppression", "suppression", r.ID, r.Name, c.ClientIP(), "")
 	c.JSON(http.StatusCreated, r)
 }
 
@@ -2170,17 +2173,22 @@ func (s *Server) handleUpdateSuppression(c *gin.Context) {
 	}
 	_ = s.engine.Reload(c.Request.Context())
 	configver.Bump()
+	uid, uname := currentUser(c)
+	s.al.Log(c.Request.Context(), uid, uname, "update_suppression", "suppression", existing.ID, existing.Name, c.ClientIP(), "")
 	c.JSON(http.StatusOK, existing)
 }
 
 // DELETE /api/v1/suppressions/:id
 func (s *Server) handleDeleteSuppression(c *gin.Context) {
-	if err := s.store.DeleteSuppression(c.Request.Context(), c.Param("id"), c.GetString("tenant_id")); err != nil {
+	id := c.Param("id")
+	if err := s.store.DeleteSuppression(c.Request.Context(), id, c.GetString("tenant_id")); err != nil {
 		s.jsonError(c, err)
 		return
 	}
 	_ = s.engine.Reload(c.Request.Context())
 	configver.Bump()
+	uid, uname := currentUser(c)
+	s.al.Log(c.Request.Context(), uid, uname, "delete_suppression", "suppression", id, "", c.ClientIP(), "")
 	c.Status(http.StatusNoContent)
 }
 
@@ -2350,18 +2358,26 @@ func (s *Server) handleLRCommand(c *gin.Context) {
 		return
 	}
 	result, err := s.lr.SendCommand(c.Request.Context(), body.AgentID, body.Action, body.Args, body.Timeout)
+
+	// Audit EVERY live-response command — even shell exec / file ops — so
+	// the trail covers what was actually run on the endpoint, not just the
+	// declared containment actions. Containment retains its specific verb
+	// for compatibility with existing audit queries.
+	uid, uname := currentUser(c)
+	verb := body.Action
+	if !isContainmentAction(body.Action) {
+		verb = "liveresponse:" + body.Action
+	}
+	details := strings.Join(body.Args, " ")
+	if err != nil {
+		details = "error: " + err.Error() + " | args: " + details
+	}
+	s.al.Log(c.Request.Context(), uid, uname, verb, "agent", body.AgentID, "", c.ClientIP(), details)
+
 	if err != nil {
 		s.jsonError(c, err)
 		return
 	}
-
-	// Audit containment actions.
-	if isContainmentAction(body.Action) {
-		uid, uname := currentUser(c)
-		details := strings.Join(body.Args, " ")
-		s.al.Log(c.Request.Context(), uid, uname, body.Action, "agent", body.AgentID, "", c.ClientIP(), details)
-	}
-
 	c.JSON(http.StatusOK, result)
 }
 
@@ -2391,11 +2407,14 @@ func (s *Server) handleCreatePendingCommand(c *gin.Context) {
 		return
 	}
 
-	// Audit queued containment actions.
-	if isContainmentAction(body.Action) {
-		details := "queued: " + strings.Join(body.Args, " ")
-		s.al.Log(c.Request.Context(), uid, uname, body.Action, "agent", body.AgentID, "", c.ClientIP(), details)
+	// Audit every queued command — containment keeps its specific verb for
+	// query compatibility; everything else is tagged liveresponse_queued.
+	verb := body.Action
+	if !isContainmentAction(body.Action) {
+		verb = "liveresponse_queued:" + body.Action
 	}
+	details := "queued: " + strings.Join(body.Args, " ")
+	s.al.Log(c.Request.Context(), uid, uname, verb, "agent", body.AgentID, "", c.ClientIP(), details)
 
 	c.JSON(http.StatusCreated, cmd)
 }
@@ -2425,6 +2444,8 @@ func (s *Server) handleCancelPendingCommand(c *gin.Context) {
 		s.jsonError(c, err)
 		return
 	}
+	uid, uname := currentUser(c)
+	s.al.Log(c.Request.Context(), uid, uname, "cancel_pending_command", "pending_command", id, "", c.ClientIP(), "")
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -2790,6 +2811,8 @@ func (s *Server) handleCreateRule(c *gin.Context) {
 	}
 	_ = s.engine.Reload(c.Request.Context())
 	configver.Bump()
+	uid, uname := currentUser(c)
+	s.al.Log(c.Request.Context(), uid, uname, "create_rule", "rule", rule.ID, rule.Name, c.ClientIP(), "type="+rule.RuleType)
 	c.JSON(http.StatusCreated, rule)
 }
 
@@ -2844,13 +2867,16 @@ func (s *Server) handleUpdateRule(c *gin.Context) {
 	}
 	_ = s.engine.Reload(c.Request.Context())
 	configver.Bump()
+	uid, uname := currentUser(c)
+	s.al.Log(c.Request.Context(), uid, uname, "update_rule", "rule", existing.ID, existing.Name, c.ClientIP(), "")
 	c.JSON(http.StatusOK, existing)
 }
 
 func (s *Server) handleDeleteRule(c *gin.Context) {
 	tenantID, _ := c.Get("tenant_id")
 	tid, _ := tenantID.(string)
-	if err := s.store.DeleteRule(c.Request.Context(), c.Param("id"), tid); err != nil {
+	ruleID := c.Param("id")
+	if err := s.store.DeleteRule(c.Request.Context(), ruleID, tid); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "rule not found"})
 			return
@@ -2860,6 +2886,8 @@ func (s *Server) handleDeleteRule(c *gin.Context) {
 	}
 	_ = s.engine.Reload(c.Request.Context())
 	configver.Bump()
+	uid, uname := currentUser(c)
+	s.al.Log(c.Request.Context(), uid, uname, "delete_rule", "rule", ruleID, "", c.ClientIP(), "")
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 

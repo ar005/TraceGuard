@@ -744,6 +744,19 @@ func (e *Engine) matchesAll(payload map[string]interface{}, conds []models.RuleC
 }
 
 func (e *Engine) matchCondition(payload map[string]interface{}, c models.RuleCondition) bool {
+	// OR-of-AND groups: matches if any inner group matches. Field/Op/Value are
+	// ignored when Any is set — this lets a single RuleCondition encode Sigma
+	// "1 of them" / "selectionA or selectionB" without changing the outer AND
+	// semantics of the rule's condition list.
+	if len(c.Any) > 0 {
+		for _, group := range c.Any {
+			if e.matchesAll(payload, group) {
+				return true
+			}
+		}
+		return false
+	}
+
 	actual, ok := payload[c.Field]
 	if !ok { return false }
 	switch c.Op {
@@ -757,6 +770,7 @@ func (e *Engine) matchCondition(payload map[string]interface{}, c models.RuleCon
 		vals := toStringSlice(c.Value)
 		return stringSliceContains(vals, fmt.Sprintf("%v", actual))
 	case "startswith": return strings.HasPrefix(fmt.Sprintf("%v", actual), fmt.Sprintf("%v", c.Value))
+	case "endswith":   return strings.HasSuffix(fmt.Sprintf("%v", actual), fmt.Sprintf("%v", c.Value))
 	case "contains":   return strings.Contains(fmt.Sprintf("%v", actual), fmt.Sprintf("%v", c.Value))
 	case "regex":
 		pattern := fmt.Sprintf("%v", c.Value)

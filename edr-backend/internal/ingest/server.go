@@ -300,8 +300,11 @@ func (s *Server) processEvent(env *pb.EventEnvelope) {
 		eventID = "evt-" + uuid.New().String()
 	}
 
+	// Trust agent-supplied timestamps so forensic timelines, chain stitching,
+	// and offline-buffer replays remain accurate. Only fall back to wall clock
+	// when the agent didn't set one at all.
 	ts := time.Unix(0, env.Timestamp)
-	if ts.IsZero() || ts.Before(time.Now().Add(-24*time.Hour)) {
+	if env.Timestamp == 0 || ts.IsZero() {
 		ts = time.Now()
 	}
 

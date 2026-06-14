@@ -160,40 +160,106 @@ func logsourceToEventTypes(ls SigmaLogsource) []string {
 	}
 }
 
+// buildConditions converts a Sigma `detection:` block into TraceGuard rule
+// conditions, honouring the `condition:` expression for AND/OR semantics.
+//
+//   - `all of them` / absent / "selA and selB"   → AND (flat conditions list).
+//   - `1 of them` / "any of *" / "selA or selB"  → OR (single RuleCondition
+//     whose Any field holds one AND-group per selection).
+//
+// Top-level keyword lists (Sigma `keywords:` etc.) are OR'd against
+// `process.cmdline` per Sigma semantics, regardless of the outer expression.
 func buildConditions(detection map[string]interface{}) ([]models.RuleCondition, error) {
-	var conditions []models.RuleCondition
+	conditionExpr := ""
+	if c, ok := detection["condition"]; ok {
+		conditionExpr = strings.ToLower(strings.TrimSpace(fmt.Sprintf("%v", c)))
+	}
 
+	// Collect each selection's AND-group, keyed by selection name.
+	type selection struct {
+		name  string
+		group []models.RuleCondition
+	}
+	var selections []selection
 	for key, val := range detection {
-		if key == "condition" || key == "timeframe" {
+		if key == "condition" || key == "timeframe" || key == "fields" {
 			continue
 		}
-		// val can be a map (field→value) or list of strings (keywords)
-		switch v := val.(type) {
-		case map[string]interface{}:
-			for field, fval := range v {
-				cond := fieldCondition(field, fval)
-				if cond != nil {
-					conditions = append(conditions, *cond)
-				}
-			}
-		case []interface{}:
-			// keyword list: match against process.cmdline or file.path
-			for _, kw := range v {
-				if s, ok := kw.(string); ok {
-					conditions = append(conditions, models.RuleCondition{
-						Field: "process.cmdline",
-						Op:    "contains",
-						Value: s,
-					})
-				}
-			}
+		group := selectionToConditions(val)
+		if len(group) > 0 {
+			selections = append(selections, selection{name: strings.ToLower(key), group: group})
 		}
 	}
 
-	if len(conditions) == 0 {
+	if len(selections) == 0 {
 		return nil, fmt.Errorf("no translatable conditions")
 	}
-	return conditions, nil
+
+	// Decide how to combine multiple selections.
+	isOR := false
+	switch {
+	case strings.Contains(conditionExpr, " or "):
+		isOR = true
+	case strings.HasPrefix(conditionExpr, "1 of "),
+		strings.HasPrefix(conditionExpr, "any of "):
+		isOR = true
+	}
+
+	if isOR && len(selections) > 1 {
+		groups := make([][]models.RuleCondition, 0, len(selections))
+		for _, s := range selections {
+			groups = append(groups, s.group)
+		}
+		return []models.RuleCondition{{Any: groups}}, nil
+	}
+
+	// AND across selections (default / "all of them" / "selA and selB").
+	var out []models.RuleCondition
+	for _, s := range selections {
+		out = append(out, s.group...)
+	}
+	return out, nil
+}
+
+// selectionToConditions builds the AND-group for a single Sigma selection.
+// A map selection becomes one condition per field (each one a leaf or, for
+// list-valued fields, an "in" leaf). A list selection (keywords) becomes a
+// single OR-group of contains-leaves against process.cmdline.
+func selectionToConditions(val interface{}) []models.RuleCondition {
+	switch v := val.(type) {
+	case map[string]interface{}:
+		var out []models.RuleCondition
+		for field, fval := range v {
+			if c := fieldCondition(field, fval); c != nil {
+				out = append(out, *c)
+			}
+		}
+		return out
+	case []interface{}:
+		var leaves []models.RuleCondition
+		for _, kw := range v {
+			if s, ok := kw.(string); ok {
+				leaves = append(leaves, models.RuleCondition{
+					Field: "process.cmdline",
+					Op:    "contains",
+					Value: s,
+				})
+			}
+		}
+		if len(leaves) == 0 {
+			return nil
+		}
+		if len(leaves) == 1 {
+			return leaves
+		}
+		// Multiple keywords are OR'd per Sigma semantics.
+		groups := make([][]models.RuleCondition, 0, len(leaves))
+		for _, l := range leaves {
+			groups = append(groups, []models.RuleCondition{l})
+		}
+		return []models.RuleCondition{{Any: groups}}
+	}
+	return nil
 }
 
 func fieldCondition(field string, val interface{}) *models.RuleCondition {
@@ -223,16 +289,30 @@ func fieldCondition(field string, val interface{}) *models.RuleCondition {
 	case string:
 		return &models.RuleCondition{Field: field, Op: op, Value: v}
 	case []interface{}:
-		// multi-value → use "in" operator
+		// Multi-value Sigma field: each value is OR'd. For "eq" we use the
+		// "in" operator (set membership); for substring-style modifiers we
+		// have to expand into an Any-group of single-value leaves so each
+		// value is checked with its modifier.
 		var vals []string
 		for _, item := range v {
 			if s, ok := item.(string); ok {
 				vals = append(vals, s)
 			}
 		}
-		if len(vals) > 0 {
-			return &models.RuleCondition{Field: field, Op: "in", Value: strings.Join(vals, ",")}
+		if len(vals) == 0 {
+			return nil
 		}
+		if op == "eq" {
+			return &models.RuleCondition{Field: field, Op: "in", Value: vals}
+		}
+		if len(vals) == 1 {
+			return &models.RuleCondition{Field: field, Op: op, Value: vals[0]}
+		}
+		groups := make([][]models.RuleCondition, 0, len(vals))
+		for _, s := range vals {
+			groups = append(groups, []models.RuleCondition{{Field: field, Op: op, Value: s}})
+		}
+		return &models.RuleCondition{Any: groups}
 	}
 	return nil
 }

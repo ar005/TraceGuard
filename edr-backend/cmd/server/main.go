@@ -146,6 +146,7 @@ func main() {
 
 	// ── User Manager ──────────────────────────────────────────────────────────
 	um := users.New(database, jwtSecret)
+	um.SetSSOEmailLink(cfg.Auth.AllowSSOEmailLink)
 	if username, password, created, err := um.Bootstrap(context.Background()); err != nil {
 		logger.Warn().Err(err).Msg("user bootstrap failed")
 	} else if created {

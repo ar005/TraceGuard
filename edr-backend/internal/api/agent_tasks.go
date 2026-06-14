@@ -60,6 +60,8 @@ func (s *Server) handleCreateAgentTask(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 		return
 	}
+	uid, uname := currentUser(c)
+	s.al.Log(c.Request.Context(), uid, uname, "create_agent_task", "agent_task", task.ID, task.Name, c.ClientIP(), "agent="+agentID+" type="+task.Type)
 	c.JSON(http.StatusCreated, task)
 }
 
@@ -92,6 +94,8 @@ func (s *Server) handleUpdateAgentTask(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 		return
 	}
+	uid, uname := currentUser(c)
+	s.al.Log(c.Request.Context(), uid, uname, "update_agent_task", "agent_task", taskID, task.Name, c.ClientIP(), "status="+body.Status)
 	c.JSON(http.StatusOK, task)
 }
 
@@ -104,6 +108,8 @@ func (s *Server) handleDeleteAgentTask(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 		return
 	}
+	uid, uname := currentUser(c)
+	s.al.Log(c.Request.Context(), uid, uname, "delete_agent_task", "agent_task", taskID, "", c.ClientIP(), "")
 	c.JSON(http.StatusNoContent, nil)
 }
 
@@ -127,6 +133,8 @@ func (s *Server) handleRunAgentTask(c *gin.Context) {
 		return
 	}
 	_ = s.store.LogTaskRunEvent(c.Request.Context(), task, actor)
+	uid, uname := currentUser(c)
+	s.al.Log(c.Request.Context(), uid, uname, "run_agent_task", "agent_task", taskID, task.Name, c.ClientIP(), "on-demand")
 	c.JSON(http.StatusAccepted, gin.H{"message": "task queued for execution", "task_id": taskID})
 }
 

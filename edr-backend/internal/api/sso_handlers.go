@@ -483,6 +483,8 @@ func (s *Server) handleCreateSSOConfig(c *gin.Context) {
 		s.jsonError(c, err)
 		return
 	}
+	uid, uname := currentUser(c)
+	s.al.Log(c.Request.Context(), uid, uname, "create_sso_config", "sso_config", cfg.ID, cfg.ProviderName, c.ClientIP(), "type="+cfg.ProviderType)
 	c.JSON(http.StatusCreated, gin.H{
 		"id":                cfg.ID,
 		"saml_sp_cert_pem":  cfg.SAMLSPCertPEM,
@@ -601,6 +603,8 @@ func (s *Server) handleUpdateSSOConfig(c *gin.Context) {
 		s.jsonError(c, err)
 		return
 	}
+	uid, uname := currentUser(c)
+	s.al.Log(ctx, uid, uname, "update_sso_config", "sso_config", existing.ID, existing.ProviderName, c.ClientIP(), "type="+existing.ProviderType)
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -609,9 +613,12 @@ func (s *Server) handleUpdateSSOConfig(c *gin.Context) {
 //	DELETE /api/v1/sso/configs/:id
 func (s *Server) handleDeleteSSOConfig(c *gin.Context) {
 	tid := c.GetString("tenant_id")
-	if err := s.store.DeleteSSOConfig(c.Request.Context(), c.Param("id"), tid); err != nil {
+	id := c.Param("id")
+	if err := s.store.DeleteSSOConfig(c.Request.Context(), id, tid); err != nil {
 		s.jsonError(c, err)
 		return
 	}
+	uid, uname := currentUser(c)
+	s.al.Log(c.Request.Context(), uid, uname, "delete_sso_config", "sso_config", id, "", c.ClientIP(), "")
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }

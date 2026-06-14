@@ -77,6 +77,12 @@ type LogConfig struct {
 
 type AuthConfig struct {
 	APIKey string `mapstructure:"api_key"`
+
+	// AllowSSOEmailLink, when true, lets an SSO login auto-link to an
+	// existing local user whose email + tenant match the IdP claim. OFF by
+	// default — enabling without an IdP claim-mapping policy can hand over
+	// the local account to whoever the IdP says owns that email.
+	AllowSSOEmailLink bool `mapstructure:"allow_sso_email_link"`
 }
 
 type RetentionConfig struct {
