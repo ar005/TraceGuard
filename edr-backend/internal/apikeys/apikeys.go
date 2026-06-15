@@ -150,7 +150,7 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 // Validate checks a raw Bearer token against enabled, non-expired DB keys.
 // Returns the matching Key on success. Updates last_used_at asynchronously.
 func (m *Manager) Validate(ctx context.Context, raw string) (*Key, error) {
-	if !strings.HasPrefix(raw, keyPrefix) {
+	if !strings.HasPrefix(raw, keyPrefix) || len(raw) < 8 {
 		return nil, fmt.Errorf("invalid key format")
 	}
 	prefix := raw[:8]

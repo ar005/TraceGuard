@@ -2010,8 +2010,20 @@ func (s *Server) handleInjectEvent(c *gin.Context) {
 	}
 
 	firedAlerts := s.engine.EvaluateAndCollect(ctx, ev)
+	var insertErrs []string
 	for _, alert := range firedAlerts {
-		_ = s.store.InsertAlert(ctx, alert)
+		if err := s.store.InsertAlert(ctx, alert); err != nil {
+			insertErrs = append(insertErrs, fmt.Sprintf("%s: %v", alert.ID, err))
+		}
+	}
+	if len(insertErrs) > 0 {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"event":           ev,
+			"alerts_fired":    firedAlerts,
+			"matched":         len(firedAlerts) > 0,
+			"alert_insert_errors": insertErrs,
+		})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -3179,13 +3191,25 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
+// maxQueryLimit caps user-supplied ?limit= values so a single request can't
+// translate into a giant SELECT / JSON response.
+const maxQueryLimit = 1000
+
 func intQuery(c *gin.Context, key string, def int) int {
-	if v := c.Query(key); v != "" {
+	v := c.Query(key)
+	out := def
+	if v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
-			return n
+			out = n
 		}
 	}
-	return def
+	if key == "limit" && out > maxQueryLimit {
+		out = maxQueryLimit
+	}
+	if key == "limit" && out < 0 {
+		out = def
+	}
+	return out
 }
 
 func marshalToRaw(v interface{}) ([]byte, error) {

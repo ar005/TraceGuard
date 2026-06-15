@@ -1111,6 +1111,9 @@ func (e *Engine) fireIOCAlert(ctx context.Context, ev *models.Event, ioc *models
 	if tid == "" {
 		tid = "default"
 	}
+	mu := e.dedupLock(ruleID, ev.AgentID, tid)
+	mu.Lock()
+	defer mu.Unlock()
 	existing, err := e.store.FindOpenAlert(ctx, ruleID, ev.AgentID, tid, dedupeWindow)
 	if err == nil && existing != nil {
 		go func() { _ = e.store.BumpAlert(context.Background(), existing.ID, ev.ID) }()
