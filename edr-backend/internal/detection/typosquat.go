@@ -93,8 +93,8 @@ func CheckTyposquat(domain string) (brand string, distance int) {
 		// (e.g., g00gle -> google, paypa1 -> paypal).
 		if normalized != name {
 			ndist := LevenshteinDistance(normalized, b)
-			if ndist <= 1 && dist < bestDist {
-				bestDist = dist
+			if ndist <= 1 && ndist < bestDist {
+				bestDist = ndist
 				bestBrand = b
 			}
 		}

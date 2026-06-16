@@ -174,12 +174,13 @@ func (m *Manager) SendCommand(ctx context.Context, agentID string, action string
 		sess.mu.Unlock()
 	}()
 
-	// Send command to agent.
+	// Send command to agent. Block briefly for queue space, but always honor
+	// context cancellation in preference to reporting a full queue.
 	select {
 	case sess.cmdCh <- cmd:
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	default:
+	case <-time.After(2 * time.Second):
 		return nil, fmt.Errorf("agent %s command queue full", agentID)
 	}
 

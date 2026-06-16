@@ -140,12 +140,21 @@ type EventServiceClient interface {
 	Register(ctx context.Context, in *RegisterRequest, opts ...grpc.CallOption) (*RegisterResponse, error)
 	StreamEvents(ctx context.Context, opts ...grpc.CallOption) (EventService_StreamEventsClient, error)
 	Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error)
+	LiveResponse(ctx context.Context, opts ...grpc.CallOption) (EventService_LiveResponseClient, error)
 }
 
 // EventService_StreamEventsClient is the client-side streaming interface.
 type EventService_StreamEventsClient interface {
 	Send(*EventEnvelope) error
 	CloseAndRecv() (*StreamResponse, error)
+	grpc.ClientStream
+}
+
+// EventService_LiveResponseClient is the client-side bidi stream interface.
+// The agent sends LiveResults and receives LiveCommands from the backend.
+type EventService_LiveResponseClient interface {
+	Send(*LiveResult) error
+	Recv() (*LiveCommand, error)
 	grpc.ClientStream
 }
 

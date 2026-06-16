@@ -22,12 +22,13 @@ message EventEnvelope {
 
 // ─── Heartbeat ────────────────────────────────────────────────────────────────
 message HeartbeatRequest {
-  string agent_id   = 1;
-  string hostname   = 2;
-  int64  timestamp  = 3;
-  string agent_ver  = 4;
-  string os         = 5;
-  AgentStats stats  = 6;
+  string agent_id              = 1;
+  string hostname              = 2;
+  int64  timestamp             = 3;
+  string agent_ver             = 4;
+  string os                    = 5;
+  AgentStats stats             = 6;
+  repeated TaskResult task_results = 7;  // results from previously delivered tasks
 }
 
 message AgentStats {
@@ -39,9 +40,27 @@ message AgentStats {
 }
 
 message HeartbeatResponse {
-  bool   ok             = 1;
-  int64  server_time    = 2;  // Unix nanoseconds — agent can use for clock sync
-  string config_version = 3;  // bump this to trigger agent config reload
+  bool   ok                            = 1;
+  int64  server_time                   = 2;  // Unix nanoseconds — agent can use for clock sync
+  string config_version                = 3;  // bump this to trigger agent config reload
+  repeated TaskInstruction pending_tasks = 4;  // tasks the agent should execute before next heartbeat
+}
+
+// ─── Tasks ────────────────────────────────────────────────────────────────────
+// Tasks are scheduled work (collect, scan, remediate) delivered to the agent
+// via HeartbeatResponse and reported back via the next HeartbeatRequest.
+message TaskInstruction {
+  string id      = 1;
+  string name    = 2;
+  string type    = 3;  // script | scan | collect | remediate
+  bytes  payload = 4;  // JSON-encoded type-specific parameters
+}
+
+message TaskResult {
+  string task_id = 1;
+  string status  = 2;  // success | failed
+  string output  = 3;  // stdout/stderr, capped 64 KB
+  string error   = 4;
 }
 
 // ─── StreamResponse ───────────────────────────────────────────────────────────
@@ -52,12 +71,15 @@ message StreamResponse {
 
 // ─── AgentRegistration ────────────────────────────────────────────────────────
 message RegisterRequest {
-  string agent_id   = 1;
-  string hostname   = 2;
-  string os         = 3;
-  string os_version = 4;
-  string agent_ver  = 5;
-  string ip         = 6;
+  string agent_id        = 1;
+  string hostname        = 2;
+  string os              = 3;
+  string os_version      = 4;
+  string agent_ver       = 5;
+  string ip              = 6;
+  repeated string tags   = 7;  // operator-supplied tags
+  string env             = 8;  // environment label (prod, staging, etc.)
+  string notes           = 9;  // free-form deployment notes
 }
 
 message RegisterResponse {
