@@ -73,6 +73,10 @@ func CheckTyposquat(domain string) (brand string, distance int) {
 	// Normalize common character substitutions for a secondary check.
 	normalized := normalizeHomoglyphs(name)
 
+	// bestRank drives ranking (lower = closer match, taking homoglyphs into
+	// account). bestDist is the raw Levenshtein distance reported to the caller
+	// so the alert reflects how many characters actually differ.
+	bestRank := 999
 	bestDist := 999
 	bestBrand := ""
 
@@ -83,18 +87,21 @@ func CheckTyposquat(domain string) (brand string, distance int) {
 		}
 
 		dist := LevenshteinDistance(name, b)
-		if dist >= 1 && dist <= 2 && dist < bestDist {
+		if dist >= 1 && dist <= 2 && dist < bestRank {
+			bestRank = dist
 			bestDist = dist
 			bestBrand = b
 		}
 
 		// If the normalized form matches (or is very close to) the brand but
 		// the raw name does NOT, this is a homoglyph-based typosquat
-		// (e.g., g00gle -> google, paypa1 -> paypal).
+		// (e.g., g00gle -> google, paypa1 -> paypal). Rank by the homoglyph
+		// distance but report the raw distance.
 		if normalized != name {
 			ndist := LevenshteinDistance(normalized, b)
-			if ndist <= 1 && ndist < bestDist {
-				bestDist = ndist
+			if ndist <= 1 && ndist < bestRank {
+				bestRank = ndist
+				bestDist = dist
 				bestBrand = b
 			}
 		}

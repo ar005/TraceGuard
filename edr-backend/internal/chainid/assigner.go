@@ -13,9 +13,13 @@ import (
 )
 
 // cacheEntry stores a chain ID with the time it was inserted, for eviction.
+// exited is set when the originating process has been reported as exited; later
+// lookups skip exited entries so that a PID recycle does not silently inherit
+// the dead process's chain ID before a new PROCESS_EXEC arrives.
 type cacheEntry struct {
 	chainID    string
 	insertedAt time.Time
+	exited     bool
 }
 
 // Assigner maintains a per-agent PID→chainID cache and assigns chain IDs to
@@ -23,15 +27,40 @@ type cacheEntry struct {
 type Assigner struct {
 	mu    sync.RWMutex
 	cache map[string]map[uint32]*cacheEntry // agentID → pid → entry
+
+	// Lifecycle: stop signals the evict goroutine to exit; exitTimers tracks
+	// outstanding NotifyExit delayed cleanups so Stop can cancel them and
+	// prevent the timer goroutines from running after shutdown.
+	stop       chan struct{}
+	stopOnce   sync.Once
+	wg         sync.WaitGroup
+	exitTimers map[*time.Timer]struct{}
+	exitMu     sync.Mutex
 }
 
 // New returns a ready-to-use Assigner with a background eviction goroutine.
 func New() *Assigner {
 	a := &Assigner{
-		cache: make(map[string]map[uint32]*cacheEntry),
+		cache:      make(map[string]map[uint32]*cacheEntry),
+		stop:       make(chan struct{}),
+		exitTimers: make(map[*time.Timer]struct{}),
 	}
+	a.wg.Add(1)
 	go a.evict()
 	return a
+}
+
+// Stop terminates the background eviction goroutine and cancels any pending
+// NotifyExit cleanup timers. Safe to call multiple times.
+func (a *Assigner) Stop() {
+	a.stopOnce.Do(func() { close(a.stop) })
+	a.exitMu.Lock()
+	for t := range a.exitTimers {
+		t.Stop()
+	}
+	a.exitTimers = nil
+	a.exitMu.Unlock()
+	a.wg.Wait()
 }
 
 // processContext mirrors the JSON shape emitted by the agent for ProcessContext.
@@ -82,16 +111,44 @@ func (a *Assigner) Assign(agentID, eventType string, payload []byte) string {
 	}
 }
 
-// NotifyExit removes a PID from the cache 30 seconds after the process exits
-// to absorb any late-arriving events while preventing unbounded growth.
+// NotifyExit marks a PID's cache entry as exited so subsequent lookups for a
+// recycled PID synthesise a fresh chain instead of inheriting the dead
+// process's chainID. The entry is fully removed 30s later to absorb any
+// late-arriving events for the exited process; the cleanup timer is tracked
+// so Stop can cancel pending cleanups.
 func (a *Assigner) NotifyExit(agentID string, pid uint32) {
-	time.AfterFunc(30*time.Second, func() {
+	a.mu.Lock()
+	if m, ok := a.cache[agentID]; ok {
+		if entry, ok := m[pid]; ok {
+			entry.exited = true
+		}
+	}
+	a.mu.Unlock()
+
+	var t *time.Timer
+	t = time.AfterFunc(30*time.Second, func() {
 		a.mu.Lock()
 		if m, ok := a.cache[agentID]; ok {
-			delete(m, pid)
+			if entry, ok := m[pid]; ok && entry.exited {
+				delete(m, pid)
+			}
 		}
 		a.mu.Unlock()
+		a.exitMu.Lock()
+		if a.exitTimers != nil {
+			delete(a.exitTimers, t)
+		}
+		a.exitMu.Unlock()
 	})
+
+	a.exitMu.Lock()
+	if a.exitTimers != nil {
+		a.exitTimers[t] = struct{}{}
+	} else {
+		// Already stopped — cancel the timer we just scheduled.
+		t.Stop()
+	}
+	a.exitMu.Unlock()
 }
 
 func (a *Assigner) assignProcessExec(agentID string, payload []byte) string {
@@ -140,12 +197,14 @@ func (a *Assigner) assignProcessFork(agentID string, payload []byte) string {
 		childPID = ev.ChildPID
 	}
 
-	// Look up parent's chain.
+	// Look up parent's chain. Skip exited entries — if the parent PID was
+	// reported as exited but not yet evicted, treating its chain as live could
+	// stitch the new fork into a dead chain on a PID recycle.
 	var parentChainID string
 	if parentPID != 0 {
 		a.mu.RLock()
 		if m, ok := a.cache[agentID]; ok {
-			if e, ok := m[parentPID]; ok {
+			if e, ok := m[parentPID]; ok && !e.exited {
 				parentChainID = e.chainID
 			}
 		}
@@ -180,7 +239,7 @@ func (a *Assigner) lookupByPID(agentID string, payload []byte) string {
 	a.mu.RLock()
 	var chainID string
 	if m, ok := a.cache[agentID]; ok {
-		if e, ok := m[pid]; ok {
+		if e, ok := m[pid]; ok && !e.exited {
 			chainID = e.chainID
 		}
 	}
@@ -210,22 +269,28 @@ func (a *Assigner) lookupByPID(agentID string, payload []byte) string {
 // evict runs in the background, sweeping the cache every 30 minutes and
 // evicting entries older than 4 hours.
 func (a *Assigner) evict() {
+	defer a.wg.Done()
 	ticker := time.NewTicker(30 * time.Minute)
 	defer ticker.Stop()
-	for range ticker.C {
-		cutoff := time.Now().Add(-4 * time.Hour)
-		a.mu.Lock()
-		for agentID, m := range a.cache {
-			for pid, entry := range m {
-				if entry.insertedAt.Before(cutoff) {
-					delete(m, pid)
+	for {
+		select {
+		case <-ticker.C:
+			cutoff := time.Now().Add(-4 * time.Hour)
+			a.mu.Lock()
+			for agentID, m := range a.cache {
+				for pid, entry := range m {
+					if entry.insertedAt.Before(cutoff) {
+						delete(m, pid)
+					}
+				}
+				if len(m) == 0 {
+					delete(a.cache, agentID)
 				}
 			}
-			if len(m) == 0 {
-				delete(a.cache, agentID)
-			}
+			a.mu.Unlock()
+		case <-a.stop:
+			return
 		}
-		a.mu.Unlock()
 	}
 }
 

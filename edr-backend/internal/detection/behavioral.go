@@ -38,6 +38,14 @@ type userBaseline struct {
 	ewma   float64
 	ewmaSq float64 // EWMA of (x - ewma)^2 — approximates variance
 	n      int
+
+	// currentHour is the start of the bucket currently being accumulated.
+	// hourCount is the number of logins observed in that bucket so far.
+	// The bucket is folded into the EWMA when the next observation arrives
+	// in a later hour. Bucket state is in-memory only — a restart loses
+	// at most one partial hour of accumulation, then resumes.
+	currentHour time.Time
+	hourCount   int
 }
 
 // BehavioralAnalyzer tracks per-user login frequency and fires alerts on anomalies.
@@ -49,8 +57,9 @@ type BehavioralAnalyzer struct {
 	baselines map[string]*userBaseline // key: user_uid
 
 	// alertFn is called when an anomaly is detected.
-	alertFn func(ctx context.Context, alert *models.Alert)
-	stop    chan struct{}
+	alertFn  func(ctx context.Context, alert *models.Alert)
+	stop     chan struct{}
+	stopOnce sync.Once
 }
 
 func NewBehavioralAnalyzer(db *sqlx.DB, st *store.Store, alertFn func(ctx context.Context, alert *models.Alert), log zerolog.Logger) *BehavioralAnalyzer {
@@ -83,29 +92,63 @@ func (b *BehavioralAnalyzer) Start(ctx context.Context) {
 	}
 }
 
-func (b *BehavioralAnalyzer) Stop() { close(b.stop) }
+func (b *BehavioralAnalyzer) Stop() {
+	b.stopOnce.Do(func() { close(b.stop) })
+}
 
 // Observe records a login event for the given user_uid. Call this from the
 // identity connector or ingest path whenever a LOGIN_SUCCESS event is seen.
+//
+// Logins are bucketed by wall-clock hour. The bucket count is folded into the
+// EWMA + variance estimate the first time an observation arrives in a later
+// hour, so the EWMA models "logins per hour" rather than "did a login happen".
 func (b *BehavioralAnalyzer) Observe(ctx context.Context, userUID, tenantID string) {
 	if userUID == "" {
 		return
 	}
+	hour := time.Now().Truncate(time.Hour)
 
 	b.mu.Lock()
 	bl, ok := b.baselines[userUID]
 	if !ok {
-		bl = &userBaseline{}
+		bl = &userBaseline{currentHour: hour, hourCount: 1}
 		b.baselines[userUID] = bl
+		b.mu.Unlock()
+		return
 	}
 
-	observation := 1.0
+	// First observation since startup (baselines loaded with zero currentHour)
+	// or first observation for a brand-new user: start a fresh bucket.
+	if bl.currentHour.IsZero() {
+		bl.currentHour = hour
+		bl.hourCount = 1
+		b.mu.Unlock()
+		return
+	}
+
+	if bl.currentHour.Equal(hour) {
+		bl.hourCount++
+		b.mu.Unlock()
+		return
+	}
+
+	// Hour rolled over — fold previous bucket count into EWMA + variance.
+	observation := float64(bl.hourCount)
 	prev := bl.ewma
 
-	bl.ewma = behavioralAlpha*observation + (1-behavioralAlpha)*bl.ewma
+	if bl.n == 0 {
+		// Seed the EWMA with the first real observation so stddev doesn't
+		// collapse to zero from a 0→observation transition.
+		bl.ewma = observation
+	} else {
+		bl.ewma = behavioralAlpha*observation + (1-behavioralAlpha)*bl.ewma
+	}
 	dev := observation - prev
 	bl.ewmaSq = behavioralAlpha*(dev*dev) + (1-behavioralAlpha)*bl.ewmaSq
 	bl.n++
+
+	bl.currentHour = hour
+	bl.hourCount = 1
 
 	n := bl.n
 	ewma := bl.ewma
@@ -113,15 +156,16 @@ func (b *BehavioralAnalyzer) Observe(ctx context.Context, userUID, tenantID stri
 	b.mu.Unlock()
 
 	if n < behavioralMinN {
-		// During warm-up, fire a low-severity alert if absolute rate is clearly anomalous
-		if n >= 3 && float64(n) > ewma*4+2 {
+		// During warm-up, fire a low-severity alert if the just-completed
+		// hour's count is clearly anomalous compared to the running mean.
+		if n >= 3 && observation > ewma*4+2 {
 			now := time.Now()
 			warmAlert := &models.Alert{
 				ID:          "beh-warmup-" + userUID + "-" + now.Format("20060102T150405"),
 				RuleID:      "rule-behavioral-login-anomaly",
 				RuleName:    "Behavioral: Login Burst (warm-up)",
 				Title:       "Login burst during baseline warm-up for user " + userUID,
-				Description: fmt.Sprintf(`{"n":%d,"ewma":%.3f}`, n, ewma),
+				Description: fmt.Sprintf(`{"n":%d,"ewma":%.3f,"observation":%.0f}`, n, ewma, observation),
 				Severity:    2,
 				Status:      "OPEN",
 				UserUID:     userUID,
@@ -150,10 +194,11 @@ func (b *BehavioralAnalyzer) Observe(ctx context.Context, userUID, tenantID stri
 		Float64("z_score", z).
 		Float64("ewma", ewma).
 		Float64("stddev", stddev).
+		Float64("observation", observation).
 		Msg("behavioral anomaly: login burst detected")
 
 	detailsJSON, _ := json.Marshal(map[string]interface{}{
-		"z_score": z, "ewma": ewma, "stddev": stddev, "tenant": tenantID,
+		"z_score": z, "ewma": ewma, "stddev": stddev, "observation": observation, "tenant": tenantID,
 	})
 
 	now := time.Now()

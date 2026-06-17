@@ -86,6 +86,12 @@ type Engine struct {
 	// enrichSem is a counting semaphore that limits concurrent enrichRuleAlert
 	// goroutines to prevent goroutine accumulation at high ingest rates.
 	enrichSem chan struct{}
+
+	// Lifecycle: stop signals the periodic goroutines (prune, dedup-evict,
+	// IOC refresh, seq-state clean) to exit; wg tracks them so Stop() can wait.
+	stop     chan struct{}
+	wg       sync.WaitGroup
+	stopOnce sync.Once
 }
 
 // dedupEntry wraps a per-(rule,agent) mutex with an access timestamp for eviction.
@@ -107,43 +113,73 @@ func New(st *store.Store, log zerolog.Logger, onAlert AlertCallback) *Engine {
 		iocHashes:  make(map[string]*models.IOC),
 		seqStates:  make(map[seqStateKey]*chainSeqState),
 		enrichSem:  make(chan struct{}, 200),
+		stop:       make(chan struct{}),
 	}
 	// Prune stale windows every 5 minutes to prevent unbounded memory growth.
+	e.wg.Add(1)
 	go func() {
+		defer e.wg.Done()
 		t := time.NewTicker(5 * time.Minute)
 		defer t.Stop()
-		for range t.C {
-			e.pruneAllWindows()
+		for {
+			select {
+			case <-t.C:
+				e.pruneAllWindows()
+			case <-e.stop:
+				return
+			}
 		}
 	}()
 	// Evict dedup mutexes not used in the last hour to prevent sync.Map growth.
+	e.wg.Add(1)
 	go func() {
+		defer e.wg.Done()
 		t := time.NewTicker(1 * time.Hour)
 		defer t.Stop()
 		cutoff := int64(time.Hour)
-		for range t.C {
-			now := time.Now().UnixNano()
-			e.dedupMu.Range(func(k, v any) bool {
-				if now-atomic.LoadInt64(&v.(*dedupEntry).lastSeen) > cutoff {
-					e.dedupMu.Delete(k)
-				}
-				return true
-			})
+		for {
+			select {
+			case <-t.C:
+				now := time.Now().UnixNano()
+				e.dedupMu.Range(func(k, v any) bool {
+					if now-atomic.LoadInt64(&v.(*dedupEntry).lastSeen) > cutoff {
+						e.dedupMu.Delete(k)
+					}
+					return true
+				})
+			case <-e.stop:
+				return
+			}
 		}
 	}()
 	// Refresh IOC cache every 60 seconds.
+	e.wg.Add(1)
 	go func() {
+		defer e.wg.Done()
 		// Initial load.
 		e.reloadIOCs()
 		t := time.NewTicker(60 * time.Second)
 		defer t.Stop()
-		for range t.C {
-			e.reloadIOCs()
+		for {
+			select {
+			case <-t.C:
+				e.reloadIOCs()
+			case <-e.stop:
+				return
+			}
 		}
 	}()
 	// Clean up expired chain sequence states once per minute.
+	e.wg.Add(1)
 	go e.cleanSeqStates()
 	return e
+}
+
+// Stop signals all background goroutines to exit and waits for them to return.
+// Safe to call multiple times.
+func (e *Engine) Stop() {
+	e.stopOnce.Do(func() { close(e.stop) })
+	e.wg.Wait()
 }
 
 // SetAutoResponder sets the live response manager used for automatic
@@ -392,10 +428,11 @@ func (e *Engine) evaluateThresholdMem(ctx context.Context, ev *models.Event, rul
 		Msg("threshold window tick")
 
 	if count >= rule.ThresholdCount {
-		e.winMu.Lock()
-		delete(e.windows, key)
-		e.winMu.Unlock()
-
+		// Don't delete the window on fire — the dedup layer (10-min sliding window
+		// per rule+agent) suppresses repeat alerts while the rate stays elevated,
+		// and the prune goroutine drops timestamps that fall out of the window.
+		// Deleting here would reset the counter and require N more events before
+		// the rule could fire again, masking sustained attacks.
 		thresholdEv := *ev
 		e.log.Warn().
 			Str("rule", rule.Name).
@@ -634,17 +671,23 @@ func (e *Engine) evaluateSequence(ctx context.Context, ev *models.Event, rule *m
 // longer than 24 hours (generous backstop — actual window enforcement happens per
 // event in evaluateSequence).
 func (e *Engine) cleanSeqStates() {
+	defer e.wg.Done()
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
-	for range ticker.C {
-		cutoff := time.Now().Add(-24 * time.Hour)
-		e.seqMu.Lock()
-		for k, v := range e.seqStates {
-			if v.startedAt.Before(cutoff) {
-				delete(e.seqStates, k)
+	for {
+		select {
+		case <-ticker.C:
+			cutoff := time.Now().Add(-24 * time.Hour)
+			e.seqMu.Lock()
+			for k, v := range e.seqStates {
+				if v.startedAt.Before(cutoff) {
+					delete(e.seqStates, k)
+				}
 			}
+			e.seqMu.Unlock()
+		case <-e.stop:
+			return
 		}
-		e.seqMu.Unlock()
 	}
 }
 
