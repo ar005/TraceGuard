@@ -1026,6 +1026,11 @@ func parseHuntQuery(query string) (string, []interface{}, error) {
 	if strings.Contains(query, "/*") {
 		return "", nil, fmt.Errorf("SQL comments are not allowed")
 	}
+	// Reject SQL DDL/DML keywords that appear outside quoted strings — defense
+	// in depth in case the parser ever lets a value escape parameterisation.
+	if kw := findBlockedKeyword(query); kw != "" {
+		return "", nil, fmt.Errorf("keyword %q is not allowed in hunt queries", kw)
+	}
 
 	// Split on AND/OR while preserving the conjunction.
 	parts, conjunctions := splitOnConjunctions(query)
@@ -1071,6 +1076,8 @@ func parseHuntQuery(query string) (string, []interface{}, error) {
 }
 
 // splitOnConjunctions splits a query on AND/OR keywords (not inside quotes).
+// AND immediately following a BETWEEN keyword is treated as part of the range
+// clause and is NOT a split point.
 func splitOnConjunctions(query string) ([]string, []string) {
 	var parts []string
 	var conjunctions []string
@@ -1079,6 +1086,7 @@ func splitOnConjunctions(query string) ([]string, []string) {
 	inQuote := false
 	quoteChar := byte(0)
 	parenDepth := 0
+	pendingBetweenAND := 0 // number of upcoming top-level " AND " tokens to skip
 	start := 0
 
 	for i := 0; i < len(query); i++ {
@@ -1106,9 +1114,21 @@ func splitOnConjunctions(query string) ([]string, []string) {
 			continue
 		}
 
+		// Detect a top-level BETWEEN keyword so we can skip the AND that
+		// belongs to its range clause (column BETWEEN x AND y).
+		const between = " BETWEEN "
+		if i+len(between) <= len(upper) && upper[i:i+len(between)] == between {
+			pendingBetweenAND++
+		}
+
 		// Check for AND / OR at word boundaries.
 		for _, conj := range []string{" AND ", " OR "} {
 			if i+len(conj) <= len(upper) && upper[i:i+len(conj)] == conj {
+				if conj == " AND " && pendingBetweenAND > 0 {
+					pendingBetweenAND--
+					i += len(conj) - 1
+					break
+				}
 				parts = append(parts, query[start:i])
 				conjunctions = append(conjunctions, strings.TrimSpace(conj))
 				i += len(conj) - 1
@@ -1160,6 +1180,40 @@ func parseFilterPart(part string, paramIdx int) (string, []interface{}, int, err
 
 	upperPart := strings.ToUpper(strings.TrimSpace(part))
 
+	// NOT prefix: "NOT <expr>" — recursively parse the inner expression and
+	// negate it. Skipped when the part is actually "col NOT IN (...)" or
+	// "col NOT LIKE 'x'" (those are handled by their own branches below) by
+	// requiring NOT at the absolute start of the part.
+	if strings.HasPrefix(upperPart, "NOT ") {
+		inner := strings.TrimSpace(part[4:])
+		clause, args, nextIdx, err := parseFilterPart(inner, paramIdx)
+		if err != nil {
+			return "", nil, 0, err
+		}
+		return "NOT (" + clause + ")", args, nextIdx, nil
+	}
+
+	// BETWEEN: column BETWEEN val1 AND val2
+	if idx := indexOperator(upperPart, "BETWEEN"); idx > 0 {
+		col := strings.TrimSpace(part[:idx])
+		rest := strings.TrimSpace(part[idx+len("BETWEEN"):])
+		// Split rest on the (only) top-level AND.
+		andIdx := indexOperator(strings.ToUpper(rest), "AND")
+		if andIdx <= 0 {
+			return "", nil, 0, fmt.Errorf("BETWEEN requires 'low AND high': %q", part)
+		}
+		lo := strings.TrimSpace(rest[:andIdx])
+		hi := strings.TrimSpace(rest[andIdx+len("AND"):])
+		safeCol, err := validateColumn(col)
+		if err != nil {
+			return "", nil, 0, err
+		}
+		loVal := stripQuotes(lo)
+		hiVal := stripQuotes(hi)
+		clause := fmt.Sprintf("%s BETWEEN $%d AND $%d", safeCol, paramIdx, paramIdx+1)
+		return clause, []interface{}{loVal, hiVal}, paramIdx + 2, nil
+	}
+
 	// IS NULL / IS NOT NULL
 	if strings.HasSuffix(upperPart, " IS NOT NULL") {
 		col := strings.TrimSpace(part[:len(part)-len(" IS NOT NULL")])
@@ -1207,7 +1261,9 @@ func parseFilterPart(part string, paramIdx int) (string, []interface{}, int, err
 	// Multi-char symbol ops must be tried before single-char to avoid
 	// e.g. ">" matching inside "->>" in a payload JSONB path.
 	// Regex ops (~, !~, ~*, !~*) must come before ">" and "!=" to avoid false splits.
-	for _, op := range []string{"NOT ILIKE", "NOT LIKE", "ILIKE", "LIKE", "!~*", "!~", "~*", "~", "!=", "<>", "<=", ">=", "=", "<", ">"} {
+	// JSONB ops (@>, ?) sit alongside the comparison ops — both build a
+	// "col OP $N" clause, with @> additionally casting the parameter to jsonb.
+	for _, op := range []string{"NOT ILIKE", "NOT LIKE", "ILIKE", "LIKE", "!~*", "!~", "~*", "~", "@>", "!=", "<>", "<=", ">=", "=", "<", ">", "?"} {
 		opUpper := strings.ToUpper(op)
 		var idx int
 		if len(op) > 1 && (op[0] >= 'A' && op[0] <= 'Z' || op[0] >= 'a' && op[0] <= 'z') {
@@ -1286,6 +1342,12 @@ func buildComparison(col, op, rawVal string, paramIdx int) (string, []interface{
 		return "", nil, 0, err
 	}
 	val := stripQuotes(rawVal)
+	// JSONB containment takes a jsonb operand; cast the parameter so the
+	// caller can pass a JSON string literal like '{"is_memfd": true}'.
+	if op == "@>" {
+		clause := fmt.Sprintf("%s @> $%d::jsonb", safeCol, paramIdx)
+		return clause, []interface{}{val}, paramIdx + 1, nil
+	}
 	clause := fmt.Sprintf("%s %s $%d", safeCol, op, paramIdx)
 	return clause, []interface{}{val}, paramIdx + 1, nil
 }
@@ -1389,6 +1451,93 @@ func parseINValues(s string) ([]string, error) {
 		return nil, fmt.Errorf("IN clause requires at least one value")
 	}
 	return vals, nil
+}
+
+// blockedHuntKeywords are SQL words that must not appear unquoted in a hunt
+// query. They're rejected before parsing as defense in depth — the parser
+// already parameterises values, but a blocklist guards against any future
+// parser bug that lets a value flow into raw SQL.
+var blockedHuntKeywords = []string{
+	"DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "TRUNCATE",
+	"CREATE", "REPLACE", "GRANT", "REVOKE", "EXEC", "EXECUTE",
+	"CALL", "COPY", "MERGE", "VACUUM", "ANALYZE", "REINDEX",
+}
+
+// findBlockedKeyword returns the first blocked keyword found outside quoted
+// strings, or "" if none are present.
+func findBlockedKeyword(query string) string {
+	stripped := stripQuotedStrings(query)
+	upper := strings.ToUpper(stripped)
+	for _, kw := range blockedHuntKeywords {
+		if containsWord(upper, kw) {
+			return kw
+		}
+	}
+	return ""
+}
+
+// stripQuotedStrings replaces quoted string content with spaces so a keyword
+// search can ignore literal values. Both single-quoted (SQL) and double-quoted
+// (identifiers) strings are stripped. Doubled single quotes ('' inside '...')
+// are treated as escapes.
+func stripQuotedStrings(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	inQuote := false
+	quoteCh := byte(0)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inQuote {
+			if c == quoteCh {
+				if quoteCh == '\'' && i+1 < len(s) && s[i+1] == '\'' {
+					i++ // escaped '' — stay inside the string
+					b.WriteByte(' ')
+					continue
+				}
+				inQuote = false
+				b.WriteByte(' ')
+				continue
+			}
+			b.WriteByte(' ')
+			continue
+		}
+		if c == '\'' || c == '"' {
+			inQuote = true
+			quoteCh = c
+			b.WriteByte(' ')
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+// containsWord reports whether s contains word as a standalone token, where
+// token boundaries are non-letter/digit/underscore characters or string edges.
+func containsWord(s, word string) bool {
+	idx := 0
+	for {
+		i := strings.Index(s[idx:], word)
+		if i < 0 {
+			return false
+		}
+		abs := idx + i
+		before := abs == 0 || !isWordByte(s[abs-1])
+		end := abs + len(word)
+		after := end >= len(s) || !isWordByte(s[end])
+		if before && after {
+			return true
+		}
+		idx = abs + 1
+		if idx >= len(s) {
+			return false
+		}
+	}
+}
+
+func isWordByte(c byte) bool {
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+		(c >= '0' && c <= '9') || c == '_'
 }
 
 // stripQuotes removes surrounding single quotes from a value.
