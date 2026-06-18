@@ -25,8 +25,39 @@ from flask import (Flask, render_template, jsonify, request,
 from flask_wtf.csrf import CSRFProtect
 from functools import wraps
 
+
+def _load_or_create_secret():
+    """Return a stable Flask session secret.
+
+    Order of precedence:
+      1. TraceGuard_ADMIN_SECRET env var (highest — for deployments / CI).
+      2. .admin_secret file next to this script (auto-generated and reused so
+         restarts don't invalidate existing browser sessions and CSRF tokens).
+      3. New random secret, written to .admin_secret with mode 0600.
+    """
+    env = os.environ.get("TraceGuard_ADMIN_SECRET")
+    if env:
+        return env
+    secret_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".admin_secret")
+    try:
+        with open(secret_path, "r", encoding="utf-8") as f:
+            existing = f.read().strip()
+        if len(existing) >= 32:
+            return existing
+    except FileNotFoundError:
+        pass
+    new_secret = secrets.token_hex(32)
+    # Write 0600 so only the running user can read it.
+    fd = os.open(secret_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, new_secret.encode("utf-8"))
+    finally:
+        os.close(fd)
+    return new_secret
+
+
 app = Flask(__name__)
-app.secret_key = os.environ.get("TraceGuard_ADMIN_SECRET") or secrets.token_hex(32)
+app.secret_key = _load_or_create_secret()
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 # Secure by default — set TraceGuard_COOKIE_SECURE=false only for plain-HTTP dev environments.
