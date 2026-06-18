@@ -1474,7 +1474,7 @@ func (s *Server) handleDashboard(c *gin.Context) {
 	}
 
 	alertStats, _ := s.store.AlertStats(ctx)
-	recentAlerts, _ := s.store.QueryAlerts(ctx, store.QueryAlertsParams{
+	recentAlerts, _, _ := s.store.QueryAlerts(ctx, store.QueryAlertsParams{
 		Status: "OPEN", Severity: 3, Limit: 10,
 	})
 	eventCount, _ := s.store.CountEvents(ctx, "", sinceTime)
@@ -1817,12 +1817,12 @@ func (s *Server) handleListEvents(c *gin.Context) {
 		p.AlertID = aid
 	}
 
-	events, err := s.store.QueryEvents(c.Request.Context(), p)
+	events, total, err := s.store.QueryEvents(c.Request.Context(), p)
 	if err != nil {
 		s.jsonError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"events": events, "total": len(events)})
+	c.JSON(http.StatusOK, gin.H{"events": events, "total": total, "limit": p.Limit, "offset": p.Offset})
 }
 
 func (s *Server) handleGetEvent(c *gin.Context) {
@@ -1881,12 +1881,12 @@ func (s *Server) handleListAlerts(c *gin.Context) {
 			p.Severity = int16(n)
 		}
 	}
-	alerts, err := s.store.QueryAlerts(c.Request.Context(), p)
+	alerts, total, err := s.store.QueryAlerts(c.Request.Context(), p)
 	if err != nil {
 		s.jsonError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"alerts": alerts, "total": len(alerts)})
+	c.JSON(http.StatusOK, gin.H{"alerts": alerts, "total": total, "limit": p.Limit, "offset": p.Offset})
 }
 
 func (s *Server) handleGetAlert(c *gin.Context) {
@@ -2048,7 +2048,7 @@ func (s *Server) handleGetAlertTimeline(c *gin.Context) {
 	window := time.Duration(intQuery(c, "window_minutes", 30)) * time.Minute
 	before := alert.FirstSeen.Add(-window)
 	after  := alert.FirstSeen.Add(+window)
-	events, err := s.store.QueryEvents(ctx, store.QueryEventsParams{
+	events, total, err := s.store.QueryEvents(ctx, store.QueryEventsParams{
 		AgentID: alert.AgentID, Since: &before, Until: &after, Limit: 500,
 	})
 	if err != nil {
@@ -2058,7 +2058,7 @@ func (s *Server) handleGetAlertTimeline(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"alert":        alert,
 		"events":       events,
-		"total":        len(events),
+		"total":        total,
 		"window_start": before,
 		"window_end":   after,
 	})
@@ -2467,20 +2467,22 @@ func (s *Server) handleListIncidents(c *gin.Context) {
 	tenantID, _ := c.Get("tenant_id")
 	tid, _ := tenantID.(string)
 	sev, _ := strconv.Atoi(c.Query("min_severity"))
-	incidents, err := s.store.QueryIncidents(c.Request.Context(), store.QueryIncidentsParams{
+	limit := intQuery(c, "limit", 50)
+	offset := intQuery(c, "offset", 0)
+	incidents, total, err := s.store.QueryIncidents(c.Request.Context(), store.QueryIncidentsParams{
 		TenantID: tid,
 		Search:   c.Query("search"),
 		Status:   c.Query("status"),
 		Severity: int16(sev),
 		AgentID:  c.Query("agent_id"),
-		Limit:    intQuery(c, "limit", 50),
-		Offset:   intQuery(c, "offset", 0),
+		Limit:    limit,
+		Offset:   offset,
 	})
 	if err != nil {
 		s.jsonError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"incidents": incidents, "total": len(incidents)})
+	c.JSON(http.StatusOK, gin.H{"incidents": incidents, "total": total, "limit": limit, "offset": offset})
 }
 
 func (s *Server) handleGetIncident(c *gin.Context) {
@@ -3319,12 +3321,12 @@ func (s *Server) handleListAgentPackages(c *gin.Context) {
 	limit := intQuery(c, "limit", 500)
 	offset := intQuery(c, "offset", 0)
 
-	pkgs, err := s.store.ListAgentPackages(c.Request.Context(), agentID, limit, offset)
+	pkgs, total, err := s.store.ListAgentPackages(c.Request.Context(), agentID, limit, offset)
 	if err != nil {
 		s.jsonError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"packages": pkgs, "total": len(pkgs)})
+	c.JSON(http.StatusOK, gin.H{"packages": pkgs, "total": total, "limit": limit, "offset": offset})
 }
 
 // POST /api/v1/agents/:id/scan-packages
@@ -3389,7 +3391,7 @@ func (s *Server) handleListAgentVulns(c *gin.Context) {
 	limit := intQuery(c, "limit", 50)
 	offset := intQuery(c, "offset", 0)
 
-	vulns, err := s.store.QueryVulnerabilities(c.Request.Context(), agentID, limit, offset)
+	vulns, total, err := s.store.QueryVulnerabilities(c.Request.Context(), agentID, limit, offset)
 	if err != nil {
 		s.jsonError(c, err)
 		return
@@ -3403,7 +3405,9 @@ func (s *Server) handleListAgentVulns(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"vulnerabilities": vulns,
-		"total":           len(vulns),
+		"total":           total,
+		"limit":           limit,
+		"offset":          offset,
 		"stats":           stats,
 	})
 }
@@ -3415,12 +3419,12 @@ func (s *Server) handleListVulnerabilities(c *gin.Context) {
 	limit := intQuery(c, "limit", 50)
 	offset := intQuery(c, "offset", 0)
 
-	vulns, err := s.store.QueryVulnerabilitiesFiltered(c.Request.Context(), agentID, severity, limit, offset)
+	vulns, total, err := s.store.QueryVulnerabilitiesFiltered(c.Request.Context(), agentID, severity, limit, offset)
 	if err != nil {
 		s.jsonError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"vulnerabilities": vulns, "total": len(vulns)})
+	c.JSON(http.StatusOK, gin.H{"vulnerabilities": vulns, "total": total, "limit": limit, "offset": offset})
 }
 
 // ─── CVE Cache ───────────────────────────────────────────────────────────────
@@ -3507,12 +3511,12 @@ func (s *Server) handleListIOCs(c *gin.Context) {
 	limit := intQuery(c, "limit", 100)
 	offset := intQuery(c, "offset", 0)
 
-	iocs, err := s.store.ListIOCs(c.Request.Context(), c.GetString("tenant_id"), iocType, source, search, enabledOnly, limit, offset)
+	iocs, total, err := s.store.ListIOCs(c.Request.Context(), c.GetString("tenant_id"), iocType, source, search, enabledOnly, limit, offset)
 	if err != nil {
 		s.jsonError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"iocs": iocs, "total": len(iocs)})
+	c.JSON(http.StatusOK, gin.H{"iocs": iocs, "total": total, "limit": limit, "offset": offset})
 }
 
 // GET /api/v1/iocs/stats

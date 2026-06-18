@@ -189,37 +189,37 @@ type QueryEventsParams struct {
 	Offset     int
 }
 
-func (s *Store) QueryEvents(ctx context.Context, p QueryEventsParams) ([]models.Event, error) {
+func (s *Store) QueryEvents(ctx context.Context, p QueryEventsParams) ([]models.Event, int64, error) {
 	if p.Limit == 0 {
 		p.Limit = 50
 	}
 
-	query := `SELECT * FROM events WHERE 1=1`
+	where := ` WHERE 1=1`
 	args := []interface{}{}
 	argN := 1
 
 	if p.AgentID != "" {
-		query += fmt.Sprintf(` AND agent_id = $%d`, argN)
+		where += fmt.Sprintf(` AND agent_id = $%d`, argN)
 		args = append(args, p.AgentID)
 		argN++
 	}
 	if len(p.EventTypes) > 0 {
-		query += fmt.Sprintf(` AND event_type = ANY($%d)`, argN)
+		where += fmt.Sprintf(` AND event_type = ANY($%d)`, argN)
 		args = append(args, pq.Array(p.EventTypes))
 		argN++
 	}
 	if p.Since != nil {
-		query += fmt.Sprintf(` AND timestamp >= $%d`, argN)
+		where += fmt.Sprintf(` AND timestamp >= $%d`, argN)
 		args = append(args, *p.Since)
 		argN++
 	}
 	if p.Until != nil {
-		query += fmt.Sprintf(` AND timestamp <= $%d`, argN)
+		where += fmt.Sprintf(` AND timestamp <= $%d`, argN)
 		args = append(args, *p.Until)
 		argN++
 	}
 	if p.Search != "" {
-		query += fmt.Sprintf(` AND payload::text ILIKE $%d`, argN)
+		where += fmt.Sprintf(` AND payload::text ILIKE $%d`, argN)
 		args = append(args, "%"+p.Search+"%")
 		argN++
 	}
@@ -227,39 +227,45 @@ func (s *Store) QueryEvents(ctx context.Context, p QueryEventsParams) ([]models.
 	// Matches payload->>'process' JSONB field containing "pid":<value>.
 	if p.PID != "" {
 		if _, pidErr := strconv.Atoi(p.PID); pidErr != nil {
-			return nil, fmt.Errorf("invalid pid: must be a number")
+			return nil, 0, fmt.Errorf("invalid pid: must be a number")
 		}
-		query += fmt.Sprintf(` AND payload::text ILIKE $%d`, argN)
+		where += fmt.Sprintf(` AND payload::text ILIKE $%d`, argN)
 		args = append(args, `%"pid":`+p.PID+`%`)
 		argN++
 	}
 	if p.Hostname != "" {
-		query += fmt.Sprintf(` AND hostname = $%d`, argN)
+		where += fmt.Sprintf(` AND hostname = $%d`, argN)
 		args = append(args, p.Hostname)
 		argN++
 	}
 	if p.AlertID != "" {
-		query += fmt.Sprintf(` AND alert_id = $%d`, argN)
+		where += fmt.Sprintf(` AND alert_id = $%d`, argN)
 		args = append(args, p.AlertID)
 		argN++
 	}
 	if len(p.EventIDs) > 0 {
-		query += fmt.Sprintf(` AND id = ANY($%d)`, argN)
+		where += fmt.Sprintf(` AND id = ANY($%d)`, argN)
 		args = append(args, pq.Array(p.EventIDs))
 		argN++
 	}
 	if p.TenantID != "" {
-		query += fmt.Sprintf(` AND (tenant_id = $%d OR tenant_id = 'default' OR $%d = 'default')`, argN, argN)
+		where += fmt.Sprintf(` AND (tenant_id = $%d OR tenant_id = 'default' OR $%d = 'default')`, argN, argN)
 		args = append(args, p.TenantID)
 		argN++
 	}
 
-	query += fmt.Sprintf(` ORDER BY timestamp DESC LIMIT $%d OFFSET $%d`, argN, argN+1)
-	args = append(args, p.Limit, p.Offset)
+	var total int64
+	if err := s.rdb().GetContext(ctx, &total, `SELECT COUNT(*) FROM events`+where, args...); err != nil {
+		return nil, 0, err
+	}
+
+	listQ := `SELECT * FROM events` + where +
+		fmt.Sprintf(` ORDER BY timestamp DESC LIMIT $%d OFFSET $%d`, argN, argN+1)
+	listArgs := append(append([]interface{}{}, args...), p.Limit, p.Offset)
 
 	var events []models.Event
-	err := s.rdb().SelectContext(ctx, &events, query, args...)
-	return events, err
+	err := s.rdb().SelectContext(ctx, &events, listQ, listArgs...)
+	return events, total, err
 }
 
 func (s *Store) GetEvent(ctx context.Context, id, tenantID string) (*models.Event, error) {
@@ -372,57 +378,63 @@ type QueryAlertsParams struct {
 	Offset   int
 }
 
-func (s *Store) QueryAlerts(ctx context.Context, p QueryAlertsParams) ([]models.Alert, error) {
+func (s *Store) QueryAlerts(ctx context.Context, p QueryAlertsParams) ([]models.Alert, int64, error) {
 	if p.Limit == 0 {
 		p.Limit = 50
 	}
 
-	query := `SELECT * FROM alerts WHERE 1=1`
+	where := ` WHERE 1=1`
 	args := []interface{}{}
 	argN := 1
 
 	if p.AgentID != "" {
-		query += fmt.Sprintf(` AND agent_id = $%d`, argN)
+		where += fmt.Sprintf(` AND agent_id = $%d`, argN)
 		args = append(args, p.AgentID)
 		argN++
 	}
 	if p.Status != "" {
-		query += fmt.Sprintf(` AND status = $%d`, argN)
+		where += fmt.Sprintf(` AND status = $%d`, argN)
 		args = append(args, p.Status)
 		argN++
 	}
 	if p.Severity > 0 {
-		query += fmt.Sprintf(` AND severity >= $%d`, argN)
+		where += fmt.Sprintf(` AND severity >= $%d`, argN)
 		args = append(args, p.Severity)
 		argN++
 	}
 	if p.RuleID != "" {
-		query += fmt.Sprintf(` AND rule_id = $%d`, argN)
+		where += fmt.Sprintf(` AND rule_id = $%d`, argN)
 		args = append(args, p.RuleID)
 		argN++
 	}
 	if p.Search != "" {
-		query += fmt.Sprintf(` AND (title ILIKE $%d OR rule_name ILIKE $%d OR hostname ILIKE $%d)`, argN, argN, argN)
+		where += fmt.Sprintf(` AND (title ILIKE $%d OR rule_name ILIKE $%d OR hostname ILIKE $%d)`, argN, argN, argN)
 		args = append(args, "%"+p.Search+"%")
 		argN++
 	}
 	if p.TenantID != "" {
-		query += fmt.Sprintf(" AND tenant_id = $%d", argN)
+		where += fmt.Sprintf(" AND tenant_id = $%d", argN)
 		args = append(args, p.TenantID)
 		argN++
 	}
 	if p.ChainID != "" {
-		query += fmt.Sprintf(" AND chain_id = $%d", argN)
+		where += fmt.Sprintf(" AND chain_id = $%d", argN)
 		args = append(args, p.ChainID)
 		argN++
 	}
 
-	query += fmt.Sprintf(` ORDER BY first_seen DESC LIMIT $%d OFFSET $%d`, argN, argN+1)
-	args = append(args, p.Limit, p.Offset)
+	var total int64
+	if err := s.rdb().GetContext(ctx, &total, `SELECT COUNT(*) FROM alerts`+where, args...); err != nil {
+		return nil, 0, err
+	}
+
+	listQ := `SELECT * FROM alerts` + where +
+		fmt.Sprintf(` ORDER BY first_seen DESC LIMIT $%d OFFSET $%d`, argN, argN+1)
+	listArgs := append(append([]interface{}{}, args...), p.Limit, p.Offset)
 
 	var alerts []models.Alert
-	err := s.rdb().SelectContext(ctx, &alerts, query, args...)
-	return alerts, err
+	err := s.rdb().SelectContext(ctx, &alerts, listQ, listArgs...)
+	return alerts, total, err
 }
 
 // UpdateAlertEnrichments merges threat intel results into alerts.enrichments.
@@ -757,7 +769,7 @@ func (s *Store) BacktestRule(ctx context.Context, p BacktestParams) (int, []mode
 	if len(p.EventTypes) > 0 && p.EventTypes[0] != "*" {
 		params.EventTypes = p.EventTypes
 	}
-	events, err := s.QueryEvents(ctx, params)
+	events, _, err := s.QueryEvents(ctx, params)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -1891,47 +1903,49 @@ type QueryIncidentsParams struct {
 }
 
 // QueryIncidents returns incidents matching the given filters.
-func (s *Store) QueryIncidents(ctx context.Context, p QueryIncidentsParams) ([]models.Incident, error) {
+func (s *Store) QueryIncidents(ctx context.Context, p QueryIncidentsParams) ([]models.Incident, int64, error) {
 	if p.Limit == 0 {
 		p.Limit = 50
 	}
 	if p.TenantID == "" {
 		p.TenantID = "default"
 	}
-	query := `SELECT * FROM incidents WHERE (tenant_id=$1 OR tenant_id='default' OR $1='default')`
+	where := ` WHERE (tenant_id=$1 OR tenant_id='default' OR $1='default')`
 	args := []interface{}{p.TenantID}
 	n := 1
 	if p.Status != "" {
 		n++
-		query += fmt.Sprintf(` AND status=$%d`, n)
+		where += fmt.Sprintf(` AND status=$%d`, n)
 		args = append(args, p.Status)
 	}
 	if p.Severity > 0 {
 		n++
-		query += fmt.Sprintf(` AND severity >= $%d`, n)
+		where += fmt.Sprintf(` AND severity >= $%d`, n)
 		args = append(args, p.Severity)
 	}
 	if p.AgentID != "" {
 		n++
-		query += fmt.Sprintf(` AND $%d = ANY(agent_ids)`, n)
+		where += fmt.Sprintf(` AND $%d = ANY(agent_ids)`, n)
 		args = append(args, p.AgentID)
 	}
 	if p.Search != "" {
 		n++
-		query += fmt.Sprintf(` AND (title ILIKE $%d OR description ILIKE $%d)`, n, n)
+		where += fmt.Sprintf(` AND (title ILIKE $%d OR description ILIKE $%d)`, n, n)
 		args = append(args, "%"+p.Search+"%")
 	}
-	query += ` ORDER BY last_seen DESC`
-	n++
-	query += fmt.Sprintf(` LIMIT $%d`, n)
-	args = append(args, p.Limit)
-	n++
-	query += fmt.Sprintf(` OFFSET $%d`, n)
-	args = append(args, p.Offset)
+
+	var total int64
+	if err := s.rdb().GetContext(ctx, &total, `SELECT COUNT(*) FROM incidents`+where, args...); err != nil {
+		return nil, 0, err
+	}
+
+	listQ := `SELECT * FROM incidents` + where + ` ORDER BY last_seen DESC` +
+		fmt.Sprintf(` LIMIT $%d OFFSET $%d`, n+1, n+2)
+	listArgs := append(append([]interface{}{}, args...), p.Limit, p.Offset)
 
 	var incidents []models.Incident
-	err := s.rdb().SelectContext(ctx, &incidents, query, args...)
-	return incidents, err
+	err := s.rdb().SelectContext(ctx, &incidents, listQ, listArgs...)
+	return incidents, total, err
 }
 
 // GetIncident returns a single incident by ID.
@@ -2153,15 +2167,20 @@ func (s *Store) UpsertAgentPackages(ctx context.Context, agentID string, package
 }
 
 // ListAgentPackages returns packages for a specific agent.
-func (s *Store) ListAgentPackages(ctx context.Context, agentID string, limit, offset int) ([]models.AgentPackage, error) {
+func (s *Store) ListAgentPackages(ctx context.Context, agentID string, limit, offset int) ([]models.AgentPackage, int64, error) {
 	if limit == 0 {
 		limit = 500
+	}
+	var total int64
+	if err := s.rdb().GetContext(ctx, &total,
+		`SELECT COUNT(*) FROM agent_packages WHERE agent_id=$1`, agentID); err != nil {
+		return nil, 0, err
 	}
 	var pkgs []models.AgentPackage
 	err := s.rdb().SelectContext(ctx, &pkgs, `
 		SELECT * FROM agent_packages WHERE agent_id=$1
 		ORDER BY name ASC LIMIT $2 OFFSET $3`, agentID, limit, offset)
-	return pkgs, err
+	return pkgs, total, err
 }
 
 // ─── Vulnerabilities ──────────────────────────────────────────────────────────
@@ -2176,54 +2195,66 @@ func (s *Store) InsertVulnerability(ctx context.Context, v *models.Vulnerability
 }
 
 // QueryVulnerabilities returns vulnerabilities for an agent with pagination.
-func (s *Store) QueryVulnerabilities(ctx context.Context, agentID string, limit, offset int) ([]models.Vulnerability, error) {
+func (s *Store) QueryVulnerabilities(ctx context.Context, agentID string, limit, offset int) ([]models.Vulnerability, int64, error) {
 	if limit == 0 {
 		limit = 50
 	}
-	query := `SELECT * FROM vulnerabilities WHERE 1=1`
+	where := ` WHERE 1=1`
 	args := []interface{}{}
 	argN := 1
 
 	if agentID != "" {
-		query += fmt.Sprintf(` AND agent_id = $%d`, argN)
+		where += fmt.Sprintf(` AND agent_id = $%d`, argN)
 		args = append(args, agentID)
 		argN++
 	}
 
-	query += fmt.Sprintf(` ORDER BY detected_at DESC LIMIT $%d OFFSET $%d`, argN, argN+1)
-	args = append(args, limit, offset)
+	var total int64
+	if err := s.rdb().GetContext(ctx, &total, `SELECT COUNT(*) FROM vulnerabilities`+where, args...); err != nil {
+		return nil, 0, err
+	}
+
+	listQ := `SELECT * FROM vulnerabilities` + where +
+		fmt.Sprintf(` ORDER BY detected_at DESC LIMIT $%d OFFSET $%d`, argN, argN+1)
+	listArgs := append(append([]interface{}{}, args...), limit, offset)
 
 	var vulns []models.Vulnerability
-	err := s.rdb().SelectContext(ctx, &vulns, query, args...)
-	return vulns, err
+	err := s.rdb().SelectContext(ctx, &vulns, listQ, listArgs...)
+	return vulns, total, err
 }
 
 // QueryVulnerabilitiesFiltered returns vulnerabilities with optional agent_id and severity filters.
-func (s *Store) QueryVulnerabilitiesFiltered(ctx context.Context, agentID, severity string, limit, offset int) ([]models.Vulnerability, error) {
+func (s *Store) QueryVulnerabilitiesFiltered(ctx context.Context, agentID, severity string, limit, offset int) ([]models.Vulnerability, int64, error) {
 	if limit == 0 {
 		limit = 50
 	}
-	query := `SELECT * FROM vulnerabilities WHERE 1=1`
+	where := ` WHERE 1=1`
 	args := []interface{}{}
 	argN := 1
 
 	if agentID != "" {
-		query += fmt.Sprintf(` AND agent_id = $%d`, argN)
+		where += fmt.Sprintf(` AND agent_id = $%d`, argN)
 		args = append(args, agentID)
 		argN++
 	}
 	if severity != "" {
-		query += fmt.Sprintf(` AND severity = $%d`, argN)
+		where += fmt.Sprintf(` AND severity = $%d`, argN)
 		args = append(args, severity)
 		argN++
 	}
 
-	query += fmt.Sprintf(` ORDER BY detected_at DESC LIMIT $%d OFFSET $%d`, argN, argN+1)
-	args = append(args, limit, offset)
+	var total int64
+	if err := s.rdb().GetContext(ctx, &total, `SELECT COUNT(*) FROM vulnerabilities`+where, args...); err != nil {
+		return nil, 0, err
+	}
+
+	listQ := `SELECT * FROM vulnerabilities` + where +
+		fmt.Sprintf(` ORDER BY detected_at DESC LIMIT $%d OFFSET $%d`, argN, argN+1)
+	listArgs := append(append([]interface{}{}, args...), limit, offset)
 
 	var vulns []models.Vulnerability
-	err := s.rdb().SelectContext(ctx, &vulns, query, args...)
-	return vulns, err
+	err := s.rdb().SelectContext(ctx, &vulns, listQ, listArgs...)
+	return vulns, total, err
 }
 
 // GetVulnStats returns vulnerability counts by severity for an agent.
@@ -2335,49 +2366,56 @@ func (s *Store) InsertIOCBatch(ctx context.Context, iocs []models.IOC) (int, err
 	return count, tx.Commit()
 }
 
-func (s *Store) ListIOCs(ctx context.Context, tenantID, iocType, source, search string, enabledOnly bool, limit, offset int) ([]models.IOC, error) {
+func (s *Store) ListIOCs(ctx context.Context, tenantID, iocType, source, search string, enabledOnly bool, limit, offset int) ([]models.IOC, int64, error) {
 	if tenantID == "" {
 		tenantID = "default"
 	}
-	q := "SELECT * FROM iocs WHERE (tenant_id=$1 OR tenant_id='default' OR $1='default')"
+	where := " WHERE (tenant_id=$1 OR tenant_id='default' OR $1='default')"
 	args := []interface{}{tenantID}
 	n := 1
 
 	if iocType != "" {
 		n++
-		q += fmt.Sprintf(" AND type=$%d", n)
+		where += fmt.Sprintf(" AND type=$%d", n)
 		args = append(args, iocType)
 	}
 	if source != "" {
 		n++
-		q += fmt.Sprintf(" AND source=$%d", n)
+		where += fmt.Sprintf(" AND source=$%d", n)
 		args = append(args, source)
 	}
 	if enabledOnly {
-		q += " AND enabled=TRUE"
+		where += " AND enabled=TRUE"
 	}
 	if search != "" {
 		n++
-		q += fmt.Sprintf(" AND (value ILIKE $%d OR source ILIKE $%d)", n, n)
+		where += fmt.Sprintf(" AND (value ILIKE $%d OR source ILIKE $%d)", n, n)
 		args = append(args, "%"+search+"%")
 	}
-	q += " ORDER BY created_at DESC"
+
+	var total int64
+	if err := s.rdb().GetContext(ctx, &total, "SELECT COUNT(*) FROM iocs"+where, args...); err != nil {
+		return nil, 0, err
+	}
+
 	const maxIOCLimit = 1000
 	if limit <= 0 || limit > maxIOCLimit {
 		limit = maxIOCLimit
 	}
+	listQ := "SELECT * FROM iocs" + where + " ORDER BY created_at DESC"
+	listArgs := append([]interface{}{}, args...)
 	n++
-	q += fmt.Sprintf(" LIMIT $%d", n)
-	args = append(args, limit)
+	listQ += fmt.Sprintf(" LIMIT $%d", n)
+	listArgs = append(listArgs, limit)
 	if offset > 0 {
 		n++
-		q += fmt.Sprintf(" OFFSET $%d", n)
-		args = append(args, offset)
+		listQ += fmt.Sprintf(" OFFSET $%d", n)
+		listArgs = append(listArgs, offset)
 	}
 
 	var iocs []models.IOC
-	err := s.rdb().SelectContext(ctx, &iocs, q, args...)
-	return iocs, err
+	err := s.rdb().SelectContext(ctx, &iocs, listQ, listArgs...)
+	return iocs, total, err
 }
 
 func (s *Store) GetIOC(ctx context.Context, id string) (*models.IOC, error) {
@@ -4232,7 +4270,7 @@ func (s *Store) ComputeAgentAttackSurface(ctx context.Context, agentID string) (
 
 	// Exposed vulns: vulnerabilities whose package is running on an open port.
 	// Match heuristically: well-known service→port mapping.
-	vulns, err := s.QueryVulnerabilities(ctx, agentID, 200, 0)
+	vulns, _, err := s.QueryVulnerabilities(ctx, agentID, 200, 0)
 	if err != nil {
 		return openPorts, nil, err
 	}

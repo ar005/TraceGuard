@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,6 +38,12 @@ import (
 
 const pgChannel = "edr_events"
 
+// EventFetcher looks up a full event by ID. The broker uses it to rehydrate
+// payloads that were truncated to fit pg_notify's 8 kB limit on the way in.
+type EventFetcher interface {
+	GetEvent(ctx context.Context, id, tenantID string) (*models.Event, error)
+}
+
 // Broker fans out events to all connected SSE clients via PostgreSQL LISTEN/NOTIFY.
 type Broker struct {
 	mu      sync.RWMutex
@@ -44,6 +51,14 @@ type Broker struct {
 	log     zerolog.Logger
 	db      *sqlx.DB
 	dsn     string
+	fetcher EventFetcher
+}
+
+// SetEventFetcher wires a store lookup for rehydrating truncated notifications.
+// Safe to call once after New() and before Start(). If unset, the broker fans
+// out the slim id-only marker as-is.
+func (b *Broker) SetEventFetcher(f EventFetcher) {
+	b.fetcher = f
 }
 
 // New creates an SSE Broker. Call Start(ctx) after creation to begin listening.
@@ -110,10 +125,48 @@ func (b *Broker) listenLoop(ctx context.Context) {
 			if n == nil {
 				continue
 			}
-			msg := []byte(fmt.Sprintf("data: %s\n\n", n.Extra))
+			payload := b.rehydrate(n.Extra)
+			msg := []byte(fmt.Sprintf("data: %s\n\n", payload))
 			b.fanOut(msg)
 		}
 	}
+}
+
+// rehydrate replaces a truncated slim marker with the full event JSON fetched
+// from the store. Without this, payloads larger than ~7.9 kB (pg_notify's
+// 8000-byte limit) reach the UI as { id, event_type, agent_id, _truncated:true }
+// stubs with no payload, breaking event detail and detection rules that ride
+// the SSE stream.
+func (b *Broker) rehydrate(extra string) string {
+	if b.fetcher == nil {
+		return extra
+	}
+	if !strings.Contains(extra, `"_truncated":true`) {
+		return extra
+	}
+	var slim struct {
+		ID       string `json:"id"`
+		TenantID string `json:"tenant_id"`
+	}
+	if err := json.Unmarshal([]byte(extra), &slim); err != nil || slim.ID == "" {
+		return extra
+	}
+	tenant := slim.TenantID
+	if tenant == "" {
+		tenant = "default"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	full, err := b.fetcher.GetEvent(ctx, slim.ID, tenant)
+	if err != nil || full == nil {
+		b.log.Warn().Err(err).Str("event_id", slim.ID).Msg("SSE rehydrate failed; forwarding slim marker")
+		return extra
+	}
+	data, err := json.Marshal(full)
+	if err != nil {
+		return extra
+	}
+	return string(data)
 }
 
 // fanOut delivers msg to all registered SSE clients. Non-blocking: slow clients
@@ -135,14 +188,18 @@ func (b *Broker) Publish(ev *models.Event) {
 	if err != nil {
 		return
 	}
-	// pg_notify payload limit is 8000 bytes.
+	// pg_notify payload limit is 8000 bytes. When over, send a slim marker —
+	// the receiving listener uses SetEventFetcher to rehydrate from the store
+	// before fanning out. tenant_id is included so the lookup respects
+	// multi-tenant isolation.
 	if len(data) > 7900 {
 		slim, _ := json.Marshal(struct {
 			ID        string `json:"id"`
 			EventType string `json:"event_type"`
 			AgentID   string `json:"agent_id"`
+			TenantID  string `json:"tenant_id"`
 			Truncated bool   `json:"_truncated"`
-		}{ev.ID, ev.EventType, ev.AgentID, true})
+		}{ev.ID, ev.EventType, ev.AgentID, ev.TenantID, true})
 		data = slim
 	}
 	// When db is nil (test mode / no PG), fan out directly to in-memory clients.

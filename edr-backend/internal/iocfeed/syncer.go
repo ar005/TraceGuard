@@ -137,8 +137,8 @@ func (s *Syncer) testFeed(ctx context.Context, feed Feed) FeedSyncResult {
 		return r
 	}
 	// Get count from DB for this source.
-	iocs, _ := s.store.ListIOCs(ctx, "default", "", feed.Name, "", false, 0, 0)
-	r.Upserted = len(iocs)
+	_, total, _ := s.store.ListIOCs(ctx, "default", "", feed.Name, "", false, 0, 0)
+	r.Upserted = int(total)
 	r.Parsed = r.Upserted // best approximation after upsert
 	return r
 }

@@ -162,6 +162,24 @@ func main() {
 			Str("username", username).
 			Str("password", password).
 			Msg("╚══════════════════════════════════════════════════════════╝")
+
+		// Also drop the credentials to a file when EDR_AUTH_BOOTSTRAP_FILE is set,
+		// so operators don't have to grep docker logs to find them. The file is
+		// written 0600 and should be deleted after the password is saved.
+		if path := os.Getenv("EDR_AUTH_BOOTSTRAP_FILE"); path != "" {
+			contents := fmt.Sprintf(
+				"# TraceGuard bootstrap admin credentials\n"+
+					"# Created : %s\n"+
+					"# WARNING : this password grants full admin access.\n"+
+					"#           Save it somewhere safe and DELETE this file.\n"+
+					"username=%s\npassword=%s\n",
+				time.Now().UTC().Format(time.RFC3339), username, password)
+			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+				logger.Warn().Err(err).Str("path", path).Msg("bootstrap: failed to write credentials file")
+			} else {
+				logger.Info().Str("path", path).Msg("bootstrap: credentials written to file (mode 0600)")
+			}
+		}
 	}
 
 	// ── Audit Logger ──────────────────────────────────────────────────────────
@@ -177,6 +195,7 @@ func main() {
 		// SSE broker — fans live events to connected browser clients.
 	// SSE broker — backed by PostgreSQL LISTEN/NOTIFY for multi-node fan-out.
 	sseBroker := sse.New(logger, database, cfg.Database.DSNString())
+	sseBroker.SetEventFetcher(st)
 	brokerCtx, brokerCancel := context.WithCancel(context.Background())
 	defer brokerCancel()
 	sseBroker.Start(brokerCtx)
