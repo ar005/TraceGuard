@@ -565,13 +565,18 @@ func (t *GRPCTransport) executeCommand(cmd *liveCommand) *liveResult {
 	}
 
 	execCmd := exec.CommandContext(ctx, cmdName, cmdArgs...)
-	var stdout, stderr bytes.Buffer
-	execCmd.Stdout = &stdout
-	execCmd.Stderr = &stderr
+	// Cap at write-time: an allowed `find /` or `cat /var/log/syslog` would
+	// otherwise buffer the entire subprocess output in agent RAM until the
+	// context timeout fires. cappedBuffer discards bytes past its cap and
+	// reports `len(p)` to the writer so the child never blocks.
+	stdout := newCappedBuffer(1 << 20)  // 1MB
+	stderr := newCappedBuffer(64 << 10) // 64KB
+	execCmd.Stdout = stdout
+	execCmd.Stderr = stderr
 
 	err := execCmd.Run()
-	result.Stdout = truncate(stdout.String(), 1<<20) // 1MB cap
-	result.Stderr = truncate(stderr.String(), 64<<10) // 64KB cap
+	result.Stdout = stdout.String()
+	result.Stderr = stderr.String()
 
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
@@ -592,4 +597,39 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "\n... (truncated)"
+}
+
+// cappedBuffer is an io.Writer that retains at most `max` bytes and discards
+// the rest, while always reporting full success to the writer so the
+// subprocess never blocks. String() appends a truncation marker when needed.
+type cappedBuffer struct {
+	buf       bytes.Buffer
+	max       int
+	truncated bool
+}
+
+func newCappedBuffer(max int) *cappedBuffer {
+	return &cappedBuffer{max: max}
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	remaining := c.max - c.buf.Len()
+	if remaining <= 0 {
+		c.truncated = true
+		return len(p), nil
+	}
+	if len(p) > remaining {
+		c.buf.Write(p[:remaining])
+		c.truncated = true
+		return len(p), nil
+	}
+	c.buf.Write(p)
+	return len(p), nil
+}
+
+func (c *cappedBuffer) String() string {
+	if c.truncated {
+		return c.buf.String() + "\n... (truncated)"
+	}
+	return c.buf.String()
 }

@@ -709,8 +709,17 @@ func (m *Manager) persistStateLocked() {
 		return
 	}
 
-	if err := os.WriteFile(stateFile, data, 0600); err != nil {
-		m.log.Warn().Err(err).Msg("failed to write containment state file")
+	// Atomic write: a crash mid-WriteFile would leave the state file truncated
+	// and `loadAndRestoreState` would silently bring the host back online
+	// un-isolated. Write to a temp file in the same directory, then rename.
+	tmp := stateFile + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		m.log.Warn().Err(err).Msg("failed to write containment state tempfile")
+		return
+	}
+	if err := os.Rename(tmp, stateFile); err != nil {
+		m.log.Warn().Err(err).Msg("failed to rename containment state file")
+		_ = os.Remove(tmp)
 	}
 }
 

@@ -291,6 +291,9 @@ func (m *Monitor) readLoop(ctx context.Context) {
 				return
 			}
 		}
+		if len(record.RawSample) == 0 {
+			continue
+		}
 		if err := m.handleRaw(record.RawSample); err != nil {
 			m.log.Debug().Err(err).Msg("file monitor: handle event")
 		}

@@ -114,7 +114,7 @@ func New(cfg Config, log zerolog.Logger) (*LocalBuffer, error) {
 		<-buf.stopCh
 		cancel()
 	}()
-	buf.wg.Add(1)
+	buf.wg.Add(2)
 	go buf.flushLoop(ctx)
 	go buf.evictionLoop()
 	return buf, nil
@@ -278,6 +278,7 @@ func (b *LocalBuffer) Close() {
 //   - Deletes events that have been sent (keeping last 1h for reference).
 //   - Evicts oldest events if the DB exceeds MaxSizeMB.
 func (b *LocalBuffer) evictionLoop() {
+	defer b.wg.Done()
 	ticker := time.NewTicker(b.cfg.FlushEvery)
 	defer ticker.Stop()
 

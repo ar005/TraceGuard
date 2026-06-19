@@ -156,6 +156,11 @@ func New(cfg *config.Config) (*Agent, error) {
 	contain.RestoreState()
 	trans.SetContainment(contain)
 
+	// Let the transport drain the SQLite backlog on reconnect and mark
+	// successfully-shipped events as sent so durable rows don't grow
+	// unboundedly under normal operation.
+	trans.SetBuffer(bufferAdapter{buf: buf})
+
 	a := &Agent{
 		cfg:           cfg,
 		log:           log,
@@ -1292,3 +1297,27 @@ func (a *Agent) reportForensicsError(ctx context.Context, baseURL, jobID, errMsg
 		resp.Body.Close()
 	}
 }
+
+// bufferAdapter satisfies transport.BufferReader on top of the local SQLite
+// buffer. Kept here (rather than in package transport) so the transport stays
+// decoupled from the buffer implementation.
+type bufferAdapter struct{ buf *buffer.LocalBuffer }
+
+func (a bufferAdapter) ReadUnsent(limit int) ([]transport.BufferedEnvelope, error) {
+	rows, err := a.buf.ReadUnsent(limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]transport.BufferedEnvelope, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, transport.BufferedEnvelope{
+			EventID:   r.EventID,
+			EventType: r.EventType,
+			Timestamp: r.Timestamp,
+			Payload:   r.Payload,
+		})
+	}
+	return out, nil
+}
+
+func (a bufferAdapter) MarkSent(ids []string) error { return a.buf.MarkSent(ids) }

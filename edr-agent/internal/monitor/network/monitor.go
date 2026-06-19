@@ -521,6 +521,10 @@ func (m *Monitor) readLoop(ctx context.Context) {
 			continue
 		}
 
+		if len(record.RawSample) == 0 {
+			continue
+		}
+
 		if err := m.dispatchEvent(record.RawSample); err != nil {
 			m.logger.Debug().Err(err).Msg("dispatch network event failed")
 		}
