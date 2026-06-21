@@ -39,6 +39,7 @@ const (
 	ebpfEventExit   = 2
 	ebpfEventFork   = 3
 	ebpfEventPtrace = 4
+	ebpfEventInject = 5
 )
 
 // ─── Raw kernel structs (little-endian, matches C layout) ────────────────────
@@ -66,6 +67,11 @@ type rawExecEvent struct {
 	ArgsLen     uint32
 	IsMemFD     uint32
 	Flags       uint32
+	// Phase 2 fields — populated only after bpf2go regeneration with the new
+	// process.bpf.c.  Old BPF objects produce shorter events; handleExecEvent
+	// pads with zeros so ScriptPathLen stays 0 and the /proc fallback is used.
+	ScriptPath    [pathMax]byte
+	ScriptPathLen uint32
 }
 
 type rawExitEvent struct {
@@ -96,16 +102,31 @@ type rawForkEvent struct {
 }
 
 type rawPtraceEvent struct {
-	TimestampNs    uint64
-	EventType      uint32
-	TracerPID      uint32
-	TracerPPID     uint32
-	TracerUID      uint32
-	TracerComm     [taskCommLen]byte
-	TargetPID      uint32
-	TargetComm     [taskCommLen]byte
-	PtraceRequest  uint32
-	Flags          uint32
+	TimestampNs   uint64
+	EventType     uint32
+	TracerPID     uint32
+	TracerPPID    uint32
+	TracerUID     uint32
+	TracerComm    [taskCommLen]byte
+	TargetPID     uint32
+	TargetComm    [taskCommLen]byte
+	PtraceRequest uint32
+	Flags         uint32
+}
+
+// rawInjectEvent mirrors the C inject_event struct (56 bytes, no trailing pad).
+// Emitted for process_vm_writev and write-class ptrace (POKETEXT/POKEDATA/
+// SETREGS/ATTACH/SEIZE) after bpf2go regeneration.
+type rawInjectEvent struct {
+	TimestampNs  uint64
+	RemoteAddr   uint64
+	EventType    uint32
+	TracerPID    uint32
+	TracerPPID   uint32
+	TracerUID    uint32
+	TargetPID    uint32
+	InjectMethod uint32
+	TracerComm   [taskCommLen]byte
 }
 
 // bpfObjects is the bpf2go-generated ProcessBPFObjects struct.
@@ -293,6 +314,18 @@ func (m *Monitor) attachProbes() error {
 		m.links = append(m.links, l)
 	}
 
+	// sys_enter_process_vm_writev — Phase 3 injection telemetry.
+	// Uncomment after running: cd edr-agent && go generate ./internal/monitor/process/
+	// (requires clang + bpf2go to regenerate process_bpfel.go with the new program).
+	//
+	// l, err = link.Tracepoint("syscalls", "sys_enter_process_vm_writev",
+	// 	m.objs.TracepointSyscallsSysEnterProcessVmWritev, nil)
+	// if err != nil {
+	// 	m.logger.Warn().Err(err).Msg("process_vm_writev tracepoint unavailable, vm_writev injection events disabled")
+	// } else {
+	// 	m.links = append(m.links, l)
+	// }
+
 	// kprobe/kernel_clone for clone flags
 	l, err = link.Kprobe("kernel_clone", m.objs.KprobeKernelClone, nil)
 	if err != nil {
@@ -368,6 +401,8 @@ func (m *Monitor) dispatchEvent(raw []byte) error {
 		return m.handleForkEvent(raw)
 	case ebpfEventPtrace:
 		return m.handlePtraceEvent(raw)
+	case ebpfEventInject:
+		return m.handleInjectEvent(raw)
 	default:
 		return fmt.Errorf("unknown event type: %d", header.EventType)
 	}
@@ -377,7 +412,18 @@ func (m *Monitor) dispatchEvent(raw []byte) error {
 
 func (m *Monitor) handleExecEvent(raw []byte) error {
 	var r rawExecEvent
-	if err := binary.Read(bytes.NewReader(raw), binary.LittleEndian, &r); err != nil {
+
+	// The Phase-2 BPF struct is larger than the old one.  If the running BPF
+	// object predates the bpf2go regeneration it emits shorter events; pad with
+	// zeros so the new ScriptPath / ScriptPathLen fields decode as zero values
+	// and the /proc-based fallback in detectInterpreter() is used instead.
+	data := raw
+	if need := binary.Size(r); len(raw) < need {
+		padded := make([]byte, need)
+		copy(padded, raw)
+		data = padded
+	}
+	if err := binary.Read(bytes.NewReader(data), binary.LittleEndian, &r); err != nil {
 		return fmt.Errorf("decode exec event: %w", err)
 	}
 
@@ -396,7 +442,25 @@ func (m *Monitor) handleExecEvent(raw []byte) error {
 	isMemFD := r.IsMemFD != 0 || strings.HasPrefix(proc.ExePath, "/memfd:")
 
 	// Detect interpreter-based execution (python, perl, bash -c, etc.).
+	// detectInterpreter reads from proc.Args (sourced from /proc/<pid>/cmdline)
+	// and is kept as the fallback for inline scripts (-c flag) and the pre-Phase-2
+	// BPF path.
 	interpreter, scriptPath := detectInterpreter(proc)
+
+	// Phase 2: prefer the eBPF-captured script path when available.
+	// It is captured at syscall-entry time (before the process can exit) and
+	// holds up to PATH_MAX (256) bytes — vs. the 64-byte arg slot truncation.
+	if r.ScriptPathLen > 0 {
+		if ebpfPath := nullStr(r.ScriptPath[:]); ebpfPath != "" {
+			scriptPath = ebpfPath
+			// If detectInterpreter didn't recognise the binary (e.g. a custom
+			// wrapper script with an unusual name), fill interpreter from exe.
+			if interpreter == "" {
+				interpreter = filepath.Base(proc.ExePath)
+			}
+		}
+	}
+
 	scriptContent := captureScriptContent(proc, interpreter, scriptPath)
 
 	// Build ancestry chain.
@@ -585,6 +649,65 @@ func (m *Monitor) handlePtraceEvent(raw []byte) error {
 
 	m.bus.Publish(ev)
 	return nil
+}
+
+func (m *Monitor) handleInjectEvent(raw []byte) error {
+	var r rawInjectEvent
+	if err := binary.Read(bytes.NewReader(raw), binary.LittleEndian, &r); err != nil {
+		return fmt.Errorf("decode inject event: %w", err)
+	}
+
+	ts := bootTimeToWallClock(r.TimestampNs)
+	tracer := m.lookupOrProcFS(r.TracerPID)
+	if tracer.Comm == "" {
+		tracer.Comm = nullStr(r.TracerComm[:])
+	}
+
+	target := m.lookupOrProcFS(r.TargetPID)
+	technique := injectMethodName(r.InjectMethod)
+
+	ev := &types.MemoryInjectEvent{
+		BaseEvent: types.BaseEvent{
+			ID:        utils.NewEventID(),
+			Type:      types.EventMemoryInject,
+			Timestamp: ts,
+			AgentID:   m.bus.AgentID(),
+			Hostname:  m.bus.Hostname(),
+			Severity:  types.SeverityHigh,
+			Process:   tracer,
+			Tags:      []string{"injection", technique},
+		},
+		TargetPID:  r.TargetPID,
+		TargetComm: target.Comm,
+		Address:    fmt.Sprintf("0x%x", r.RemoteAddr),
+		Technique:  technique,
+	}
+
+	m.bus.Publish(ev)
+	m.logger.Warn().
+		Uint32("tracer_pid", r.TracerPID).
+		Str("tracer_comm", tracer.Comm).
+		Uint32("target_pid", r.TargetPID).
+		Str("target_comm", target.Comm).
+		Str("technique", technique).
+		Str("remote_addr", fmt.Sprintf("0x%x", r.RemoteAddr)).
+		Msg("process injection detected")
+	return nil
+}
+
+func injectMethodName(method uint32) string {
+	switch method {
+	case 1:
+		return "ptrace_write"
+	case 2:
+		return "ptrace_setregs"
+	case 3:
+		return "ptrace_attach"
+	case 4:
+		return "process_vm_writev"
+	default:
+		return "unknown"
+	}
 }
 
 // ─── Process enrichment from /proc ───────────────────────────────────────────
