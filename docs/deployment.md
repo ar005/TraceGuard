@@ -122,7 +122,31 @@ Mount the certs directory into the container at `/etc/edr/tls` (already configur
 
 ### Step 3: Initial Setup (First User Creation)
 
-Before logging in, create the first admin user:
+The backend auto-bootstraps an admin user on first run against a fresh database (no `users` rows). Two ways to retrieve the generated password:
+
+**Option A: docker logs**
+
+```bash
+sudo docker logs edr-backend 2>&1 | grep -iE "username|password"
+```
+
+**Option B: cred.txt file (recommended for docker-compose deployments)**
+
+`edr-backend/deploy/docker-compose.yml` sets `EDR_AUTH_BOOTSTRAP_FILE=/app/bootstrap/cred.txt` and mounts `./bootstrap:/app/bootstrap`. After the first `make docker-up`:
+
+```bash
+cat edr-backend/deploy/bootstrap/cred.txt
+# # TraceGuard bootstrap admin credentials
+# # Created : 2026-06-18T...
+# username=admin
+# password=<generated>
+```
+
+The file is written `0600`. **Delete it once you've saved the password** — it grants full admin access. The file is only written on the first boot (when the bootstrap admin is created); subsequent restarts find an existing user and don't overwrite anything.
+
+**Option C: explicit setup endpoint**
+
+If you boot the backend without `EDR_AUTH_BOOTSTRAP_FILE` set and want to skip the bootstrap, create the first user directly:
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/setup \
@@ -136,20 +160,40 @@ curl -X POST http://localhost:8080/api/v1/setup \
 
 This endpoint only works when no users exist in the database. It creates an admin-role user and returns a JWT token.
 
-### Step 4: Dashboard (edr-ui3)
+### Step 4: Dashboard (edr-ui-new)
 
 ```bash
-cd edr-ui3
+cd edr-ui-new
 npm install
 npm run build
 
-# Set the backend URL if not localhost:8080
+# Set the backend URL if not using proxy mode. In proxy mode (recommended),
+# leave NEXT_PUBLIC_BACKEND_URL unset and let next.config.ts's rewrites()
+# route /api/* to the backend.
 export NEXT_PUBLIC_BACKEND_URL=http://your-backend-host:8080
 
-npm start -- -p 5002
+# Operator-controlled environment flag. Only "prod" enables the
+# "NEXT_PUBLIC_BACKEND_URL is not set" console warning, so dev boxes
+# running `npm run build && npm start` stay quiet.
+export NEXT_PUBLIC_ENVIRONMENT=prod
+
+npm start -- -p 5002 -H 0.0.0.0
 ```
 
 The dashboard is accessible at `http://your-server:5002`.
+
+**Note on env-var inlining**: `NEXT_PUBLIC_*` values are baked into the client bundle at `npm run build` time, not read at runtime. Always set them before the build, or put them in `edr-ui-new/.env.local` and rebuild.
+
+### Step 4b: Admin Portal (edr-admin)
+
+```bash
+pip install -r edr-admin/requirements.txt
+python edr-admin/app.py        # → http://localhost:5001
+```
+
+Session-secret persistence: on first launch `app.py` writes a random `secrets.token_hex(32)` to `edr-admin/.admin_secret` (mode `0600`) and reuses it on every subsequent restart. This means restarting the Flask process no longer invalidates existing browser sessions or CSRF tokens. To override the file-based secret with a stable deployment value, set `TraceGuard_ADMIN_SECRET` in the environment — it takes precedence.
+
+Cookie `Secure` flag: `SESSION_COOKIE_SECURE` defaults to `True`, which makes the session cookie HTTPS-only. For plain-HTTP dev (the default `python3 app.py` over `http://...`), set `TraceGuard_COOKIE_SECURE=false` — otherwise the browser silently refuses to send the cookie back and every form POST fails with `400 "The CSRF session token is missing"`.
 
 ### Step 5: Agent Deployment
 

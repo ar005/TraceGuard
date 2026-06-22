@@ -487,6 +487,37 @@ Passively extracts TLS Server Name Indication (SNI) from ClientHello messages us
 |---|---|
 | `BROWSER_REQUEST` | A web request was captured by the TraceGuard browser extension. Includes URL, domain, method, status code, referrer, redirect chain, form submission detection. |
 
+## Scheduled Tasks
+
+The agent receives scheduled tasks from the backend via the heartbeat mechanism and executes them locally.
+
+### Delivery mechanism
+
+1. On each heartbeat, the backend injects any due tasks into `HeartbeatResponse.pending_tasks[]`
+2. The agent's `tasks.Executor` receives each `TaskInstruction` (ID, name, type, payload) and dispatches it in its own goroutine
+3. After execution, results are queued and included in the next `HeartbeatRequest.task_results[]`
+
+### Task types
+
+| Type | Shell | Description | Payload |
+|------|-------|-------------|---------|
+| `script` | `bash -c` | Execute an arbitrary shell command | `{"cmd": "echo hello"}` |
+| `collect` | uname, uptime, df, free | Gather system information snapshot | (none) |
+| `scan` | find + newer /tmp | File integrity spot-check under a path | `{"path": "/etc", "maxdepth": 2}` |
+| `remediate` | `kill -TERM` | Terminate a process by PID (blocks PID ≤ 1) | `{"pid": 1234}` |
+
+Output is capped at 64 KB combined stdout+stderr. Script timeout: 5 minutes. Collect/scan timeout: 30 seconds. Unknown task types are rejected with a `failed` status and an error message.
+
+### Result reporting
+
+Each result carries:
+- `task_id` — the ID of the task that ran
+- `status` — `"success"` or `"failed"`
+- `output` — captured stdout+stderr (truncated to 64 KB if needed)
+- `error` — error message if status is `"failed"`
+
+---
+
 ## Event Bus Architecture
 
 The agent uses a central event bus (`internal/events/bus.go`) that implements a synchronous fan-out pattern with per-subscriber asynchronous buffered channels.

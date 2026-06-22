@@ -1077,6 +1077,401 @@ Get the audit log of administrative actions.
 
 ---
 
+## Scheduled Tasks
+
+### `GET /api/v1/agents/:id/tasks`
+
+**Auth:** Required
+
+List scheduled tasks for an agent. Optional `?status=active|paused|completed`.
+
+**Response:**
+```json
+{
+  "tasks": [
+    {
+      "id": "task-xxx",
+      "tenant_id": "default",
+      "agent_id": "agent-xxx",
+      "name": "Daily collect",
+      "type": "collect",
+      "schedule": "0 2 * * *",
+      "payload": {},
+      "status": "active",
+      "last_run_at": "2026-05-01T02:00:00Z",
+      "next_run_at": "2026-05-02T02:00:00Z",
+      "created_at": "2026-04-01T00:00:00Z",
+      "created_by": "admin"
+    }
+  ],
+  "total": 1
+}
+```
+
+### `POST /api/v1/agents/:id/tasks`
+
+**Auth:** Required (Admin)
+
+Create a scheduled task for an agent.
+
+**Request:**
+```json
+{
+  "name": "Collect system info",
+  "type": "collect",
+  "schedule": "0 2 * * *",
+  "payload": {}
+}
+```
+
+Task types: `script`, `collect`, `scan`, `remediate`. `schedule` is a cron expression or empty for on-demand-only tasks.
+
+### `PUT /api/v1/agents/:id/tasks/:tid`
+
+**Auth:** Required (Admin)
+
+Update a task. Updatable fields: `name`, `schedule`, `status` (active/paused/completed), `payload`.
+
+### `DELETE /api/v1/agents/:id/tasks/:tid`
+
+**Auth:** Required (Admin)
+
+Delete a task.
+
+**Response:** HTTP 204 No Content
+
+### `POST /api/v1/agents/:id/tasks/:tid/run`
+
+**Auth:** Required
+
+Trigger immediate execution of a task. Sets `next_run_at = NOW()` so the backend delivers it on the next agent heartbeat.
+
+**Response:**
+```json
+{
+  "message": "task queued for execution",
+  "task_id": "task-xxx"
+}
+```
+
+### `GET /api/v1/agents/:id/tasks/history`
+
+**Auth:** Required
+
+Task execution event log for an agent. Optional `?task_id=` to filter. Supports `limit`/`offset`.
+
+**Response:**
+```json
+{
+  "events": [
+    {
+      "id": "tev-xxx",
+      "task_id": "task-xxx",
+      "agent_id": "agent-xxx",
+      "task_name": "Collect system info",
+      "task_type": "collect",
+      "action": "run",
+      "actor": "admin",
+      "detail": {},
+      "occurred_at": "2026-05-01T02:00:01Z"
+    }
+  ],
+  "total": 5
+}
+```
+
+### `GET /api/v1/tasks`
+
+**Auth:** Required
+
+Global task list across all agents. Optional `?status=`.
+
+### `GET /api/v1/tasks/history`
+
+**Auth:** Required
+
+Global task execution history. Optional `?agent_id=` and `?task_id=`. Supports `limit`/`offset`.
+
+---
+
+## DNS Intelligence
+
+### `GET /api/v1/dns/events`
+
+**Auth:** Required
+
+Query DNS events (event_type = NET_DNS) across all agents.
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `agent_id` | string | Filter by agent |
+| `domain` | string | Filter by queried domain |
+| `limit` | int | Max results (default 100, max 500) |
+| `offset` | int | Pagination offset |
+
+**Response:**
+```json
+{
+  "events": [ ... ],
+  "total": 1234
+}
+```
+
+### `GET /api/v1/dns/stats`
+
+**Auth:** Required
+
+Top 50 queried domains in the specified time window.
+
+**Query Parameters:** `hours` (1–168, default 24)
+
+**Response:**
+```json
+{
+  "top_domains": [
+    {"domain": "example.com", "count": 142}
+  ],
+  "hours": 24
+}
+```
+
+---
+
+## Canary Tokens
+
+### `GET /api/v1/canary/tokens`
+
+**Auth:** Required
+
+List canary tokens for the current tenant.
+
+**Response:**
+```json
+{
+  "tokens": [
+    {
+      "id": "canary-xxx",
+      "tenant_id": "default",
+      "name": "AWS credentials canary",
+      "type": "credential",
+      "token": "550e8400-e29b-41d4-a716-446655440000",
+      "deployed_to": "S3 bucket config.yml",
+      "description": "Fake AWS key in config",
+      "created_at": "2026-04-01T00:00:00Z",
+      "triggered_at": null,
+      "trigger_count": 0
+    }
+  ]
+}
+```
+
+### `POST /api/v1/canary/tokens`
+
+**Auth:** Required (Admin)
+
+Create a canary token.
+
+**Request:**
+```json
+{
+  "name": "AWS credentials canary",
+  "type": "credential",
+  "deployed_to": "S3 bucket config.yml",
+  "description": "Fake AWS key"
+}
+```
+
+`type` must be one of: `credential`, `file`, `url`, `dns`. `name` must be 1–100 characters.
+
+**Response:** HTTP 201 with the created token object (includes the `token` UUID for embedding in the canary).
+
+### `DELETE /api/v1/canary/tokens/:id`
+
+**Auth:** Required (Admin)
+
+Delete a canary token.
+
+### `POST /api/canary/trigger/:token`
+
+**Auth:** None (unauthenticated — this is the honeypot callback URL)
+
+Called by a triggered canary. Always returns HTTP 200 OK. If the token is valid, records the trigger timestamp and creates a severity-5 alert with MITRE IDs T1078 and T1555. Does not reveal token existence in the response.
+
+**Response:**
+```json
+{"ok": true}
+```
+
+---
+
+## DLP / Data Exfiltration
+
+### `GET /api/v1/dlp/events`
+
+**Auth:** Required
+
+Query exfil signals detected by the backend's exfil detector.
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `agent_id` | string | Filter by agent |
+| `limit` | int | Max results (default 100) |
+| `offset` | int | Pagination offset |
+
+**Response:**
+```json
+{
+  "signals": [
+    {
+      "id": "exfil-xxx",
+      "tenant_id": "default",
+      "agent_id": "agent-xxx",
+      "hostname": "workstation-01",
+      "signal_type": "usb_bulk",
+      "detail": {"device": "SanDisk USB"},
+      "bytes": 52428800,
+      "detected_at": "2026-05-01T10:00:00Z",
+      "alert_id": "alert-xxx"
+    }
+  ],
+  "total": 3
+}
+```
+
+Signal types: `usb_bulk` (>50 MB), `outbound_transfer` (>100 MB), `cloud_upload` (>25 MB).
+
+### `GET /api/v1/dlp/stats`
+
+**Auth:** Required
+
+Per-agent exfil signal summary.
+
+**Query Parameters:** `hours` (default 24)
+
+**Response:**
+```json
+{
+  "agents": [
+    {"agent_id": "agent-xxx", "hostname": "workstation-01", "signal_count": 3, "total_bytes": 157286400}
+  ],
+  "hours": 24
+}
+```
+
+---
+
+## TOTP / MFA
+
+### `POST /api/v1/auth/totp/verify-login`
+
+**Auth:** None (strict rate-limited)
+
+Complete MFA login with a TOTP code after `POST /api/v1/auth/login` returns `mfa_required: true`.
+
+**Request:**
+```json
+{
+  "session_token": "...",
+  "code": "123456"
+}
+```
+
+### Admin TOTP management
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/v1/admin/users/:id/totp/enable` | Generate and return TOTP secret + QR code for a user |
+| POST | `/api/v1/admin/users/:id/totp/confirm` | Confirm TOTP setup with a valid code |
+| POST | `/api/v1/admin/users/:id/totp/disable` | Disable TOTP for a user |
+
+---
+
+## Cases
+
+### `GET /api/v1/cases`
+
+**Auth:** Required
+
+List investigation cases.
+
+### `POST /api/v1/cases`
+
+**Auth:** Required
+
+Create a case. Body: `title`, `description`, `severity`, `assignee`, `tags`, `mitre_ids`.
+
+### `GET /api/v1/cases/:id`
+
+**Auth:** Required
+
+Get case details.
+
+### `PUT /api/v1/cases/:id`
+
+**Auth:** Required
+
+Update case metadata.
+
+### `GET /api/v1/cases/:id/alerts`
+
+**Auth:** Required
+
+List alerts linked to the case.
+
+### `POST /api/v1/cases/:id/alerts`
+
+**Auth:** Required
+
+Link an alert to a case. Body: `{"alert_id": "alert-xxx"}`.
+
+### `DELETE /api/v1/cases/:id/alerts/:alert_id`
+
+**Auth:** Required (Admin)
+
+Unlink an alert from a case.
+
+### `GET /api/v1/cases/:id/notes`
+
+**Auth:** Required
+
+List notes on a case.
+
+### `POST /api/v1/cases/:id/notes`
+
+**Auth:** Required
+
+Add a note. Body: `{"body": "Investigation note text"}`.
+
+### `PUT /api/v1/cases/:id/notes/:note_id`
+
+**Auth:** Required
+
+Update a note body.
+
+### `DELETE /api/v1/cases/:id/notes/:note_id`
+
+**Auth:** Required (Admin)
+
+Delete a note.
+
+### `POST /api/v1/cases/:id/summarise`
+
+**Auth:** Required
+
+Generate an AI summary of the case using the configured LLM provider.
+
+### `DELETE /api/v1/cases/:id`
+
+**Auth:** Required (Admin)
+
+Delete a case.
+
+---
+
 ## Error Responses
 
 All endpoints return errors in a consistent format:

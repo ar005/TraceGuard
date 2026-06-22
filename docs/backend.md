@@ -77,6 +77,8 @@ Configuration is loaded from `config/server.yaml`. Environment variables with th
 
 JWT signing key is set via `EDR_JWT_SECRET` environment variable. If unset, a random ephemeral key is generated on startup.
 
+**Bootstrap admin credentials.** On first run against an empty `users` table the backend creates an admin user with a generated 20-character password and logs the pair as a warning. When the `EDR_AUTH_BOOTSTRAP_FILE` env var is set, the same `username=` / `password=` pair is also written to that path with mode `0600`. `edr-backend/deploy/docker-compose.yml` sets it to `/app/bootstrap/cred.txt` and mounts `./bootstrap:/app/bootstrap`, so the host file path is `edr-backend/deploy/bootstrap/cred.txt`. The file is written **only on first run** — subsequent restarts find an existing user and skip both the log line and the file write. **Delete the file once the password is saved**; anyone who can read it gets full admin access.
+
 ### `rate_limit` -- Per-IP rate limiting
 
 | Key | Type | Default | Description |
@@ -109,19 +111,49 @@ The backend auto-applies schema migrations at startup via `RunMigrations()`. Eac
 
 | Table | Description |
 |---|---|
-| `agents` | Registered endpoint agents. Columns: id, hostname, os, os_version, ip, agent_ver, first_seen, last_seen, is_online, config_ver, tags, env, notes. |
-| `events` | All telemetry events. Columns: id, agent_id (FK), hostname, event_type, timestamp, payload (JSONB), received_at, severity, rule_id, alert_id. Indexed on agent_id, event_type, timestamp (DESC), and payload (GIN). |
-| `alerts` | Detection alerts. Columns: id, title, description, severity, status, rule_id, rule_name, mitre_ids, event_ids, agent_id (FK), hostname, first_seen, last_seen, assignee, notes, hit_count, incident_id. |
-| `rules` | Detection rules. Columns: id, name, description, enabled, severity, event_types, conditions (JSONB), mitre_ids, created_at, updated_at, author, rule_type, threshold_count, threshold_window_s, group_by. |
+| `agents` | Registered endpoint agents. Columns: id, hostname, os, os_version, ip, agent_ver, first_seen, last_seen, is_online, config_ver, tags, env, notes, winevent_config (JSONB), risk_score, risk_factors, risk_updated_at. |
+| `events` | All telemetry events. Extended with OCSF fields: class_uid, category_uid, activity_id, source_type, source_id, tenant_id, user_uid, src_ip, dst_ip, process_name, raw_log, enrichments (JSONB). Indexed on agent_id, event_type, timestamp (DESC), payload (GIN), source_type, user_uid, src/dst IP. |
+| `alerts` | Detection alerts. Columns include: hit_count, incident_id, user_uid, source_types, triage_verdict, triage_score, triage_notes, triage_at, src_ip, enrichments (JSONB), risk_score, tenant_id. |
+| `rules` | Detection rules. Extended with: rule_type (match/threshold/sequence_cross), threshold_count, threshold_window_s, group_by, source_types, sequence_window_s, sequence_by, sequence_steps (JSONB). |
 | `suppression_rules` | Rules to suppress false-positive events. Columns: id, name, description, enabled, event_types, conditions (JSONB), created_at, updated_at, author, hit_count, last_hit_at. |
-| `incidents` | Groups of related alerts. Columns: id, title, description, severity, status, alert_ids, agent_ids, hostnames, mitre_ids, alert_count, first_seen, last_seen, assignee, notes, created_at, updated_at. |
+| `incidents` | Groups of related alerts. Extended with: user_uids, src_ips, source_types, tenant_id. |
+| `cases` | Analyst investigation cases. Columns: id, title, description, status, severity, assignee, tags, mitre_ids, alert_count, created_by, created_at, updated_at, closed_at, tenant_id. |
+| `case_alerts` | Many-to-many join between cases and alerts. Columns: case_id, alert_id, linked_at, linked_by. |
+| `case_notes` | Notes on a case. Columns: id, case_id, body, author, created_at, updated_at. |
 | `iocs` | Indicators of Compromise. Columns: id, type, value, source, severity, description, tags, enabled, expires_at, created_at, hit_count, last_hit_at. Unique index on (type, value). |
-| `users` | User accounts. Columns: id, username, email, password_hash, role, enabled, created_at, last_login_at, created_by. |
-| `api_keys` | API keys for programmatic access. Columns: id, name, prefix, hash, created_at, expires_at, last_used_at, created_by, enabled. |
+| `users` | User accounts. Columns: id, username, email, password_hash, role, enabled, created_at, last_login_at, created_by, totp_secret, totp_enabled, totp_backup_codes, tenant_id. |
+| `api_keys` | API keys for programmatic access. Columns: id, name, prefix, hash, created_at, expires_at, last_used_at, created_by, enabled, role. |
 | `audit_log` | Administrative action log. Columns: id (BIGSERIAL), timestamp, actor_id, actor_name, action, target_type, target_id, target_name, ip, details. |
-| `settings` | Key-value configuration store. Columns: key, value, updated_at. Seeded with `retention_events_days=30`, `retention_alerts_days=90`. |
+| `settings` | Key-value configuration store. Seeded with `retention_events_days`, `retention_alerts_days`, `retention_flows_days`. |
 | `agent_packages` | Installed packages per agent. Columns: id (BIGSERIAL), agent_id (FK), name, version, arch, collected_at. |
-| `vulnerabilities` | Known CVEs matched against agent packages. Columns: id (BIGSERIAL), agent_id (FK), package_name, package_version, cve_id, severity, description, fixed_version, detected_at. |
+| `vulnerabilities` | Known CVEs matched against agent packages. |
+| `cve_cache` | CVE metadata fetched from NVD. Columns include: cve_id, severity, description, exploit_available, cisa_kev, raw_json. |
+| `pending_commands` | Queued live-response commands. Columns: id, agent_id, action, args (JSONB), created_by, status, result (JSONB), executed_at. |
+| `playbooks` | SOAR automation playbooks. Columns: id, name, description, enabled, trigger_type, trigger_filter (JSONB), actions (JSONB), run_count. |
+| `playbook_runs` | SOAR execution audit trail. Columns: id, playbook_id, playbook_name, trigger_type, trigger_id, status, started_at, finished_at, actions_log (JSONB). |
+| `response_actions` | Response action audit trail. Columns: id, action_type, target_type, target_id, status, triggered_by, playbook_run_id, params/result (JSONB), reversed_at. |
+| `export_destinations` | SIEM / notification sinks. dest_type: slack, pagerduty, webhook, syslog_cef, email. |
+| `xdr_sources` | External data source connector registry. Columns: id, name, source_type, connector, config (JSONB), enabled, last_seen_at, events_today. |
+| `identity_graph` | Normalized cross-source user identities. Columns: canonical_uid, display_name, risk_score, risk_factors, is_privileged, is_service_acct, account_ids (JSONB), agent_ids, email, aliases. |
+| `asset_inventory` | Unified endpoint + cloud + network device registry. Columns: id, asset_type, hostname, ip_addresses, os, cloud_provider, cloud_region, cloud_account, cloud_resource_id, agent_id, risk_score. |
+| `xdr_network_flows` | High-volume network flow data (partitioned by start_time). Columns: id, source_id, src_ip, dst_ip, src_port, dst_port, protocol, bytes_in, bytes_out, packets_in/out, flow_state. |
+| `container_inventory` | Container instances detected via process events. Columns: container_id, agent_id, runtime, image_name, pod_name, namespace, event_count. |
+| `login_sessions` | Cross-source login session records. Columns: id, tenant_id, user_uid, agent_id, src_ip, logged_in_at, logged_out_at. |
+| `behavioral_baselines` | EWMA behavioral baseline per user (UEBA). Columns: user_uid, tenant_id, ewma, ewma_sq, n. |
+| `beaconing_state` | C2 beaconing detection state per agent+dst. Columns: agent_id, dst_ip, dst_port, intervals_s[], alert_fired. |
+| `network_lateral_state` | Network lateral movement detection state. Columns: agent_id, dst_port, unique_ips, window_start. |
+| `canary_tokens` | Deception canary tokens. Columns: id, tenant_id, name, type (credential/file/url/dns), token, deployed_to, description, triggered_at, trigger_count. |
+| `exfil_signals` | Data exfiltration detection signals. Columns: id, tenant_id, agent_id, hostname, signal_type, detail (JSONB), bytes, detected_at, alert_id. |
+| `agent_tasks` | Scheduled tasks for remote agents. Columns: id, tenant_id, agent_id, name, type, schedule, payload (JSONB), status, last_run_at, next_run_at, created_by. |
+| `agent_task_events` | Audit trail for task execution. Columns: id, task_id, tenant_id, agent_id, task_name, task_type, action, actor, detail (JSONB), occurred_at. |
+| `yara_rules` | YARA rule definitions. Columns: id, name, description, rule_text, enabled, severity, mitre_ids, tags. |
+| `reports` | Generated reports. Columns: id, tenant_id, title, type, format, status, params (JSONB), row_count, data, created_by. |
+| `auto_case_policies` | Auto-case creation policies. Columns: id, tenant_id, name, min_severity, rule_ids, mitre_ids, enabled. |
+| `auto_remediation_rules` | Automatic remediation trigger rules. Columns: id, tenant_id, name, trigger_type, trigger_value, action, playbook_id, min_severity, enabled. |
+| `custom_ioc_feeds` | Custom IOC feed URLs. Columns: id, tenant_id, name, url, format, feed_type, enabled, last_synced_at, entry_count. |
+| `stix_imports` | STIX bundle import audit trail. |
+| `sigma_imports` | Sigma rule import audit trail. |
+| `tenant_rate_limits` | Per-tenant rate limit overrides. |
 | `schema_migrations` | Tracks applied migrations. Columns: name, applied_at. |
 
 ## gRPC Ingest Server
@@ -154,10 +186,12 @@ When the stream closes, the agent is marked offline.
 
 #### `Heartbeat(HeartbeatRequest) -> HeartbeatResponse`
 
-Unary RPC called every 30 seconds. Updates the agent's `last_seen` timestamp.
+Unary RPC called every 30 seconds. Updates the agent's `last_seen` timestamp. Also the delivery channel for scheduled tasks.
 
-- **Request:** agent_id, hostname, timestamp, agent_ver, os, stats (events_sent, events_dropped, buffer_size, cpu_pct, mem_bytes)
-- **Response:** ok, server_time (Unix nanoseconds for clock sync), config_version
+- **Request:** agent_id, hostname, timestamp, os, `task_results[]` — results from previously delivered tasks (task_id, status, output, error)
+- **Response:** ok, server_time (Unix nanoseconds for clock sync), config_version, `pending_tasks[]` — tasks due for execution (id, name, type, payload)
+
+On each heartbeat, the backend claims any agent tasks where `next_run_at <= NOW()` and status is `active`, delivers them in the response, and updates `last_run_at` / `next_run_at`. The agent executes tasks in parallel goroutines and reports results in the next heartbeat request.
 
 #### `LiveResponse(stream)` -- Bidirectional
 
@@ -260,6 +294,31 @@ The backend ships with the following built-in detection rules, automatically see
 
 The SSE (Server-Sent Events) broker (`internal/sse/`) provides live event streaming to connected browser clients. When an event is stored, it is also published to the SSE broker, which fans it out to all connected UI sessions. Clients connect via `GET /api/v1/events/stream`.
 
+**Transport**: PostgreSQL `LISTEN`/`NOTIFY` on the `edr_events` channel. Every backend node runs a listener goroutine; `Publish()` calls `pg_notify`, and every node receives the notification and fans the JSON to its own SSE clients. Browser clients connecting to any node therefore see the full event stream regardless of which node holds the agent gRPC connection.
+
+**Payload size handling**. `pg_notify` enforces an 8 000-byte payload ceiling. For events whose JSON exceeds 7 900 bytes the broker:
+
+1. Publishes a slim marker — `{id, event_type, agent_id, tenant_id, _truncated: true}` — through `pg_notify`.
+2. On the receive side, `listenLoop` detects the `_truncated: true` flag, calls `EventFetcher.GetEvent(ctx, id, tenantID)` against the store, and fans the **full** event JSON. The `tenant_id` field in the slim marker keeps the lookup correctly scoped under multi-tenancy.
+3. UI clients always see the documented event shape; there is no special-case path for oversize events on the consumer side.
+
+Wire the fetcher with `broker.SetEventFetcher(st)` after `sse.New(...)` in `cmd/server/main.go`. If the fetcher is unset (e.g. test-mode brokers), the slim marker is forwarded as-is.
+
+## Pagination responses
+
+All paginated list handlers (events, alerts, incidents, agent packages, vulnerabilities, IOCs, containers, container events, DNS events, DLP signals) return JSON of the form:
+
+```json
+{
+  "events": [ ... page of items ... ],
+  "total":  12847,
+  "limit":  50,
+  "offset": 100
+}
+```
+
+`total` is the result of a `SELECT COUNT(*)` with the same `WHERE` clause as the page query — not the page length. The UI uses it to render `"101–150 of 12 847"` strings and to disable the Next/Last buttons at the end of the result set. The wrapping key (`events`, `alerts`, `incidents`, …) varies per endpoint; the meta keys are stable.
+
 ## LLM Integration
 
 The backend supports optional AI-powered alert explanation via multiple LLM providers. Configuration is managed at runtime through the Settings API.
@@ -318,6 +377,48 @@ The backend runs automated data retention jobs:
 - Default database settings: 30 days for events, 90 days for alerts
 - Default YAML settings: 90 days for events, alerts kept indefinitely
 - Set to 0 to disable retention for a category
+
+## Scheduled Tasks API
+
+The backend manages a `agent_tasks` table. Tasks are delivered to agents via the heartbeat mechanism (see Heartbeat RPC above).
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/v1/agents/:id/tasks` | any | List tasks for an agent. Filter by `?status=`. |
+| POST | `/api/v1/agents/:id/tasks` | admin | Create a task. Body: name, type, schedule, payload. |
+| PUT | `/api/v1/agents/:id/tasks/:tid` | admin | Update task name, schedule, status, or payload. |
+| DELETE | `/api/v1/agents/:id/tasks/:tid` | admin | Delete a task. |
+| POST | `/api/v1/agents/:id/tasks/:tid/run` | any | On-demand trigger — sets `next_run_at = NOW()` so the task is claimed on the next heartbeat. |
+| GET | `/api/v1/agents/:id/tasks/history` | any | Task execution event log. Filter by `?task_id=`. |
+| GET | `/api/v1/tasks` | any | Global task list across all agents. |
+| GET | `/api/v1/tasks/history` | any | Global task history across all agents. Filter by `?agent_id=` and/or `?task_id=`. |
+
+**Task status values:** `active`, `paused`, `completed`, `deleted`
+
+**Task types:** `script`, `collect`, `scan`, `remediate`
+
+## DNS Intelligence API
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/v1/dns/events` | any | Query DNS events. Params: `agent_id`, `domain`, `limit` (max 500), `offset`. |
+| GET | `/api/v1/dns/stats` | any | Top 50 queried domains. Param: `hours` (1–168, default 24). Response: `{top_domains: [...], hours: N}`. |
+
+## Canary Tokens API
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/v1/canary/tokens` | any | List canary tokens for the tenant. |
+| POST | `/api/v1/canary/tokens` | admin | Create a canary token. Body: name, type (credential/file/url/dns), deployed_to, description. Returns token UUID. |
+| DELETE | `/api/v1/canary/tokens/:id` | admin | Delete a canary token. |
+| POST | `/api/canary/trigger/:token` | **none** | Unauthenticated webhook endpoint. Records a trigger and fires a severity-5 alert. Always returns 200 OK (does not reveal token existence). |
+
+## DLP / Exfil API
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/v1/dlp/events` | any | Query exfil signals. Params: `agent_id`, `limit`, `offset`. Response: `{signals: [...], total: N}`. |
+| GET | `/api/v1/dlp/stats` | any | Per-agent exfil summary. Param: `hours` (default 24). Response: `{agents: [...], hours: N}`. |
 
 ## Initial Setup
 
