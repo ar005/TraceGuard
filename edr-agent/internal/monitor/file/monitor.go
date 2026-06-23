@@ -60,11 +60,13 @@ import (
 // ─── eBPF event type constants (must match file.bpf.c) ───────────────────────
 
 const (
-	ebpfFileCreate = 20
-	ebpfFileWrite  = 21
-	ebpfFileDelete = 22
-	ebpfFileRename = 23
-	ebpfFileChmod  = 25
+	ebpfFileCreate      = 20
+	ebpfFileWrite       = 21
+	ebpfFileDelete      = 22
+	ebpfFileRename      = 23
+	ebpfFileChmod       = 25
+	ebpfFileMemfdCreate = 26 // Phase 4
+	ebpfFileOpenHandle  = 27 // Phase 4
 )
 
 // ─── Raw kernel struct (mirrors struct file_event in file.bpf.c) ─────────────
@@ -266,6 +268,28 @@ func (m *Monitor) attachProbes() error {
 		}
 		m.links = append(m.links, l)
 	}
+
+	// Phase 4 tracepoints — uncomment after: cd edr-agent && go generate ./internal/monitor/file/
+	// (requires clang + bpf2go to regenerate file_bpfel.go with the two new programs).
+	//
+	// for _, tp := range []struct {
+	// 	cat  string
+	// 	name string
+	// 	prog *ebpf.Program
+	// }{
+	// 	{"syscalls", "sys_enter_memfd_create",
+	// 		m.objs.TracepointSyscallsSysEnterMemfdCreate},
+	// 	{"syscalls", "sys_enter_open_by_handle_at",
+	// 		m.objs.TracepointSyscallsSysEnterOpenByHandleAt},
+	// } {
+	// 	l, err := link.Tracepoint(tp.cat, tp.name, tp.prog, nil)
+	// 	if err != nil {
+	// 		m.log.Warn().Err(err).Msgf("file monitor: tracepoint/%s unavailable", tp.name)
+	// 		continue
+	// 	}
+	// 	m.links = append(m.links, l)
+	// }
+
 	return nil
 }
 
@@ -307,6 +331,26 @@ func (m *Monitor) handleRaw(raw []byte) error {
 	var r rawFileEvent
 	if err := binary.Read(bytes.NewReader(raw), binary.LittleEndian, &r); err != nil {
 		return err
+	}
+
+	// Phase 4: memfd_create and open_by_handle_at never map to a watched path
+	// and must bypass the path filter below.  Handle them first and return.
+	if r.EventType == ebpfFileMemfdCreate || r.EventType == ebpfFileOpenHandle {
+		ts := bootTimeToWallClock(r.TimestampNs)
+		proc := buildProcContext(r.PID, r.PPID, r.UID, nullStr(r.Comm[:]))
+		switch r.EventType {
+		case ebpfFileMemfdCreate:
+			// path[] holds the caller-supplied memfd name, not a filesystem path.
+			name := nullStr(r.Path[:])
+			ev := m.newEvent(types.EventFileMemfdCreate, name, "", ts, proc, r)
+			ev.Severity = types.SeverityHigh
+			m.publishAndLog(ev)
+		case ebpfFileOpenHandle:
+			ev := m.newEvent(types.EventFileOpenByHandle, "<handle>", "", ts, proc, r)
+			ev.Severity = types.SeverityMedium
+			m.publishAndLog(ev)
+		}
+		return nil
 	}
 
 	dentry := nullStr(r.Path[:])
