@@ -67,6 +67,10 @@ const (
 	ebpfFileChmod       = 25
 	ebpfFileMemfdCreate = 26 // Phase 4
 	ebpfFileOpenHandle  = 27 // Phase 4
+	ebpfFileChown       = 28 // Phase 5
+	ebpfFileLink        = 29 // Phase 5
+	ebpfFileSymlink     = 30 // Phase 5
+	ebpfFileTruncate    = 31 // Phase 5
 )
 
 // ─── Raw kernel struct (mirrors struct file_event in file.bpf.c) ─────────────
@@ -87,12 +91,21 @@ type rawFileEvent struct {
 	Comm        [fileCommLen]byte
 	Path        [fileNameMax]byte
 	OldPath     [fileOldMax]byte
-	Inode       uint64
-	Dev         uint32
-	Mode        uint32
-	Size        uint64
-	Flags       uint32
-	Pad         uint32
+	// AlignPad mirrors the explicit _align_pad field in the C struct.
+	// old_path ends at byte 428; inode needs 8-byte alignment so the C struct
+	// (and previously the compiler implicitly) inserts 4 bytes here → inode at 432.
+	// This field was always zero (zeroed by __builtin_memset) so old BPF data is
+	// read correctly with this layout.
+	AlignPad uint32
+	Inode    uint64
+	Dev      uint32
+	Mode     uint32
+	Size     uint64
+	Flags    uint32 // for FILE_CHMOD: holds new ia_mode from iattr
+	Pad      uint32
+	// Phase 5 additions:
+	NewUID uint32 // FILE_CHOWN: new owner uid (ia_uid.val)
+	NewGID uint32 // FILE_CHOWN: new owner gid (ia_gid.val)
 }
 
 // ─── bpf2go type alias ────────────────────────────────────────────────────────
@@ -269,18 +282,27 @@ func (m *Monitor) attachProbes() error {
 		m.links = append(m.links, l)
 	}
 
-	// Phase 4 tracepoints — uncomment after: cd edr-agent && go generate ./internal/monitor/file/
-	// (requires clang + bpf2go to regenerate file_bpfel.go with the two new programs).
+	// Phase 4 + Phase 5 tracepoints — uncomment after:
+	//   cd edr-agent && go generate ./internal/monitor/file/
+	// (requires clang + bpf2go to regenerate file_bpfel.go with the new programs).
 	//
 	// for _, tp := range []struct {
 	// 	cat  string
 	// 	name string
 	// 	prog *ebpf.Program
 	// }{
+	// 	// Phase 4:
 	// 	{"syscalls", "sys_enter_memfd_create",
 	// 		m.objs.TracepointSyscallsSysEnterMemfdCreate},
 	// 	{"syscalls", "sys_enter_open_by_handle_at",
 	// 		m.objs.TracepointSyscallsSysEnterOpenByHandleAt},
+	// 	// Phase 5:
+	// 	{"syscalls", "sys_enter_link",
+	// 		m.objs.TracepointSyscallsSysEnterLink},
+	// 	{"syscalls", "sys_enter_symlink",
+	// 		m.objs.TracepointSyscallsSysEnterSymlink},
+	// 	{"syscalls", "sys_enter_truncate",
+	// 		m.objs.TracepointSyscallsSysEnterTruncate},
 	// } {
 	// 	l, err := link.Tracepoint(tp.cat, tp.name, tp.prog, nil)
 	// 	if err != nil {
@@ -325,11 +347,19 @@ func (m *Monitor) readLoop(ctx context.Context) {
 }
 
 func (m *Monitor) handleRaw(raw []byte) error {
-	if len(raw) < int(unsafe.Sizeof(rawFileEvent{})) {
+	if len(raw) < 12 { // need at least timestamp(8) + event_type(4)
 		return nil
 	}
 	var r rawFileEvent
-	if err := binary.Read(bytes.NewReader(raw), binary.LittleEndian, &r); err != nil {
+	// Zero-pad short records (old BPF object pre-Phase-5 emits 464 bytes;
+	// new struct binary.Size = 472). New fields decode as zero values.
+	data := raw
+	if need := binary.Size(r); len(raw) < need {
+		padded := make([]byte, need)
+		copy(padded, raw)
+		data = padded
+	}
+	if err := binary.Read(bytes.NewReader(data), binary.LittleEndian, &r); err != nil {
 		return err
 	}
 
@@ -394,6 +424,30 @@ func (m *Monitor) handleRaw(raw []byte) error {
 		m.publishAndLog(ev)
 	case ebpfFileChmod:
 		ev := m.newEvent(types.EventFileChmod, fullPath, "", ts, proc, r)
+		// r.Flags holds the new ia_mode (after bpf2go regen); r.Mode has the old inode mode.
+		if r.Flags != 0 {
+			ev.Mode = r.Flags
+		}
+		m.publishAndLog(ev)
+	// ── Phase 5 ──────────────────────────────────────────────────────────────
+	case ebpfFileChown:
+		ev := m.newEvent(types.EventFileChown, fullPath, "", ts, proc, r)
+		ev.NewOwnerUID = r.NewUID
+		ev.NewOwnerGID = r.NewGID
+		m.publishAndLog(ev)
+	case ebpfFileLink:
+		// path = new link name; old_path = target file being linked.
+		target := nullStr(r.OldPath[:])
+		ev := m.newEvent(types.EventFileLink, fullPath, target, ts, proc, r)
+		m.publishAndLog(ev)
+	case ebpfFileSymlink:
+		// path = symlink name; old_path = what the symlink points to.
+		target := nullStr(r.OldPath[:])
+		ev := m.newEvent(types.EventFileSymlink, fullPath, target, ts, proc, r)
+		ev.IsSymlink = true
+		m.publishAndLog(ev)
+	case ebpfFileTruncate:
+		ev := m.newEvent(types.EventFileTruncate, fullPath, "", ts, proc, r)
 		m.publishAndLog(ev)
 	}
 	return nil
