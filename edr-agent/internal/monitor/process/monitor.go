@@ -114,9 +114,10 @@ type rawPtraceEvent struct {
 	Flags         uint32
 }
 
-// rawInjectEvent mirrors the C inject_event struct (56 bytes, no trailing pad).
-// Emitted for process_vm_writev and write-class ptrace (POKETEXT/POKEDATA/
-// SETREGS/ATTACH/SEIZE) after bpf2go regeneration.
+// rawInjectEvent mirrors the C inject_event struct (72 bytes, no trailing pad).
+// Emitted for: write-class ptrace, process_vm_writev, mmap W+X, mprotect W+X.
+// Phase 3 BPF objects emit 56 bytes; handleInjectEvent zero-pads to 72 so
+// MapSize/ProtFlags/MapFlags decode as 0 for older events.
 type rawInjectEvent struct {
 	TimestampNs  uint64
 	RemoteAddr   uint64
@@ -126,7 +127,11 @@ type rawInjectEvent struct {
 	TracerUID    uint32
 	TargetPID    uint32
 	InjectMethod uint32
-	TracerComm   [taskCommLen]byte
+	TracerComm   [taskCommLen]byte // offset 40, 16 bytes → ends at 56
+	// Phase 6 additions (offset 56, naturally 8-byte aligned):
+	MapSize   uint64 // mmap/mprotect region length
+	ProtFlags uint32 // PROT_* flags
+	MapFlags  uint32 // MAP_* flags (mmap only; 0 for ptrace/vm_writev)
 }
 
 // bpfObjects is the bpf2go-generated ProcessBPFObjects struct.
@@ -314,15 +319,29 @@ func (m *Monitor) attachProbes() error {
 		m.links = append(m.links, l)
 	}
 
-	// sys_enter_process_vm_writev — Phase 3 injection telemetry.
-	// Uncomment after running: cd edr-agent && go generate ./internal/monitor/process/
-	// (requires clang + bpf2go to regenerate process_bpfel.go with the new program).
+	// Phase 3–6 injection tracepoints — uncomment after:
+	//   cd edr-agent && go generate ./internal/monitor/process/
+	// (requires clang + bpf2go to regenerate process_bpfel.go with the new programs).
 	//
-	// l, err = link.Tracepoint("syscalls", "sys_enter_process_vm_writev",
-	// 	m.objs.TracepointSyscallsSysEnterProcessVmWritev, nil)
-	// if err != nil {
-	// 	m.logger.Warn().Err(err).Msg("process_vm_writev tracepoint unavailable, vm_writev injection events disabled")
-	// } else {
+	// for _, tp := range []struct {
+	// 	cat  string
+	// 	name string
+	// 	prog *ebpf.Program
+	// }{
+	// 	// Phase 3:
+	// 	{"syscalls", "sys_enter_process_vm_writev",
+	// 		m.objs.TracepointSyscallsSysEnterProcessVmWritev},
+	// 	// Phase 6:
+	// 	{"syscalls", "sys_enter_mmap",
+	// 		m.objs.TracepointSyscallsSysEnterMmap},
+	// 	{"syscalls", "sys_enter_mprotect",
+	// 		m.objs.TracepointSyscallsSysEnterMprotect},
+	// } {
+	// 	l, err := link.Tracepoint(tp.cat, tp.name, tp.prog, nil)
+	// 	if err != nil {
+	// 		m.logger.Warn().Err(err).Msgf("tracepoint/%s unavailable, injection events disabled", tp.name)
+	// 		continue
+	// 	}
 	// 	m.links = append(m.links, l)
 	// }
 
@@ -653,7 +672,15 @@ func (m *Monitor) handlePtraceEvent(raw []byte) error {
 
 func (m *Monitor) handleInjectEvent(raw []byte) error {
 	var r rawInjectEvent
-	if err := binary.Read(bytes.NewReader(raw), binary.LittleEndian, &r); err != nil {
+	// Phase 3 BPF objects emit 56-byte events; Phase 6 struct is 72 bytes.
+	// Zero-pad short records so MapSize/ProtFlags/MapFlags decode as 0.
+	data := raw
+	if need := binary.Size(r); len(raw) < need {
+		padded := make([]byte, need)
+		copy(padded, raw)
+		data = padded
+	}
+	if err := binary.Read(bytes.NewReader(data), binary.LittleEndian, &r); err != nil {
 		return fmt.Errorf("decode inject event: %w", err)
 	}
 
@@ -677,10 +704,12 @@ func (m *Monitor) handleInjectEvent(raw []byte) error {
 			Process:   tracer,
 			Tags:      []string{"injection", technique},
 		},
-		TargetPID:  r.TargetPID,
-		TargetComm: target.Comm,
-		Address:    fmt.Sprintf("0x%x", r.RemoteAddr),
-		Technique:  technique,
+		TargetPID:   r.TargetPID,
+		TargetComm:  target.Comm,
+		Address:     fmt.Sprintf("0x%x", r.RemoteAddr),
+		Size:        int64(r.MapSize),
+		Permissions: protString(r.ProtFlags),
+		Technique:   technique,
 	}
 
 	m.bus.Publish(ev)
@@ -691,6 +720,8 @@ func (m *Monitor) handleInjectEvent(raw []byte) error {
 		Str("target_comm", target.Comm).
 		Str("technique", technique).
 		Str("remote_addr", fmt.Sprintf("0x%x", r.RemoteAddr)).
+		Int64("map_size", int64(r.MapSize)).
+		Str("prot", protString(r.ProtFlags)).
 		Msg("process injection detected")
 	return nil
 }
@@ -705,9 +736,32 @@ func injectMethodName(method uint32) string {
 		return "ptrace_attach"
 	case 4:
 		return "process_vm_writev"
+	case 5:
+		return "mmap_rwx"
+	case 6:
+		return "mprotect_wx"
 	default:
 		return "unknown"
 	}
+}
+
+// protString converts PROT_* bit flags to an "rwx"-style string.
+// Returns "" when flags is 0 (not a memory-mapping event).
+func protString(flags uint32) string {
+	if flags == 0 {
+		return ""
+	}
+	r, w, x := "-", "-", "-"
+	if flags&0x1 != 0 {
+		r = "r"
+	}
+	if flags&0x2 != 0 {
+		w = "w"
+	}
+	if flags&0x4 != 0 {
+		x = "x"
+	}
+	return r + w + x
 }
 
 // ─── Process enrichment from /proc ───────────────────────────────────────────
