@@ -7,10 +7,18 @@
 //     Requires CORS configured on the backend and breaks httpOnly cookie delivery
 //     in some browsers. Only use when the Next.js proxy is not viable.
 export const BASE = process.env.NEXT_PUBLIC_BACKEND_URL ?? "";
-if (!BASE && typeof window !== "undefined") {
+// NEXT_PUBLIC_ENVIRONMENT is the operator-controlled signal in .env / .env.local:
+//   NEXT_PUBLIC_ENVIRONMENT=prod  → real production deploy; warn if BASE missing
+//   anything else / unset         → dev / staging; warn is silenced
+// We don't key off NODE_ENV because `npm run build && npm start` always sets
+// NODE_ENV=production, even on a developer's laptop — that signal can't tell
+// "real prod" from "I just like running the optimized build locally."
+const IS_PROD = process.env.NEXT_PUBLIC_ENVIRONMENT === "prod";
+if (!BASE && IS_PROD && typeof window !== "undefined") {
   console.error(
     "[TraceGuard] NEXT_PUBLIC_BACKEND_URL is not set. " +
-    "API calls will fail. Set it in .env.local or your deployment config."
+    "API calls will fail unless Next.js rewrites are configured. " +
+    "Set it in .env.local or your deployment config."
   );
 }
 
@@ -34,6 +42,12 @@ function buildUrl(path: string, params?: Record<string, string | number | boolea
   return BASE + path + (query ? `?${query}` : "");
 }
 
+// Module-level flag so a burst of concurrent 401s (parallel useApi calls during
+// a session-expired render) only triggers one redirect. Without this, every
+// inflight fetch would race to set window.location, polluting history and
+// occasionally fighting AuthGuard's router.replace.
+let redirecting = false;
+
 async function request<T>(method: string, path: string, body?: unknown, params?: Record<string, string | number | boolean | undefined>, signal?: AbortSignal): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 90_000);
@@ -51,8 +65,15 @@ async function request<T>(method: string, path: string, body?: unknown, params?:
     });
 
     if (res.status === 401) {
-      if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
-        window.location.href = "/login";
+      // /api/v1/me is the auth probe used by AuthProvider on mount. A 401 here
+      // is expected when the user isn't logged in — AuthProvider catches it
+      // and AuthGuard handles the redirect via router.replace. If we also
+      // hard-navigated here we'd race AuthGuard and double-trigger navigation.
+      const isAuthProbe = path === "/api/v1/me";
+      if (!isAuthProbe && !redirecting && typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+        redirecting = true;
+        // replace() instead of href= so the failed page isn't on the back stack.
+        window.location.replace("/login");
       }
       throw new Error("Unauthorized");
     }

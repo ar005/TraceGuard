@@ -12,7 +12,7 @@ import {
   severityBgClass,
   statusColor,
 } from "@/lib/utils";
-import { Bot, Send } from "lucide-react";
+import { Bot, RefreshCw, Send, Sparkles } from "lucide-react";
 import type { Alert, Event } from "@/types";
 
 /* ---------- Constants ---------- */
@@ -64,6 +64,19 @@ function severityDot(sev: number): string {
       return "bg-blue-500";
     default:
       return "bg-neutral-500";
+  }
+}
+
+function triageVerdictBadge(verdict: string): { label: string; cls: string } {
+  switch (verdict) {
+    case "true_positive":
+      return { label: "TP", cls: "bg-red-500/15 text-red-400 border border-red-500/30" };
+    case "false_positive":
+      return { label: "FP", cls: "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30" };
+    case "needs_investigation":
+      return { label: "NI", cls: "bg-amber-500/15 text-amber-400 border border-amber-500/30" };
+    default:
+      return { label: verdict, cls: "bg-neutral-500/15 text-neutral-400" };
   }
 }
 
@@ -363,6 +376,10 @@ function AlertDetail({
   onStatusChange: (id: string, status: string) => void;
 }) {
   const [showStatusMenu, setShowStatusMenu] = useState(false);
+  const [aiSummary, setAiSummary] = useState<string>(alert.ai_summary ?? "");
+  const [aiSummaryLoading, setAiSummaryLoading] = useState(false);
+  const [aiSummaryProvider, setAiSummaryProvider] = useState("");
+  const [aiSummaryModel, setAiSummaryModel] = useState("");
   const [chatMessages, setChatMessages] = useState<{role: "user" | "assistant"; content: string}[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
@@ -422,6 +439,44 @@ function AlertDetail({
       });
     return () => { cancelled = true; };
   }, [alert.id]);
+
+  /* Auto-fetch AI summary on open if not already cached. */
+  useEffect(() => {
+    if (aiSummary) return; // already have one (from DB or prior fetch)
+    let cancelled = false;
+    setAiSummaryLoading(true);
+    api.post<{ summary: string; model: string; provider: string }>(
+      `/api/v1/alerts/${alert.id}/summarise`, {}
+    ).then((res) => {
+      if (!cancelled) {
+        setAiSummary(res.summary ?? "");
+        setAiSummaryModel(res.model ?? "");
+        setAiSummaryProvider(res.provider ?? "");
+      }
+    }).catch(() => {
+      // AI may not be configured — fail silently, panel will stay hidden.
+    }).finally(() => {
+      if (!cancelled) setAiSummaryLoading(false);
+    });
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [alert.id]);
+
+  async function regenerateSummary() {
+    setAiSummaryLoading(true);
+    try {
+      const res = await api.post<{ summary: string; model: string; provider: string }>(
+        `/api/v1/alerts/${alert.id}/summarise?force=1`, {}
+      );
+      setAiSummary(res.summary ?? "");
+      setAiSummaryModel(res.model ?? "");
+      setAiSummaryProvider(res.provider ?? "");
+    } catch {
+      // silent
+    } finally {
+      setAiSummaryLoading(false);
+    }
+  }
 
   /* Fetch related events — try alert events endpoint first, fall back to querying by alert_id */
   const fetchEvents = useCallback(
@@ -950,6 +1005,55 @@ function AlertDetail({
           onTreeLoaded={(nodes) => setProcessTreeData(nodes)}
         />
 
+        {/* AI Summary */}
+        {(aiSummaryLoading || aiSummary) && (
+          <div className="rounded border overflow-hidden" style={{ borderColor: "var(--border)" }}>
+            <div
+              className="flex items-center gap-2 px-3 py-2 border-b"
+              style={{ background: "var(--surface-1)", borderColor: "var(--border)" }}
+            >
+              <Sparkles size={13} style={{ color: "var(--primary)" }} />
+              <span className="text-xs font-semibold" style={{ fontFamily: "var(--font-space-grotesk)", color: "var(--fg)" }}>
+                AI Summary
+              </span>
+              {alert.triage_verdict && (() => {
+                const b = triageVerdictBadge(alert.triage_verdict!);
+                return (
+                  <span className={cn("ml-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase", b.cls)}>
+                    {b.label}
+                  </span>
+                );
+              })()}
+              <button
+                onClick={regenerateSummary}
+                disabled={aiSummaryLoading}
+                className="ml-auto rounded p-1 transition-colors hover:bg-[var(--surface-2)] disabled:opacity-40"
+                title="Regenerate summary"
+              >
+                <RefreshCw size={11} style={{ color: "var(--muted)" }} className={aiSummaryLoading ? "animate-spin" : ""} />
+              </button>
+            </div>
+            <div className="px-3 py-3" style={{ background: "var(--surface-0)" }}>
+              {aiSummaryLoading && !aiSummary ? (
+                <div className="space-y-2">
+                  <div className="animate-shimmer h-3 rounded w-full" />
+                  <div className="animate-shimmer h-3 rounded w-5/6" />
+                  <div className="animate-shimmer h-3 rounded w-4/6" />
+                </div>
+              ) : (
+                <p className="text-xs leading-relaxed whitespace-pre-wrap" style={{ color: "var(--fg)" }}>
+                  {aiSummary}
+                </p>
+              )}
+              {(aiSummaryProvider || aiSummaryModel) && !aiSummaryLoading && (
+                <p className="mt-2 text-[10px]" style={{ color: "var(--muted)" }}>
+                  {[aiSummaryProvider, aiSummaryModel].filter(Boolean).join(" · ")}
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* AI Assistant */}
         <div className="rounded border overflow-hidden" style={{ borderColor: "var(--border)" }}>
           {/* Header */}
@@ -1384,9 +1488,19 @@ export default function AlertsPage() {
               />
             </span>
 
-            {/* Title */}
-            <span className="truncate font-medium" style={{ color: "var(--fg)" }}>
-              {alert.title}
+            {/* Title + triage verdict */}
+            <span className="flex items-center gap-1.5 min-w-0">
+              <span className="truncate font-medium" style={{ color: "var(--fg)" }}>
+                {alert.title}
+              </span>
+              {alert.triage_verdict && (() => {
+                const b = triageVerdictBadge(alert.triage_verdict);
+                return (
+                  <span className={cn("shrink-0 px-1 py-0.5 rounded text-[9px] font-semibold uppercase", b.cls)}>
+                    {b.label}
+                  </span>
+                );
+              })()}
             </span>
 
             {/* Rule Name */}

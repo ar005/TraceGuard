@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { RefreshCw, Sparkles } from "lucide-react";
 import { useApi } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
 import {
@@ -207,6 +208,45 @@ function IncidentDetail({
   const [showStatusMenu, setShowStatusMenu] = useState(false);
   const [notes, setNotes] = useState(incident.notes ?? "");
   const [savingNotes, setSavingNotes] = useState(false);
+  const [aiSummary, setAiSummary] = useState<string>(incident.ai_summary ?? "");
+  const [aiSummaryLoading, setAiSummaryLoading] = useState(false);
+  const [aiSummaryProvider, setAiSummaryProvider] = useState("");
+  const [aiSummaryModel, setAiSummaryModel] = useState("");
+
+  useEffect(() => {
+    if (aiSummary) return;
+    let cancelled = false;
+    setAiSummaryLoading(true);
+    api.post<{ summary: string; model: string; provider: string }>(
+      `/api/v1/incidents/${incident.id}/summarise`, {}
+    ).then((res) => {
+      if (!cancelled) {
+        setAiSummary(res.summary ?? "");
+        setAiSummaryModel(res.model ?? "");
+        setAiSummaryProvider(res.provider ?? "");
+      }
+    }).catch(() => {}).finally(() => {
+      if (!cancelled) setAiSummaryLoading(false);
+    });
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incident.id]);
+
+  async function regenerateSummary() {
+    setAiSummaryLoading(true);
+    try {
+      const res = await api.post<{ summary: string; model: string; provider: string }>(
+        `/api/v1/incidents/${incident.id}/summarise?force=1`, {}
+      );
+      setAiSummary(res.summary ?? "");
+      setAiSummaryModel(res.model ?? "");
+      setAiSummaryProvider(res.provider ?? "");
+    } catch {
+      // silent
+    } finally {
+      setAiSummaryLoading(false);
+    }
+  }
 
   /* Fetch related alerts */
   const fetchAlerts = useCallback(
@@ -462,6 +502,47 @@ function IncidentDetail({
             )}
           </div>
         </div>
+
+        {/* AI Summary */}
+        {(aiSummaryLoading || aiSummary) && (
+          <div className="rounded border overflow-hidden" style={{ borderColor: "var(--border)" }}>
+            <div
+              className="flex items-center gap-2 px-3 py-2 border-b"
+              style={{ background: "var(--surface-1)", borderColor: "var(--border)" }}
+            >
+              <Sparkles size={13} style={{ color: "var(--primary)" }} />
+              <span className="text-xs font-semibold" style={{ fontFamily: "var(--font-space-grotesk)", color: "var(--fg)" }}>
+                AI Summary
+              </span>
+              <button
+                onClick={regenerateSummary}
+                disabled={aiSummaryLoading}
+                className="ml-auto rounded p-1 transition-colors hover:bg-[var(--surface-2)] disabled:opacity-40"
+                title="Regenerate summary"
+              >
+                <RefreshCw size={11} style={{ color: "var(--muted)" }} className={aiSummaryLoading ? "animate-spin" : ""} />
+              </button>
+            </div>
+            <div className="px-3 py-3" style={{ background: "var(--surface-0)" }}>
+              {aiSummaryLoading && !aiSummary ? (
+                <div className="space-y-2">
+                  <div className="animate-shimmer h-3 rounded w-full" />
+                  <div className="animate-shimmer h-3 rounded w-5/6" />
+                  <div className="animate-shimmer h-3 rounded w-4/6" />
+                </div>
+              ) : (
+                <p className="text-xs leading-relaxed whitespace-pre-wrap" style={{ color: "var(--fg)" }}>
+                  {aiSummary}
+                </p>
+              )}
+              {(aiSummaryProvider || aiSummaryModel) && !aiSummaryLoading && (
+                <p className="mt-2 text-[10px]" style={{ color: "var(--muted)" }}>
+                  {[aiSummaryProvider, aiSummaryModel].filter(Boolean).join(" · ")}
+                </p>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Notes */}
         <div>

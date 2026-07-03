@@ -28,7 +28,7 @@ export function useSSE(path: string, maxEvents = 200): UseSSEResult {
         esRef.current = null;
       }
 
-      // Exchange the session JWT for a short-lived SSE ticket (30s) so the
+      // Exchange the session JWT for a short-lived SSE ticket (15s) so the
       // long-lived token never appears in a URL (logs, Referer, browser history).
       let ticket = "";
       try {

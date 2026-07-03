@@ -26,6 +26,7 @@ import {
   GitBranch,
   GitFork,
   Globe,
+  KeyRound,
   LayoutDashboard,
   LayoutGrid,
   Layers,
@@ -160,6 +161,7 @@ const NAV_SECTIONS: NavSection[] = [
       { label: "Reports", href: "/reports", icon: FileText },
       { label: "Metrics", href: "/metrics", icon: BarChart3 },
       { label: "Settings", href: "/settings", icon: Settings },
+      { label: "SSO / SAML", href: "/settings/sso", icon: KeyRound },
     ],
   },
 ];

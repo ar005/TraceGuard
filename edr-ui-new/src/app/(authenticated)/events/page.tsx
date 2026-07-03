@@ -21,6 +21,7 @@ const FILTERS = [
   { label: "Kernel", value: "KERNEL_MODULE_LOAD" },
   { label: "USB", value: "USB_CONNECT" },
   { label: "Memory", value: "MEMORY_INJECT" },
+  { label: "Fileless", value: "FILE_MEMFD_CREATE" },
   { label: "Cron", value: "CRON_MODIFY" },
   { label: "Pipe", value: "PIPE_CREATE" },
   { label: "TLS SNI", value: "NET_TLS_SNI" },
@@ -42,6 +43,13 @@ const TYPE_BADGE_COLORS: Record<string, string> = {
   USB_CONNECT: "bg-orange-500/15 text-orange-400",
   USB_DISCONNECT: "bg-orange-500/15 text-orange-400",
   MEMORY_INJECT: "bg-red-700/20 text-red-300",
+  FILE_MEMFD_CREATE: "bg-red-700/20 text-red-300",
+  FILE_OPEN_HANDLE: "bg-orange-600/15 text-orange-400",
+  FILE_CHOWN: "bg-sky-500/15 text-sky-300",
+  FILE_LINK: "bg-sky-500/15 text-sky-300",
+  FILE_SYMLINK: "bg-sky-500/15 text-sky-300",
+  FILE_TRUNCATE: "bg-sky-500/15 text-sky-300",
+  FILE_CHMOD: "bg-sky-500/15 text-sky-400",
   CRON_MODIFY: "bg-yellow-500/15 text-yellow-400",
   PIPE_CREATE: "bg-cyan-400/15 text-cyan-300",
   SHARE_MOUNT: "bg-teal-600/15 text-teal-300",
@@ -89,6 +97,39 @@ function extractSummary(evt: Event): string {
     case "FILE_CREATE":
     case "FILE_DELETE":
       return (p.path as string) ?? (p.filename as string) ?? "—";
+    case "FILE_MEMFD_CREATE": {
+      const name = (p.path as string) ?? "";
+      return name ? `memfd:${name}` : "anonymous memfd";
+    }
+    case "FILE_OPEN_HANDLE":
+      return (p.path as string) || "open-by-handle";
+    case "FILE_CHMOD": {
+      const chmodPath = (p.path as string) ?? "";
+      const mode = p.mode != null ? ` (${Number(p.mode).toString(8)})` : "";
+      return chmodPath ? `${chmodPath}${mode}` : "—";
+    }
+    case "FILE_CHOWN": {
+      const chownPath = (p.path as string) ?? "";
+      const uid = p.new_owner_uid != null ? `uid=${p.new_owner_uid}` : "";
+      const gid = p.new_owner_gid != null ? `gid=${p.new_owner_gid}` : "";
+      const ownership = [uid, gid].filter(Boolean).join(" ");
+      return [chownPath, ownership].filter(Boolean).join(" → ") || "—";
+    }
+    case "FILE_LINK": {
+      const src = (p.old_path as string) ?? "";
+      const dst = (p.path as string) ?? "";
+      return src && dst ? `${src} ←→ ${dst}` : src || dst || "—";
+    }
+    case "FILE_SYMLINK": {
+      const symlink = (p.path as string) ?? "";
+      const target = (p.old_path as string) ?? "";
+      return target ? `${symlink} → ${target}` : symlink || "—";
+    }
+    case "FILE_TRUNCATE": {
+      const truncPath = (p.path as string) ?? "";
+      const size = p.size_bytes != null ? ` (${p.size_bytes}B)` : "";
+      return truncPath ? `${truncPath}${size}` : "—";
+    }
     case "BROWSER_REQUEST": {
       const url = (p.url as string) ?? "";
       const status = p.status_code;
@@ -483,6 +524,109 @@ function EventDetail({ event, onClose }: { event: Event; onClose: () => void }) 
                   </pre>
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* Memory Injection Details */}
+        {event.event_type?.toUpperCase() === "MEMORY_INJECT" && (
+          <div>
+            <div
+              className="text-xs font-semibold mb-2"
+              style={{ fontFamily: "var(--font-space-grotesk)", color: "var(--fg)" }}
+            >
+              Memory Injection
+            </div>
+            <div
+              className="rounded border p-3 space-y-2"
+              style={{ background: "var(--surface-1)", borderColor: "var(--border)" }}
+            >
+              {[
+                {
+                  label: "Technique",
+                  value: event.payload.technique,
+                  mono: false,
+                  highlight: true,
+                },
+                { label: "Target PID", value: event.payload.target_pid },
+                { label: "Target Process", value: event.payload.target_comm },
+                { label: "Address", value: event.payload.address },
+                {
+                  label: "Size",
+                  value: event.payload.size != null
+                    ? `${Number(event.payload.size).toLocaleString()} bytes`
+                    : undefined,
+                },
+                { label: "Permissions", value: event.payload.permissions },
+                { label: "Description", value: event.payload.description },
+              ]
+                .filter((f) => f.value != null && f.value !== "")
+                .map((f) => (
+                  <div key={f.label} className="flex justify-between text-xs gap-2">
+                    <span style={{ color: "var(--muted)" }}>{f.label}</span>
+                    <span
+                      className={f.mono !== false ? "font-mono" : "font-semibold"}
+                      style={{ color: f.highlight ? "var(--primary)" : "var(--fg)" }}
+                    >
+                      {String(f.value)}
+                    </span>
+                  </div>
+                ))}
+            </div>
+          </div>
+        )}
+
+        {/* File Operation Details (new Phase 4/5 event types) */}
+        {["FILE_MEMFD_CREATE","FILE_OPEN_HANDLE","FILE_CHOWN","FILE_LINK","FILE_SYMLINK","FILE_TRUNCATE","FILE_CHMOD"].includes(
+          event.event_type?.toUpperCase()
+        ) && (
+          <div>
+            <div
+              className="text-xs font-semibold mb-2"
+              style={{ fontFamily: "var(--font-space-grotesk)", color: "var(--fg)" }}
+            >
+              File Operation
+            </div>
+            <div
+              className="rounded border p-3 space-y-2"
+              style={{ background: "var(--surface-1)", borderColor: "var(--border)" }}
+            >
+              {[
+                { label: "Path", value: event.payload.path },
+                { label: "Target / Old Path", value: event.payload.old_path },
+                {
+                  label: "Mode (octal)",
+                  value: event.payload.mode != null
+                    ? Number(event.payload.mode).toString(8).padStart(4, "0")
+                    : undefined,
+                },
+                { label: "New Owner UID", value: event.payload.new_owner_uid },
+                { label: "New Owner GID", value: event.payload.new_owner_gid },
+                {
+                  label: "Size",
+                  value: event.payload.size_bytes != null
+                    ? `${Number(event.payload.size_bytes).toLocaleString()} bytes`
+                    : undefined,
+                },
+                { label: "Inode", value: event.payload.inode },
+                {
+                  label: "Is Symlink",
+                  value: event.payload.is_symlink === true ? "Yes" : undefined,
+                },
+                {
+                  label: "Is Hidden",
+                  value: event.payload.is_hidden === true ? "Yes" : undefined,
+                },
+              ]
+                .filter((f) => f.value != null && f.value !== "")
+                .map((f) => (
+                  <div key={f.label} className="flex justify-between text-xs gap-2">
+                    <span style={{ color: "var(--muted)" }}>{f.label}</span>
+                    <span className="font-mono truncate ml-4" style={{ color: "var(--fg)" }}>
+                      {String(f.value)}
+                    </span>
+                  </div>
+                ))}
             </div>
           </div>
         )}

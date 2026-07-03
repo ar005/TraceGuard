@@ -62,6 +62,8 @@ export interface Alert {
   user_uid?: string;
   src_ip?: string;
   source_types?: string[];
+  ai_summary?: string;
+  ai_summary_at?: string;
 }
 
 export interface SequenceStep {
@@ -127,10 +129,11 @@ export interface Incident {
   notes: string;
   created_at: string;
   updated_at: string;
-  // XDR cross-source correlation fields
   user_uids?: string[];
   src_ips?: string[];
   source_types?: string[];
+  ai_summary?: string;
+  ai_summary_at?: string;
 }
 
 export interface IOCEnrichment {

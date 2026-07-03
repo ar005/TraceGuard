@@ -135,6 +135,16 @@ export function eventTypeColor(type: string): string {
       return "text-orange-400";
     case "MEMORY_INJECT":
       return "text-red-500";
+    case "FILE_MEMFD_CREATE":
+      return "text-red-400";
+    case "FILE_OPEN_HANDLE":
+      return "text-orange-400";
+    case "FILE_CHOWN":
+    case "FILE_LINK":
+    case "FILE_SYMLINK":
+    case "FILE_TRUNCATE":
+    case "FILE_CHMOD":
+      return "text-sky-300";
     case "CRON_MODIFY":
       return "text-yellow-400";
     case "PIPE_CREATE":

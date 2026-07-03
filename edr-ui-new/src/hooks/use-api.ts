@@ -53,8 +53,18 @@ export function useApi<T>(
   const refetch = useCallback(() => setTick((t) => t + 1), []);
 
   // Bump tick when explicit deps change (filter state, selected IDs, etc.).
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { setTick((t) => t + 1); }, options?.deps ?? []);
+  // Skip the mount run so we don't double-fetch: the [tick] effect below
+  // already fires once on mount with tick=0; without this guard, the deps
+  // effect would also fire on mount, bump tick to 1, and trigger a second
+  // fetch that aborts the first.
+  const skipFirstDepsRun = useRef(true);
+  useEffect(() => {
+    if (skipFirstDepsRun.current) {
+      skipFirstDepsRun.current = false;
+      return;
+    }
+    setTick((t) => t + 1);
+  }, options?.deps ?? []);
 
   // Run the fetch on mount and whenever tick changes.
   useEffect(() => {
