@@ -2538,6 +2538,110 @@ CREATE INDEX IF NOT EXISTS sla_breaches_alert  ON sla_breaches(alert_id) WHERE a
 CREATE UNIQUE INDEX IF NOT EXISTS sla_breaches_dedup ON sla_breaches(alert_id, metric_type) WHERE alert_id IS NOT NULL;
 `,
 	},
+	{
+		name: "seed_ebpf_phase3456_rules",
+		sql: `
+INSERT INTO rules (id, name, description, severity, event_types, conditions, mitre_ids, author)
+VALUES
+
+('rule-memfd-create',
+ 'Anonymous In-Memory File Created (memfd_create)',
+ 'A process called memfd_create() to stage an anonymous in-memory file. Rare in legitimate software; a common fileless malware staging technique.',
+ 3,
+ ARRAY['FILE_MEMFD_CREATE'],
+ '[]',
+ ARRAY['T1620'],
+ 'system'),
+
+('rule-open-by-handle',
+ 'open_by_handle_at Path-Bypass Attempt',
+ 'open_by_handle_at() was called, opening a file by raw inode handle and bypassing path-traversal checks. Used in container breakout and chroot-escape exploits.',
+ 3,
+ ARRAY['FILE_OPEN_HANDLE'],
+ '[]',
+ ARRAY['T1611','T1083'],
+ 'system'),
+
+('rule-chown-to-root',
+ 'File Ownership Changed to Root',
+ 'A process changed file ownership to UID 0 (root). Attackers use this to create or promote SUID binaries for privilege escalation persistence.',
+ 3,
+ ARRAY['FILE_CHOWN'],
+ '[{"field":"new_owner_uid","op":"eq","value":0}]',
+ ARRAY['T1548','T1222.002'],
+ 'system'),
+
+('rule-symlink-sensitive-target',
+ 'Symlink Pointing to Sensitive System File',
+ 'A symbolic link was created whose target is a sensitive path (/etc/passwd, /etc/shadow, /root/, /proc/self/). Used to bypass path-based access controls or to expose privileged files.',
+ 3,
+ ARRAY['FILE_SYMLINK'],
+ '[{"field":"old_path","op":"regex","value":"^/etc/(passwd|shadow|sudoers)|^/root/|^/proc/self/"}]',
+ ARRAY['T1574','T1083'],
+ 'system'),
+
+('rule-hardlink-credential-files',
+ 'Hard Link to Credential or Sudoers File',
+ 'A hard link was created pointing to /etc/passwd, /etc/shadow, or /etc/sudoers. Hard-linking these files retains read access after permission changes and enables offline credential exfiltration.',
+ 4,
+ ARRAY['FILE_LINK'],
+ '[{"field":"old_path","op":"in","value":["/etc/shadow","/etc/passwd","/etc/sudoers","/etc/shadow-","/etc/passwd-"]}]',
+ ARRAY['T1003.008','T1548.003'],
+ 'system'),
+
+('rule-log-file-truncation',
+ 'Log File Truncated to Zero Bytes',
+ 'A process truncated a file in /var/log/ or /var/audit/ to zero bytes — a classic technique to erase evidence of attacker activity.',
+ 3,
+ ARRAY['FILE_TRUNCATE'],
+ '[{"field":"path","op":"regex","value":"^/var/log/|^/var/audit/"},{"field":"size_bytes","op":"eq","value":0}]',
+ ARRAY['T1070.002'],
+ 'system'),
+
+('rule-inject-rwx-mmap',
+ 'RWX Anonymous Memory Mapping (Shellcode Staging)',
+ 'A process mapped anonymous memory with PROT_READ|PROT_WRITE|PROT_EXEC simultaneously. Legitimate runtimes avoid this combination; it is the canonical pattern for shellcode staging.',
+ 4,
+ ARRAY['MEMORY_INJECT'],
+ '[{"field":"technique","op":"eq","value":"mmap_rwx"}]',
+ ARRAY['T1055','T1620'],
+ 'system'),
+
+('rule-inject-mprotect-wx',
+ 'Memory Region Made Writable+Executable via mprotect',
+ 'mprotect() was called to grant PROT_WRITE|PROT_EXEC on an existing memory region. This is phase two of shellcode staging: writing shellcode into a buffer then marking it executable.',
+ 4,
+ ARRAY['MEMORY_INJECT'],
+ '[{"field":"technique","op":"eq","value":"mprotect_wx"}]',
+ ARRAY['T1055','T1055.004'],
+ 'system'),
+
+('rule-inject-cross-process-write',
+ 'Cross-Process Memory Write (Process Injection)',
+ 'A process wrote directly into another process address space via process_vm_writev or ptrace POKETEXT/SETREGS. This is a direct process injection technique used by shellcode loaders and RATs.',
+ 4,
+ ARRAY['MEMORY_INJECT'],
+ '[{"field":"technique","op":"in","value":["process_vm_writev","ptrace_write","ptrace_setregs"]}]',
+ ARRAY['T1055.008','T1055'],
+ 'system')
+
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO rules (id, name, description, severity, event_types, conditions, mitre_ids, author,
+                   rule_type, threshold_count, threshold_window_s, group_by)
+VALUES
+('rule-thresh-repeated-injection',
+ 'Repeated Memory Injection Attempts (threshold)',
+ '5+ MEMORY_INJECT events from the same process within 60 seconds — indicative of an injection loop or shellcode loader spraying memory.',
+ 4,
+ ARRAY['MEMORY_INJECT'],
+ '[]',
+ ARRAY['T1055'],
+ 'system',
+ 'threshold', 5, 60, 'process.pid')
+ON CONFLICT (id) DO NOTHING;
+`,
+	},
 }
 
 // Open opens a PostgreSQL connection and verifies connectivity.
