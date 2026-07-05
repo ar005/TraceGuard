@@ -49,6 +49,7 @@ type LocalBuffer struct {
 	mu      sync.Mutex
 	writeCh chan events.Event
 	stopCh  chan struct{}
+	wg      sync.WaitGroup
 }
 
 func New(cfg Config, log zerolog.Logger) (*LocalBuffer, error) {
@@ -84,6 +85,7 @@ func New(cfg Config, log zerolog.Logger) (*LocalBuffer, error) {
 		writeCh: make(chan events.Event, writeQueueDepth),
 		stopCh:  make(chan struct{}),
 	}
+	buf.wg.Add(2)
 	go buf.writeLoop()
 	go buf.evictionLoop()
 	return buf, nil
@@ -100,6 +102,7 @@ func (b *LocalBuffer) Write(ev events.Event) {
 
 // writeLoop drains writeCh and persists each event to SQLite.
 func (b *LocalBuffer) writeLoop() {
+	defer b.wg.Done()
 	for ev := range b.writeCh {
 		payload, err := json.Marshal(ev)
 		if err != nil {
@@ -178,10 +181,12 @@ func (b *LocalBuffer) Stats() (total, unsent int64, sizeMB float64) {
 func (b *LocalBuffer) Close() {
 	close(b.stopCh)
 	close(b.writeCh) // signals writeLoop to drain and exit
+	b.wg.Wait()      // wait for writeLoop + evictionLoop to finish before closing DB
 	b.db.Close()
 }
 
 func (b *LocalBuffer) evictionLoop() {
+	defer b.wg.Done()
 	ticker := time.NewTicker(b.cfg.FlushEvery)
 	defer ticker.Stop()
 	for {
