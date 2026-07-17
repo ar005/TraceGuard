@@ -1,10 +1,15 @@
+//go:build windows
+
 // internal/monitor/winevent/monitor.go
-// Generic Windows Event Log monitor — ingests events from configurable channels
-// using wevtutil. Supports arbitrary channels and event ID filters.
+// Generic Windows Event Log monitor — real-time push delivery via EvtSubscribe.
 //
-// Unlike the auth monitor which is limited to Security 4624/4625/4648, this
-// monitor provides broad visibility across Security, System, Application,
-// Sysmon, and any custom channels.
+// Primary path: one EvtSubscribe push subscription per configured channel,
+// with an XPath filter derived from the channel's EventID list. Events arrive
+// in real time with no polling lag via wevtapi.dll!EvtSubscribe.
+//
+// Fallback: if all EvtSubscribe calls fail (insufficient privilege or old OS),
+// degrades to the original wevtutil polling approach with the configured
+// poll interval and per-channel time-windowed XPath queries.
 
 package winevent
 
@@ -21,6 +26,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 
+	"github.com/youredr/edr-agent-win/internal/etw"
 	"github.com/youredr/edr-agent-win/internal/events"
 	"github.com/youredr/edr-agent-win/pkg/types"
 )
@@ -33,18 +39,19 @@ type ChannelConfig struct {
 
 // Config for the winevent monitor.
 type Config struct {
-	PollIntervalS   int             `mapstructure:"poll_interval_s"`
-	Channels        []ChannelConfig `mapstructure:"channels"`
-	MaxEventsPerPoll int            `mapstructure:"max_events_per_poll"`
+	PollIntervalS    int             `mapstructure:"poll_interval_s"`
+	Channels         []ChannelConfig `mapstructure:"channels"`
+	MaxEventsPerPoll int             `mapstructure:"max_events_per_poll"`
 }
 
-// Monitor polls Windows Event Logs for events across configured channels.
+// Monitor watches Windows Event Log channels for events.
 type Monitor struct {
-	cfg    Config
-	bus    events.Bus
-	log    zerolog.Logger
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	cfg     Config
+	bus     events.Bus
+	log     zerolog.Logger
+	closers []func()
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
 }
 
 // New creates a winevent monitor.
@@ -62,28 +69,79 @@ func New(cfg Config, bus events.Bus, log zerolog.Logger) *Monitor {
 	}
 }
 
-// Start begins polling configured event log channels.
+// Start creates one EvtSubscribe push subscription per configured channel.
+// Falls back to wevtutil polling only when ALL channel subscriptions fail.
 func (m *Monitor) Start(ctx context.Context) error {
 	ctx, m.cancel = context.WithCancel(ctx)
-	m.wg.Add(1)
-	go m.pollLoop(ctx)
+
+	var failedChannels []string
+	for _, ch := range m.cfg.Channels {
+		query := xpathForIDs(ch.EventIDs)
+		chName := ch.Name
+		closer, err := etw.NewLogSubscription(ctx, chName, query, func(xmlStr string) {
+			m.handleXML(chName, xmlStr)
+		})
+		if err != nil {
+			m.log.Warn().Err(err).Str("channel", chName).Msg("EvtSubscribe failed for channel")
+			failedChannels = append(failedChannels, chName)
+			continue
+		}
+		m.closers = append(m.closers, closer)
+	}
+
+	if len(m.closers) == 0 {
+		m.log.Warn().
+			Strs("channels", failedChannels).
+			Msg("all EvtSubscribe calls failed, falling back to polling")
+		return m.startPolling(ctx)
+	}
+
 	m.log.Info().
-		Int("channels", len(m.cfg.Channels)).
-		Int("poll_interval_s", m.cfg.PollIntervalS).
-		Msg("winevent monitor started (polling Windows Event Log)")
+		Int("subscribed", len(m.closers)).
+		Int("failed", len(failedChannels)).
+		Msg("winevent monitor started (EvtSubscribe)")
 	return nil
 }
 
-// Stop halts the winevent monitor.
+// Stop cancels all subscriptions (or polling context) and waits for goroutines.
 func (m *Monitor) Stop() {
 	if m.cancel != nil {
 		m.cancel()
+	}
+	for _, c := range m.closers {
+		c()
 	}
 	m.wg.Wait()
 	m.log.Info().Msg("winevent monitor stopped")
 }
 
-// XML structures for wevtutil output.
+// handleXML parses a single event XML string delivered by EvtSubscribe and
+// dispatches it to processEvent. Called from the etw dispatch goroutine.
+func (m *Monitor) handleXML(channel, xmlStr string) {
+	var evt evtEvent
+	if err := xml.Unmarshal([]byte(xmlStr), &evt); err != nil {
+		m.log.Debug().Err(err).Str("channel", channel).Msg("failed to parse event XML")
+		return
+	}
+	m.processEvent(channel, evt)
+}
+
+// xpathForIDs builds an XPath query for EvtSubscribe.
+// No time filter is needed — EvtSubscribe with evtSubscribeToFutureEvents
+// delivers only events from the subscription point onward.
+func xpathForIDs(eventIDs []int) string {
+	if len(eventIDs) == 0 {
+		return "*"
+	}
+	parts := make([]string, 0, len(eventIDs))
+	for _, id := range eventIDs {
+		parts = append(parts, fmt.Sprintf("EventID=%d", id))
+	}
+	return fmt.Sprintf("*[System[(%s)]]", strings.Join(parts, " or "))
+}
+
+// XML structures for Windows Event Log events.
+// Compatible with both EvtRender (EvtSubscribe) and wevtutil XML output.
 type evtEvents struct {
 	Events []evtEvent `xml:"Event"`
 }
@@ -110,99 +168,6 @@ type evtProvider struct {
 type evtData struct {
 	Name  string `xml:"Name,attr"`
 	Value string `xml:",chardata"`
-}
-
-func (m *Monitor) pollLoop(ctx context.Context) {
-	defer m.wg.Done()
-
-	// Track last seen event time per channel to avoid duplicates.
-	lastSeen := make(map[string]time.Time)
-	for _, ch := range m.cfg.Channels {
-		lastSeen[ch.Name] = time.Now()
-	}
-
-	// Initial delay to let the system settle.
-	select {
-	case <-ctx.Done():
-		return
-	case <-time.After(5 * time.Second):
-	}
-
-	ticker := time.NewTicker(time.Duration(m.cfg.PollIntervalS) * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			for _, ch := range m.cfg.Channels {
-				since := lastSeen[ch.Name]
-				evts := m.queryChannel(ctx, ch, since)
-				for _, evt := range evts {
-					m.processEvent(ch.Name, evt)
-				}
-				lastSeen[ch.Name] = time.Now()
-			}
-		}
-	}
-}
-
-func (m *Monitor) queryChannel(ctx context.Context, ch ChannelConfig, since time.Time) []evtEvent {
-	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	// Build XPath filter.
-	query := m.buildXPathQuery(ch.EventIDs, since)
-
-	cmd := exec.CommandContext(cmdCtx, "wevtutil", "qe", ch.Name,
-		"/q:"+query,
-		fmt.Sprintf("/c:%d", m.cfg.MaxEventsPerPoll),
-		"/rd:true",
-		"/f:xml",
-	)
-	out, err := cmd.Output()
-	if err != nil {
-		// wevtutil often returns error if no events match — that is fine.
-		m.log.Debug().Err(err).Str("channel", ch.Name).Msg("wevtutil query returned error (may be empty)")
-		return nil
-	}
-
-	if len(out) == 0 {
-		return nil
-	}
-
-	// wevtutil outputs individual <Event> elements, not a wrapping root.
-	// Wrap them in a root element for valid XML parsing.
-	wrapped := "<Events>" + string(out) + "</Events>"
-
-	var parsed evtEvents
-	if err := xml.Unmarshal([]byte(wrapped), &parsed); err != nil {
-		m.log.Debug().Err(err).Str("channel", ch.Name).Msg("failed to parse wevtutil XML output")
-		return nil
-	}
-
-	return parsed.Events
-}
-
-// buildXPathQuery constructs an XPath filter for wevtutil.
-func (m *Monitor) buildXPathQuery(eventIDs []int, since time.Time) string {
-	timePart := fmt.Sprintf("TimeCreated[@SystemTime>='%s']",
-		since.UTC().Format("2006-01-02T15:04:05.000Z"))
-
-	if len(eventIDs) == 0 {
-		// All events from the channel since the given time.
-		return fmt.Sprintf("*[System[%s]]", timePart)
-	}
-
-	// Build EventID filter: (EventID=X or EventID=Y or ...)
-	var parts []string
-	for _, id := range eventIDs {
-		parts = append(parts, fmt.Sprintf("EventID=%d", id))
-	}
-	eventFilter := strings.Join(parts, " or ")
-
-	return fmt.Sprintf("*[System[(%s) and %s]]", eventFilter, timePart)
 }
 
 func (m *Monitor) processEvent(channel string, evt evtEvent) {
@@ -279,6 +244,104 @@ func levelName(level int) string {
 	default:
 		return strconv.Itoa(level)
 	}
+}
+
+// ── Polling fallback ──────────────────────────────────────────────────────────
+// Preserved from original implementation; activated when all EvtSubscribe calls fail.
+
+func (m *Monitor) startPolling(ctx context.Context) error {
+	m.wg.Add(1)
+	go m.pollLoop(ctx)
+	m.log.Info().
+		Int("channels", len(m.cfg.Channels)).
+		Int("poll_interval_s", m.cfg.PollIntervalS).
+		Msg("winevent monitor started (polling Windows Event Log)")
+	return nil
+}
+
+func (m *Monitor) pollLoop(ctx context.Context) {
+	defer m.wg.Done()
+
+	// Track last seen event time per channel to avoid duplicates.
+	lastSeen := make(map[string]time.Time)
+	for _, ch := range m.cfg.Channels {
+		lastSeen[ch.Name] = time.Now()
+	}
+
+	// Initial delay to let the system settle.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(5 * time.Second):
+	}
+
+	ticker := time.NewTicker(time.Duration(m.cfg.PollIntervalS) * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			for _, ch := range m.cfg.Channels {
+				since := lastSeen[ch.Name]
+				evts := m.queryChannel(ctx, ch, since)
+				for _, evt := range evts {
+					m.processEvent(ch.Name, evt)
+				}
+				lastSeen[ch.Name] = time.Now()
+			}
+		}
+	}
+}
+
+func (m *Monitor) queryChannel(ctx context.Context, ch ChannelConfig, since time.Time) []evtEvent {
+	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	query := m.buildXPathQuery(ch.EventIDs, since)
+
+	cmd := exec.CommandContext(cmdCtx, "wevtutil", "qe", ch.Name,
+		"/q:"+query,
+		fmt.Sprintf("/c:%d", m.cfg.MaxEventsPerPoll),
+		"/rd:true",
+		"/f:xml",
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		m.log.Debug().Err(err).Str("channel", ch.Name).Msg("wevtutil query returned error (may be empty)")
+		return nil
+	}
+
+	if len(out) == 0 {
+		return nil
+	}
+
+	wrapped := "<Events>" + string(out) + "</Events>"
+
+	var parsed evtEvents
+	if err := xml.Unmarshal([]byte(wrapped), &parsed); err != nil {
+		m.log.Debug().Err(err).Str("channel", ch.Name).Msg("failed to parse wevtutil XML output")
+		return nil
+	}
+
+	return parsed.Events
+}
+
+// buildXPathQuery constructs a time-windowed XPath filter for wevtutil polling.
+func (m *Monitor) buildXPathQuery(eventIDs []int, since time.Time) string {
+	timePart := fmt.Sprintf("TimeCreated[@SystemTime>='%s']",
+		since.UTC().Format("2006-01-02T15:04:05.000Z"))
+
+	if len(eventIDs) == 0 {
+		return fmt.Sprintf("*[System[%s]]", timePart)
+	}
+
+	var parts []string
+	for _, id := range eventIDs {
+		parts = append(parts, fmt.Sprintf("EventID=%d", id))
+	}
+	return fmt.Sprintf("*[System[(%s) and %s]]", strings.Join(parts, " or "), timePart)
 }
 
 var _ interface {
