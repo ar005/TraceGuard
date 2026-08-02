@@ -13,19 +13,10 @@ The browser extension adds visibility into web browsing activity by capturing UR
 - **Manifest Version**: V3
 - **Name**: TraceGuard Browser Monitor
 - **Version**: 1.0.0
-- **Permissions**: `webRequest`, `storage`, `alarms`
+- **Permissions**: `webRequest`, `storage`
 - **Host Permissions**: `<all_urls>`
 - **Background**: Service worker (`background.js`)
 - **Action**: Popup (`popup.html`) with icon set (16px, 48px, 128px)
-
-### Flush scheduling (MV3 service-worker lifecycle)
-
-The Chrome service worker is suspended after roughly 30 seconds of inactivity, which would kill any `setInterval` registered inside it. To keep the offline-flush working across worker hibernation the extension uses:
-
-- **`chrome.alarms.create("edr-flush", { periodInMinutes: 1 })`** — wakes the worker once a minute even from idle and triggers `flushBatch`. The minimum production period for `chrome.alarms` is 1 minute, which is the cadence used.
-- **Size-based flush** — when `eventBatch.length >= config.batchSize` (default 10), `flushBatch` fires immediately. Busy tabs never have to wait for the alarm.
-- **Top-level listener registration** — `webRequest`, `storage.onChanged`, `alarms.onAlarm`, and `runtime.onMessage` listeners are registered synchronously at the top of `background.js` so Chrome re-arms them on every worker wake. Putting them inside the async `storage.get` callback (the previous pattern) caused a window after wake where events fired with no listener attached.
-- **Overlap guard** — a module-scoped `flushing` boolean prevents the alarm-driven and size-driven flushes from racing each other and double-requeuing events on failure. `try/finally` ensures the guard always clears.
 
 ### Installation
 
@@ -43,11 +34,9 @@ The Chrome service worker is suspended after roughly 30 seconds of inactivity, w
 - **Name**: TraceGuard Browser Monitor
 - **Version**: 1.0.0
 - **Permissions**: `webRequest`, `webRequestBlocking`, `storage`, `<all_urls>`
-- **Background**: Script (`background.js`) — persistent in MV2, so `setInterval` is fine
+- **Background**: Script (`background.js`)
 - **Browser Action**: Popup (`popup.html`) with icon set
 - **Gecko Settings**: ID `TraceGuard-browser-monitor@youredr.local`, minimum Firefox 109.0
-
-The Firefox extension keeps the same flush-overlap guard as Chrome (`flushing` boolean wrapped in `try/finally`) but stays on `setInterval` because the MV2 background page is persistent.
 
 ### Installation
 

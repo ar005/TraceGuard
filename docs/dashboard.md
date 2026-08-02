@@ -50,25 +50,15 @@ npm start -- -p 5002 -H 0.0.0.0
 
 | Variable | Default | Description |
 |---|---|---|
-| `NEXT_PUBLIC_BACKEND_URL` | _(empty — proxy mode)_ | Backend REST API URL. **Proxy mode (recommended):** leave unset; `next.config.ts`'s `rewrites()` proxies `/api/*` to the backend on the same origin. **Direct mode:** set to `https://your-backend-host` and the browser will talk to the backend directly (requires backend-side CORS). |
-| `NEXT_PUBLIC_ENVIRONMENT` | _(unset)_ | Operator-controlled flag. When set to `prod`, the dashboard logs a console warning if `NEXT_PUBLIC_BACKEND_URL` is also unset (catches a broken-production-deploy case). Anything else (or unset) is treated as dev/staging — no warning. Not tied to `NODE_ENV`, which `npm run build && npm start` always sets to `production` even on a developer's laptop. |
-
-> **Inlining**: `NEXT_PUBLIC_*` env vars are baked into the JS bundle at `npm run build` time. Setting them in your shell **after** `npm run build` has no effect — set them before the build or use `.env.local`.
+| `NEXT_PUBLIC_BACKEND_URL` | `http://localhost:8080` | Backend REST API URL. Set this when the backend runs on a different host or port. |
 
 ## Authentication Flow
 
 1. Users navigate to `/login` and enter username/password.
-2. The login page calls `POST /api/v1/auth/login` on the backend (via the proxy when `NEXT_PUBLIC_BACKEND_URL` is unset, or directly when it's set).
-3. On success the backend sets an `httpOnly` session cookie. The client stores no JWT itself; `AuthProvider` hydrates by calling `GET /api/v1/me` to read the current user.
-4. All subsequent API requests are made through `src/lib/api-client.ts`, which sends the cookie automatically (`credentials: "include"`).
-5. On HTTP 401, `api-client` triggers a single navigation to `/login` (deduped via a module-level `redirecting` flag, using `window.location.replace` so the failed page doesn't sit on the back stack). The `/api/v1/me` probe is exempt — that 401 is expected during hydration and `AuthGuard` handles the redirect via `router.replace`, avoiding a fight between the two paths.
-
-### Deployment modes
-
-The api-client and `next.config.ts` support two deployment shapes:
-
-- **Proxy mode (recommended)**: `NEXT_PUBLIC_BACKEND_URL` unset → `BASE = ""`. All requests become same-origin relative URLs (`/api/v1/...`) and `next.config.ts`'s `rewrites()` block proxies them to the backend. httpOnly cookies and CSP `connect-src 'self'` work cleanly. SSO redirects from the login page also resolve relative, so SSO works for end users on any host.
-- **Direct mode**: `NEXT_PUBLIC_BACKEND_URL=https://backend.example.com` → `BASE` is absolute. The browser talks to the backend directly. Requires CORS configured on the backend and a CSP that allowlists the backend host. Only choose this when the Next.js proxy isn't viable.
+2. The login page calls `POST /api/v1/auth/login` on the backend.
+3. On success, the JWT token is stored in `localStorage` under the key `edr_token`, and the user object under `edr_user`.
+4. All subsequent API requests include the token as a `Bearer` token in the `Authorization` header.
+5. If any API call returns HTTP 401, the client clears the stored token/user and redirects to `/login`.
 
 ## Pages
 

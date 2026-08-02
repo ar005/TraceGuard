@@ -77,8 +77,6 @@ Configuration is loaded from `config/server.yaml`. Environment variables with th
 
 JWT signing key is set via `EDR_JWT_SECRET` environment variable. If unset, a random ephemeral key is generated on startup.
 
-**Bootstrap admin credentials.** On first run against an empty `users` table the backend creates an admin user with a generated 20-character password and logs the pair as a warning. When the `EDR_AUTH_BOOTSTRAP_FILE` env var is set, the same `username=` / `password=` pair is also written to that path with mode `0600`. `edr-backend/deploy/docker-compose.yml` sets it to `/app/bootstrap/cred.txt` and mounts `./bootstrap:/app/bootstrap`, so the host file path is `edr-backend/deploy/bootstrap/cred.txt`. The file is written **only on first run** — subsequent restarts find an existing user and skip both the log line and the file write. **Delete the file once the password is saved**; anyone who can read it gets full admin access.
-
 ### `rate_limit` -- Per-IP rate limiting
 
 | Key | Type | Default | Description |
@@ -293,31 +291,6 @@ The backend ships with the following built-in detection rules, automatically see
 ## SSE Broker
 
 The SSE (Server-Sent Events) broker (`internal/sse/`) provides live event streaming to connected browser clients. When an event is stored, it is also published to the SSE broker, which fans it out to all connected UI sessions. Clients connect via `GET /api/v1/events/stream`.
-
-**Transport**: PostgreSQL `LISTEN`/`NOTIFY` on the `edr_events` channel. Every backend node runs a listener goroutine; `Publish()` calls `pg_notify`, and every node receives the notification and fans the JSON to its own SSE clients. Browser clients connecting to any node therefore see the full event stream regardless of which node holds the agent gRPC connection.
-
-**Payload size handling**. `pg_notify` enforces an 8 000-byte payload ceiling. For events whose JSON exceeds 7 900 bytes the broker:
-
-1. Publishes a slim marker — `{id, event_type, agent_id, tenant_id, _truncated: true}` — through `pg_notify`.
-2. On the receive side, `listenLoop` detects the `_truncated: true` flag, calls `EventFetcher.GetEvent(ctx, id, tenantID)` against the store, and fans the **full** event JSON. The `tenant_id` field in the slim marker keeps the lookup correctly scoped under multi-tenancy.
-3. UI clients always see the documented event shape; there is no special-case path for oversize events on the consumer side.
-
-Wire the fetcher with `broker.SetEventFetcher(st)` after `sse.New(...)` in `cmd/server/main.go`. If the fetcher is unset (e.g. test-mode brokers), the slim marker is forwarded as-is.
-
-## Pagination responses
-
-All paginated list handlers (events, alerts, incidents, agent packages, vulnerabilities, IOCs, containers, container events, DNS events, DLP signals) return JSON of the form:
-
-```json
-{
-  "events": [ ... page of items ... ],
-  "total":  12847,
-  "limit":  50,
-  "offset": 100
-}
-```
-
-`total` is the result of a `SELECT COUNT(*)` with the same `WHERE` clause as the page query — not the page length. The UI uses it to render `"101–150 of 12 847"` strings and to disable the Next/Last buttons at the end of the result set. The wrapping key (`events`, `alerts`, `incidents`, …) varies per endpoint; the meta keys are stable.
 
 ## LLM Integration
 
